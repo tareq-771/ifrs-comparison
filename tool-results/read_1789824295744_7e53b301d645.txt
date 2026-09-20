@@ -1,0 +1,2002 @@
+     1→/**
+     2→ * Account Matching & Income Statement Comparison Logic
+     3→ *
+     4→ * Implements a comparative Statement of Profit or Loss and Other Comprehensive
+     5→ * Income under IFRS (IAS 1 — function-of-expense method).
+     6→ *
+     7→ * Key conventions:
+     8→ *  - Revenue (sales, other income, OCI) is credit-positive:  net = دائن − مدين
+     9→ *  - Expenses (cost, selling, admin, finance, tax) are debit-positive: net = مدين − دائن
+    10→ *  - Discounts / returns appear as NEGATIVE amounts in parentheses.
+    11→ *  - Current period columns come first, comparative period second.
+    12→ *  - Totals are computed from LEAF accounts only (parents shown bold but not summed).
+    13→ *  - Revenue total uses the base account's own balance.
+    14→ */
+    15→
+    16→import * as XLSX from "xlsx-js-style";
+    17→import * as JSZip from "jszip";
+    18→
+    19→/* ──────────────────────────────────────────────────────────────────────────
+    20→ * Types
+    21→ * ────────────────────────────────────────────────────────────────────────── */
+    22→
+    23→export interface AccountRow {
+    24→  nm: string;
+    25→  nk: string;
+    26→  num: string | null;
+    27→  m: number; // مدين (debit)
+    28→  d: number; // دائن (credit)
+    29→}
+    30→
+    31→export interface FileData {
+    32→  A: AccountRow[];
+    33→  headers: string[];
+    34→  nameCol: number;
+    35→  /** Column index of the account number. Defaults to 0 when not detected. */
+    36→  numCol: number;
+    37→  debitCol: number;
+    38→  headerRow: number;
+    39→  rawRows: unknown[][];
+    40→}
+    41→
+    42→export interface MatchedRow {
+    43→  nk: string;
+    44→  a1: AccountRow | null;
+    45→  a2: AccountRow | null;
+    46→  st: MatchStatus;
+    47→  /** Chart-of-accounts mode only: name similarity 0-100 (null when unmatched). */
+    48→  sim?: number | null;
+    49→  /** Chart-of-accounts mode only: category name in file 1. */
+    50→  cat1?: string;
+    51→  /** Chart-of-accounts mode only: category name in file 2. */
+    52→  cat2?: string;
+    53→  /** Chart-of-accounts mode only: true if num changed between files. */
+    54→  numChanged?: boolean;
+    55→  /** Chart-of-accounts mode only: true if account moved to a different category. */
+    56→  catChanged?: boolean;
+    57→  /** Chart-of-accounts mode only: true if account name changed between files. */
+    58→  nameChanged?: boolean;
+    59→  /** Chart-of-accounts mode only: how the match was made. */
+    60→  matchBy?: "both" | "name" | "number";
+    61→  /** Chart-of-accounts mode only: account balance in file 1 (debit−credit). */
+    62→  amt1?: number | null;
+    63→  /** Chart-of-accounts mode only: account balance in file 2 (debit−credit). */
+    64→  amt2?: number | null;
+    65→  /** Chart-of-accounts mode only: amount change = amt2 − amt1. */
+    66→  amtChange?: number | null;
+    67→  /** Chart-of-accounts mode only: percentage change = (amt2−amt1)/|amt1|*100. */
+    68→  amtChangePct?: number | null;
+    69→}
+    70→
+    71→export type MatchStatus =
+    72→  | "مطابق"                    // both name AND number match → Sheet 1
+    73→  | "مطابق الاسم مختلف الرقم"   // name matches (≥90%), number differs, same category → Sheet 2
+    74→  | "تغير جوهري"               // fundamental change (category shift OR rename OR both differ) → Sheet 4
+    75→  | "في الملف الأول فقط"        // unmatched → Sheet 3
+    76→  | "في الملف الثاني فقط"        // unmatched → Sheet 3
+    77→  | "غير مطابق";                 // generic unmatched fallback → Sheet 3
+    78→
+    79→export interface CategorySettings {
+    80→  /** Net-sales base account key (nk). */
+    81→  base: string | null;
+    82→  costPrefix: string; // cp — تكلفة الإيرادات
+    83→  sellPrefix: string; // sp — البيع والتوزيع
+    84→  adminPrefix: string; // gp — الإدارية والعمومية
+    85→  otherOpPrefix: string; // op — تشغيلية أخرى
+    86→  financePrefix: string; // fp — التمويل
+    87→  taxPrefix: string; // tp — ضريبة الدخل
+    88→  ociPrefix: string; // ocip — الدخل الشامل الآخر
+    89→}
+    90→
+    91→export interface Categorized {
+    92→  sales: MatchedRow[]; // revenue tree (excl. base)
+    93→  cost: MatchedRow[]; // cost of sales
+    94→  sell: MatchedRow[]; // selling & distribution
+    95→  adm: MatchedRow[]; // general & administrative
+    96→  oth: MatchedRow[]; // other operating
+    97→  fin: MatchedRow[]; // finance costs
+    98→  tax: MatchedRow[]; // income tax
+    99→  oci: MatchedRow[]; // other comprehensive income
+   100→  othRev: MatchedRow[]; // other income (non-3 accounts, not in sales tree)
+   101→  net: MatchedRow[]; // صافي الدخل — excluded from calc, used for reconciliation
+   102→}
+   103→
+   104→export interface Totals {
+   105→  rev1: number; rev2: number;
+   106→  cost1: number; cost2: number;
+   107→  gross1: number; gross2: number;
+   108→  sell1: number; sell2: number;
+   109→  adm1: number; adm2: number;
+   110→  oth1: number; oth2: number;
+   111→  opex1: number; opex2: number;
+   112→  oper1: number; oper2: number;
+   113→  othRev1: number; othRev2: number;
+   114→  fin1: number; fin2: number;
+   115→  pbt1: number; pbt2: number;
+   116→  tax1: number; tax2: number;
+   117→  net1: number; net2: number;
+   118→  oci1: number; oci2: number;
+   119→  comp1: number; comp2: number;
+   120→}
+   121→
+   122→/* ──────────────────────────────────────────────────────────────────────────
+   123→ * Normalization helpers
+   124→ * ────────────────────────────────────────────────────────────────────────── */
+   125→
+   126→const AR_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+   127→
+   128→export function normalizeName(v: unknown): string {
+   129→  let t = String(v ?? "").normalize("NFKC");
+   130→  t = t.replace(/[\u200B-\u200F\uFEFF]/g, "");
+   131→  t = t.replace(/[\u064B-\u065F\u0670\u0640]/g, "");
+   132→  t = t.replace(/[^\w\u0600-\u06FF\s]/g, " ");
+   133→  t = t.replace(/\s+/g, " ").trim().toLowerCase();
+   134→  t = t.replace(/ة/g, "ه").replace(/ى/g, "ي").replace(/[أإآ]/g, "ا");
+   135→  return t;
+   136→}
+   137→
+   138→export function parseAmount(v: unknown): number {
+   139→  if (v == null || v === "") return 0;
+   140→  if (typeof v === "number") return v;
+   141→  let s = String(v)
+   142→    .replace(/[٠-٩]/g, (d) => String(AR_DIGITS.indexOf(d)))
+   143→    .replace(/[,،\s]/g, "");
+   144→  const neg = s[0] === "-";
+   145→  s = s.replace(/[-*]+/g, "");
+   146→  const x = parseFloat(s);
+   147→  return Number.isNaN(x) ? 0 : neg ? -x : x;
+   148→}
+   149→
+   150→export function parseAccountNum(v: unknown): string | null {
+   151→  if (v == null || v === "") return null;
+   152→  if (typeof v === "number") return String(Math.round(v));
+   153→  const s = String(v)
+   154→    .replace(/[٠-٩]/g, (d) => String(AR_DIGITS.indexOf(d)))
+   155→    .trim();
+   156→  const d = s.replace(/\D/g, "");
+   157→  return d ? d.replace(/^0+(?=.)/, "") || "0" : null;
+   158→}
+   159→
+   160→/* ──────────────────────────────────────────────────────────────────────────
+   161→ * Excel parsing
+   162→ * ────────────────────────────────────────────────────────────────────────── */
+   163→
+   164→export function readExcelFile(file: File): Promise<FileData> {
+   165→  return new Promise((resolve, reject) => {
+   166→    const fr = new FileReader();
+   167→    fr.onload = (e) => {
+   168→      try {
+   169→        const buf = e.target?.result;
+   170→        if (!buf) throw new Error("ملف فارغ");
+   171→        const wb = XLSX.read(buf, { type: "array" });
+   172→        const sh = wb.SheetNames[0];
+   173→        const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sh], {
+   174→          header: 1, raw: true, defval: null,
+   175→        });
+   176→        let hi = -1;
+   177→        const cap = Math.min(rows.length, 30);
+   178→        for (let i = 0; i < cap; i++) {
+   179→          const cells = (rows[i] || []).map((c) => String(c ?? "").trim());
+   180→          for (let j = 0; j < cells.length; j++) {
+   181→            if (cells[j].indexOf("اسم الحساب") >= 0) { hi = i; break; }
+   182→          }
+   183→          if (hi >= 0) break;
+   184→        }
+   185→        if (hi < 0) throw new Error("لا يوجد عمود «اسم الحساب»");
+   186→        const hdr = rows[hi].map((c) => String(c ?? "").trim());
+   187→        const sub = (rows[hi + 1] || []).map((c) => String(c ?? "").trim());
+   188→        let cN = 1, cD = -1, cNum = -1;
+   189→        for (let j = 0; j < hdr.length; j++) {
+   190→          const h = hdr[j];
+   191→          if (h.indexOf("اسم الحساب") >= 0) cN = j;
+   192→          if (sub[j] === "مدين" || h === "مدين") cD = j;
+   193→        }
+   194→        // Detect account number column AFTER name column — avoid picking "اسم الحساب"
+   195→        for (let j = 0; j < hdr.length; j++) {
+   196→          const h = hdr[j];
+   197→          if (j === cN) continue; // skip the name column
+   198→          if (
+   199→            h.indexOf("رقم الحساب") >= 0 ||
+   200→            h.indexOf("رقم") >= 0 ||
+   201→            h === "الحساب" ||
+   202→            h === "الرقم" ||
+   203→            h === "حساب"
+   204→          ) { cNum = j; break; }
+   205→        }
+   206→        if (cNum < 0) cNum = 0; // fallback: column 0
+   207→        if (cD < 0) {
+   208→          for (let j = 0; j < hdr.length; j++) {
+   209→            if (hdr[j] === "المبلغ") { cD = j; break; }
+   210→          }
+   211→        }
+   212→        if (cD < 0) cD = cN + 2;
+   213→        const A: AccountRow[] = [];
+   214→        for (let i = hi + 1; i < rows.length; i++) {
+   215→          const r = rows[i] || [];
+   216→          const g = (j: number) => (j >= 0 && j < r.length ? r[j] : null);
+   217→          const n = String(g(cN) ?? "").trim();
+   218→          if (!n || n === "*") continue;
+   219→          if (n.indexOf("الإجمالي") >= 0 || n.indexOf("الرصيد") >= 0) continue;
+   220→          A.push({ nm: n, nk: normalizeName(n), num: parseAccountNum(g(cNum)), m: parseAmount(g(cD)), d: parseAmount(g(cD + 1)) });
+   221→        }
+   222→        resolve({ A, headers: hdr, nameCol: cN, numCol: cNum, debitCol: cD, headerRow: hi, rawRows: rows });
+   223→      } catch (err) {
+   224→        reject(err instanceof Error ? err : new Error(String(err)));
+   225→      }
+   226→    };
+   227→    fr.onerror = () => reject(new Error("فشل قراءة الملف"));
+   228→    fr.readAsArrayBuffer(file);
+   229→  });
+   230→}
+   231→
+   232→export function reExtract(file: FileData, nameCol: number, debitCol: number): AccountRow[] {
+   233→  const rows = file.rawRows;
+   234→  const hi = file.headerRow;
+   235→  const numCol = file.numCol ?? 0;
+   236→  const A: AccountRow[] = [];
+   237→  for (let i = hi + 1; i < rows.length; i++) {
+   238→    const r = rows[i] || [];
+   239→    const g = (j: number) => (j >= 0 && j < r.length ? r[j] : null);
+   240→    const n = String(g(nameCol) ?? "").trim();
+   241→    if (!n || n === "*") continue;
+   242→    if (n.indexOf("الإجمالي") >= 0 || n.indexOf("الرصيد") >= 0) continue;
+   243→    A.push({ nm: n, nk: normalizeName(n), num: parseAccountNum(g(numCol)), m: parseAmount(g(debitCol)), d: parseAmount(g(debitCol + 1)) });
+   244→  }
+   245→  return A;
+   246→}
+   247→
+   248→/* ──────────────────────────────────────────────────────────────────────────
+   249→ * Matching
+   250→ * ────────────────────────────────────────────────────────────────────────── */
+   251→
+   252→export function matchFiles(f1: FileData, f2: FileData): MatchedRow[] {
+   253→  const out: MatchedRow[] = [];
+   254→  const m2: Record<string, AccountRow[]> = {};
+   255→  for (const a of f2.A) { (m2[a.nk] ||= []).push(a); }
+   256→  for (const a1 of f1.A) {
+   257→    const q = m2[a1.nk];
+   258→    out.push({ nk: a1.nk, a1, a2: q && q.length ? q.shift()! : null, st: "مطابق" });
+   259→  }
+   260→  for (const k in m2) for (const a2 of m2[k]) out.push({ nk: k, a1: null, a2, st: "مطابق" });
+   261→  for (const r of out) {
+   262→    r.st = r.a1 && r.a2 ? "مطابق" : r.a1 ? "في الملف الأول فقط" : "في الملف الثاني فقط";
+   263→  }
+   264→  return out;
+   265→}
+   266→
+   267→/* ════════════════════════════════════════════════════════════════════════════
+   268→ * Chart-of-Accounts Matching — مطابقة دليل الحسابات
+   269→ *
+   270→ * Matches accounts by NAME AND NUMBER (OR logic):
+   271→ *  - Name match   — normalized name similarity >= threshold (default 90%)
+   272→ *  - Number match — account numbers are identical (exact match)
+   273→ *
+   274→ * Priority: both > number-only > name-only.
+   275→ * Statuses: مطابق / تغير اسم / تغير رقم / تغير الموقع / في الملف الأول فقط / في الملف الثاني فقط
+   276→ * ════════════════════════════════════════════════════════════════════════════ */
+   277→
+   278→/** Levenshtein edit distance between two strings (classic DP). */
+   279→function levenshtein(a: string, b: string): number {
+   280→  if (a === b) return 0;
+   281→  if (!a.length) return b.length;
+   282→  if (!b.length) return a.length;
+   283→  let prev = new Array<number>(b.length + 1);
+   284→  let curr = new Array<number>(b.length + 1);
+   285→  for (let j = 0; j <= b.length; j++) prev[j] = j;
+   286→  for (let i = 1; i <= a.length; i++) {
+   287→    curr[0] = i;
+   288→    for (let j = 1; j <= b.length; j++) {
+   289→      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+   290→      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+   291→    }
+   292→    const tmp = prev; prev = curr; curr = tmp;
+   293→  }
+   294→  return prev[b.length];
+   295→}
+   296→
+   297→/** Name similarity ratio in [0, 1]. Levenshtein normalized by max length. */
+   298→export function nameSimilarity(a: string, b: string): number {
+   299→  if (!a && !b) return 0;
+   300→  if (!a || !b) return 0;
+   301→  if (a === b) return 1;
+   302→  const maxLen = Math.max(a.length, b.length);
+   303→  if (maxLen === 0) return 0;
+   304→  return 1 - levenshtein(a, b) / maxLen;
+   305→}
+   306→
+   307→/** Character-level LCS-based diff. Returns segments of {text, op}. */
+   308→export type DiffOp = "same" | "add" | "del";
+   309→export interface DiffSegment { text: string; op: DiffOp; }
+   310→
+   311→export function diffStrings(a: string, b: string): DiffSegment[] {
+   312→  if (!a && !b) return [];
+   313→  if (!a) return [{ text: b, op: "add" }];
+   314→  if (!b) return [{ text: a, op: "del" }];
+   315→  if (a === b) return [{ text: a, op: "same" }];
+   316→  const m = a.length, n = b.length;
+   317→  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+   318→  for (let i = 1; i <= m; i++) {
+   319→    for (let j = 1; j <= n; j++) {
+   320→      if (a.charCodeAt(i - 1) === b.charCodeAt(j - 1)) dp[i][j] = dp[i - 1][j - 1] + 1;
+   321→      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+   322→    }
+   323→  }
+   324→  const segs: DiffSegment[] = [];
+   325→  let i = m, j = n;
+   326→  while (i > 0 || j > 0) {
+   327→    if (i > 0 && j > 0 && a.charCodeAt(i - 1) === b.charCodeAt(j - 1)) {
+   328→      segs.push({ text: a[i - 1], op: "same" }); i--; j--;
+   329→    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+   330→      segs.push({ text: b[j - 1], op: "add" }); j--;
+   331→    } else {
+   332→      segs.push({ text: a[i - 1], op: "del" }); i--;
+   333→    }
+   334→  }
+   335→  segs.reverse();
+   336→  const merged: DiffSegment[] = [];
+   337→  for (const s of segs) {
+   338→    const last = merged[merged.length - 1];
+   339→    if (last && last.op === s.op) last.text += s.text;
+   340→    else merged.push({ ...s });
+   341→  }
+   342→  return merged;
+   343→}
+   344→
+   345→/** Compact human-readable diff summary for Excel: "−X +Y" or "مطابق تام". */
+   346→export function summarizeDiff(a: string, b: string): string {
+   347→  if (!a || !b) return "—";
+   348→  if (a === b) return "مطابق تام";
+   349→  const diff = diffStrings(a, b);
+   350→  let removed = "";
+   351→  let added = "";
+   352→  for (const s of diff) {
+   353→    if (s.op === "del") removed += s.text;
+   354→    else if (s.op === "add") added += s.text;
+   355→  }
+   356→  const parts: string[] = [];
+   357→  if (removed) parts.push(`−${removed}`);
+   358→  if (added) parts.push(`+${added}`);
+   359→  return parts.length ? parts.join(" ") : "مطابق تام";
+   360→}
+   361→
+   362→/**
+   363→ * Account category by leading digit of account number.
+   364→ *
+   365→ * 4-category classification (per user's exact specification):
+   366→ *   1 → أصول       (assets)
+   367→ *   2 → خصوم       (liabilities)
+   368→ *   3 → مصروفات    (expenses — per user request, NOT equity)
+   369→ *   4 → إيرادات    (revenues)
+   370→ *   5 → مصروفات    (expenses — folded under expenses)
+   371→ *   6 → مصروفات    (taxes folded under expenses)
+   372→ *   7 → إيرادات    (other revenues folded under revenues)
+   373→ *   other → غير محدد
+   374→ */
+   375→export function accountCategory(num: string | null): string {
+   376→  if (!num) return "غير محدد";
+   377→  const d = num.charAt(0);
+   378→  switch (d) {
+   379→    case "1": return "أصول";
+   380→    case "2": return "خصوم";
+   381→    case "3":
+   382→    case "5":
+   383→    case "6": return "مصروفات";
+   384→    case "4":
+   385→    case "7": return "إيرادات";
+   386→    default: return "غير محدد";
+   387→  }
+   388→}
+   389→
+   390→/**
+   391→ * Match two charts of accounts by NAME AND NUMBER (OR logic).
+   392→ * A pair is a candidate if EITHER number matches exactly OR name sim >= threshold.
+   393→ * Priority: both > number-only > name-only.
+   394→ */
+   395→export function matchChartOfAccounts(
+   396→  f1: FileData,
+   397→  f2: FileData,
+   398→  threshold = 0.9
+   399→): MatchedRow[] {
+   400→  const a1s = f1.A.slice();
+   401→  const a2s = f2.A.slice();
+   402→  type Pair = { i: number; j: number; sim: number; numMatch: boolean; nameMatch: boolean };
+   403→  const pairs: Pair[] = [];
+   404→  for (let i = 0; i < a1s.length; i++) {
+   405→    const a1 = a1s[i];
+   406→    if (!a1.nk && !a1.num) continue;
+   407→    for (let j = 0; j < a2s.length; j++) {
+   408→      const a2 = a2s[j];
+   409→      if (!a2.nk && !a2.num) continue;
+   410→      const numMatch = !!a1.num && !!a2.num && a1.num === a2.num;
+   411→      const sim = nameSimilarity(a1.nk, a2.nk);
+   412→      const nameMatch = sim >= threshold;
+   413→      if (numMatch || nameMatch) {
+   414→        pairs.push({ i, j, sim, numMatch, nameMatch });
+   415→      }
+   416→    }
+   417→  }
+   418→  function pairPriority(p: Pair): number {
+   419→    if (p.numMatch && p.nameMatch) return 3;
+   420→    if (p.numMatch) return 2;
+   421→    return 1;
+   422→  }
+   423→  pairs.sort((x, y) => {
+   424→    const px = pairPriority(x);
+   425→    const py = pairPriority(y);
+   426→    if (px !== py) return py - px;
+   427→    return y.sim - x.sim;
+   428→  });
+   429→
+   430→  const used1 = new Set<number>();
+   431→  const used2 = new Set<number>();
+   432→  const out: MatchedRow[] = [];
+   433→
+   434→  for (const p of pairs) {
+   435→    if (used1.has(p.i) || used2.has(p.j)) continue;
+   436→    used1.add(p.i);
+   437→    used2.add(p.j);
+   438→    const a1 = a1s[p.i];
+   439→    const a2 = a2s[p.j];
+   440→    const cat1 = accountCategory(a1.num);
+   441→    const cat2 = accountCategory(a2.num);
+   442→    const numChanged = (a1.num ?? null) !== (a2.num ?? null);
+   443→    const catChanged = cat1 !== cat2;
+   444→    const nameChanged = a1.nk !== a2.nk;
+   445→    let matchBy: "both" | "name" | "number";
+   446→    if (p.numMatch && p.nameMatch) matchBy = "both";
+   447→    else if (p.numMatch) matchBy = "number";
+   448→    else matchBy = "name";
+   449→
+   450→    // ── 4-sheet classification (per user's new requirement) ──
+   451→    // Sheet 1 «مطابق الاسم والرقم»:   name AND number both match (priority to name)
+   452→    // Sheet 2 «مطابق الاسم مختلف الرقم»: name matches, number differs (any category)
+   453→    // Sheet 3 «غير مطابق الاسم»:        unmatched (in one file only) — handled below
+   454→    // Sheet 4 «التغير الجوهري»:         category CHANGED between the two files
+   455→    //                                    (e.g. account moved from أصول to خصوم,
+   456→    //                                     or from مصروفات to إيرادات)
+   457→    let st: MatchStatus;
+   458→    if (catChanged) {
+   459→      // Category change is the fundamental change → Sheet 4
+   460→      st = "تغير جوهري";
+   461→    } else if (!numChanged && !nameChanged) {
+   462→      // Both name AND number match → Sheet 1
+   463→      st = "مطابق";
+   464→    } else if (!nameChanged && numChanged) {
+   465→      // Name matches, number differs, same category → Sheet 2
+   466→      st = "مطابق الاسم مختلف الرقم";
+   467→    } else {
+   468→      // nameChanged && numChanged (both differ) — matched by one criterion only
+   469→      // Same category, but both name AND number differ
+   470→      // → keep in Sheet 2 if matched by name (name is the priority criterion)
+   471→      // → otherwise keep in Sheet 2 too (the user wants name-priority matching)
+   472→      st = "مطابق الاسم مختلف الرقم";
+   473→    }
+   474→    // Compute amount change + change percentage (debit−credit balance)
+   475→    const amt1 = a1.m - a1.d;
+   476→    const amt2 = a2.m - a2.d;
+   477→    const amtChange = amt2 - amt1;
+   478→    const amtChangePct = amt1 !== 0 ? (amtChange / Math.abs(amt1)) * 100 : null;
+   479→    out.push({
+   480→      nk: a1.nk, a1, a2, st,
+   481→      sim: Math.round(p.sim * 100),
+   482→      cat1, cat2,
+   483→      numChanged, catChanged, nameChanged, matchBy,
+   484→      amt1, amt2, amtChange, amtChangePct,
+   485→    });
+   486→  }
+   487→
+   488→  for (let i = 0; i < a1s.length; i++) {
+   489→    if (used1.has(i)) continue;
+   490→    const a1 = a1s[i];
+   491→    out.push({
+   492→      nk: a1.nk, a1, a2: null, st: "في الملف الأول فقط",
+   493→      sim: null, cat1: accountCategory(a1.num), cat2: undefined,
+   494→      numChanged: false, catChanged: false, nameChanged: false, matchBy: undefined,
+   495→      amt1: a1.m - a1.d, amt2: null, amtChange: null, amtChangePct: null,
+   496→    });
+   497→  }
+   498→  for (let j = 0; j < a2s.length; j++) {
+   499→    if (used2.has(j)) continue;
+   500→    const a2 = a2s[j];
+   501→    out.push({
+   502→      nk: a2.nk, a1: null, a2, st: "في الملف الثاني فقط",
+   503→      sim: null, cat1: undefined, cat2: accountCategory(a2.num),
+   504→      numChanged: false, catChanged: false, nameChanged: false, matchBy: undefined,
+   505→      amt1: null, amt2: a2.m - a2.d, amtChange: null, amtChangePct: null,
+   506→    });
+   507→  }
+   508→
+   509→  // Sort: matched → name-match-num-diff → fundamental → unmatched
+   510→  const order: Record<MatchStatus, number> = {
+   511→    "مطابق": 0,
+   512→    "مطابق الاسم مختلف الرقم": 1,
+   513→    "تغير جوهري": 2,
+   514→    "في الملف الأول فقط": 3,
+   515→    "في الملف الثاني فقط": 4,
+   516→    "غير مطابق": 5,
+   517→  };
+   518→  out.sort((x, y) => {
+   519→    const o = order[x.st] - order[y.st];
+   520→    if (o !== 0) return o;
+   521→    const sx = x.sim ?? -1;
+   522→    const sy = y.sim ?? -1;
+   523→    return sy - sx;
+   524→  });
+   525→  return out;
+   526→}
+   527→
+   528→/* ──────────────────────────────────────────────────────────────────────────
+   529→ * Base account selection
+   530→ * ────────────────────────────────────────────────────────────────────────── */
+   531→
+   532→export interface BaseOption { nk: string; nm: string; sc: number; }
+   533→
+   534→export function collectBaseOptions(files: (FileData | null)[]): BaseOption[] {
+   535→  const seen: Record<string, true> = {};
+   536→  const opts: BaseOption[] = [];
+   537→  for (const d of files) {
+   538→    if (!d) continue;
+   539→    for (const a of d.A) {
+   540→      if (seen[a.nk]) continue;
+   541→      seen[a.nk] = true;
+   542→      const x = normalizeName(a.nm);
+   543→      const sc = x.indexOf("صافي") >= 0 && x.indexOf("مبيعات") >= 0 ? 0 : x.indexOf("مبيعات") >= 0 ? 1 : 2;
+   544→      opts.push({ nk: a.nk, nm: a.nm, sc });
+   545→    }
+   546→  }
+   547→  opts.sort((a, b) => a.sc - b.sc);
+   548→  return opts;
+   549→}
+   550→
+   551→/* ──────────────────────────────────────────────────────────────────────────
+   552→ * Categorization — prefix-based (IAS 1 function-of-expense)
+   553→ * ────────────────────────────────────────────────────────────────────────── */
+   554→
+   555→export function categorize(out: MatchedRow[], settings: CategorySettings): Categorized {
+   556→  const { base, costPrefix, sellPrefix, adminPrefix, otherOpPrefix, financePrefix, taxPrefix, ociPrefix } = settings;
+   557→
+   558→  const ba = base ? out.find((r) => r.nk === base) ?? null : null;
+   559→  const netRow = findNetRow(out);
+   560→  const baseNum = (ba?.a1?.num ?? ba?.a2?.num ?? null) ?? null;
+   561→
+   562→  const cat: Categorized = {
+   563→    sales: [], cost: [], sell: [], adm: [], oth: [], fin: [], tax: [], oci: [], othRev: [], net: [],
+   564→  };
+   565→
+   566→  for (const r of out) {
+   567→    // Exclude base and net-income summary rows from categorization
+   568→    if (r === ba || r === netRow) continue;
+   569→
+   570→    const num = String((r.a1?.num ?? r.a2?.num ?? "") as string);
+   571→
+   572→    // Revenue tree — accounts whose number starts with base number
+   573→    if (baseNum && num && num.indexOf(baseNum) === 0) { cat.sales.push(r); continue; }
+   574→    // Cost of sales
+   575→    if (costPrefix && num && num.indexOf(costPrefix) === 0) { cat.cost.push(r); continue; }
+   576→    // Selling & distribution
+   577→    if (sellPrefix && num && num.indexOf(sellPrefix) === 0) { cat.sell.push(r); continue; }
+   578→    // General & administrative
+   579→    if (adminPrefix && num && num.indexOf(adminPrefix) === 0) { cat.adm.push(r); continue; }
+   580→    // Other operating
+   581→    if (otherOpPrefix && num && num.indexOf(otherOpPrefix) === 0) { cat.oth.push(r); continue; }
+   582→    // Finance
+   583→    if (financePrefix && num && num.indexOf(financePrefix) === 0) { cat.fin.push(r); continue; }
+   584→    // Tax
+   585→    if (taxPrefix && num && num.indexOf(taxPrefix) === 0) { cat.tax.push(r); continue; }
+   586→    // OCI
+   587→    if (ociPrefix && num && num.indexOf(ociPrefix) === 0) { cat.oci.push(r); continue; }
+   588→    // Unprefixed accounts starting with "3" → other operating
+   589→    if (num && num.indexOf("3") === 0) { cat.oth.push(r); continue; }
+   590→    // Everything else → other income
+   591→    cat.othRev.push(r);
+   592→  }
+   593→
+   594→  const byNum = (a: MatchedRow, b: MatchedRow) => {
+   595→    const x = String((a.a1?.num ?? a.a2?.num ?? "") as string);
+   596→    const y = String((b.a1?.num ?? b.a2?.num ?? "") as string);
+   597→    return x < y ? -1 : x > y ? 1 : 0;
+   598→  };
+   599→  cat.sales.sort(byNum); cat.cost.sort(byNum); cat.sell.sort(byNum);
+   600→  cat.adm.sort(byNum); cat.oth.sort(byNum); cat.fin.sort(byNum);
+   601→  cat.tax.sort(byNum); cat.oci.sort(byNum); cat.othRev.sort(byNum);
+   602→  return cat;
+   603→}
+   604→
+   605→/** Find the "صافي الدخل" summary row (for reconciliation). */
+   606→export function findNetRow(out: MatchedRow[]): MatchedRow | null {
+   607→  for (const r of out) {
+   608→    const n = normalizeName((r.a1 ?? r.a2)?.nm ?? "");
+   609→    if (n.indexOf("صافي الدخل") >= 0 || n.indexOf("صافي دخ") >= 0) return r;
+   610→  }
+   611→  return null;
+   612→}
+   613→
+   614→/* ──────────────────────────────────────────────────────────────────────────
+   615→ * Leaf detection — parents are shown bold but excluded from totals
+   616→ * ────────────────────────────────────────────────────────────────────────── */
+   617→
+   618→export interface RowLeafInfo {
+   619→  leaf1: boolean;
+   620→  leaf2: boolean;
+   621→}
+   622→
+   623→export function leafInfo(rows: MatchedRow[]): RowLeafInfo[] {
+   624→  return rows.map((r, i) => {
+   625→    let leaf1 = false, leaf2 = false;
+   626→    const a1 = r.a1;
+   627→    if (a1 && a1.num) {
+   628→      leaf1 = true;
+   629→      for (let j = 0; j < rows.length; j++) {
+   630→        if (j === i) continue;
+   631→        const o = rows[j].a1;
+   632→        if (!o || !o.num) continue;
+   633→        if (o.num.length > a1.num.length && o.num.indexOf(a1.num) === 0) { leaf1 = false; break; }
+   634→      }
+   635→    }
+   636→    const a2 = r.a2;
+   637→    if (a2 && a2.num) {
+   638→      leaf2 = true;
+   639→      for (let j = 0; j < rows.length; j++) {
+   640→        if (j === i) continue;
+   641→        const o = rows[j].a2;
+   642→        if (!o || !o.num) continue;
+   643→        if (o.num.length > a2.num.length && o.num.indexOf(a2.num) === 0) { leaf2 = false; break; }
+   644→      }
+   645→    }
+   646→    return { leaf1, leaf2 };
+   647→  });
+   648→}
+   649→
+   650→/* ──────────────────────────────────────────────────────────────────────────
+   651→ * Totals — IFRS cascade with credit/debit sign convention
+   652→ * ────────────────────────────────────────────────────────────────────────── */
+   653→
+   654→const r2 = (n: number) => Math.round(n * 100) / 100;
+   655→
+   656→/**
+   657→ * Sum LEAF accounts of a category on one file side.
+   658→ * @param isRevenue  true → credit-positive (دائن − مدين), false → debit-positive (مدين − دائن)
+   659→ */
+   660→function sumLeaves(
+   661→  rows: MatchedRow[], info: RowLeafInfo[], side: "a1" | "a2", isRevenue: boolean
+   662→): number {
+   663→  let s = 0;
+   664→  for (let i = 0; i < rows.length; i++) {
+   665→    const isLeaf = side === "a1" ? info[i].leaf1 : info[i].leaf2;
+   666→    if (!isLeaf) continue;
+   667→    const a = rows[i][side]!;
+   668→    s += isRevenue ? a.d - a.m : a.m - a.d;
+   669→  }
+   670→  return r2(s);
+   671→}
+   672→
+   673→/**
+   674→ * Compute all income-statement totals.
+   675→ * @param baseRow  The selected net-sales account (its OWN balance = revenue).
+   676→ */
+   677→export function calcTotals(
+   678→  cat: Categorized,
+   679→  baseRow: MatchedRow | null
+   680→): Totals {
+   681→  // Revenue = base account's own balance (credit − debit)
+   682→  const rev1 = baseRow?.a1 ? r2(baseRow.a1.d - baseRow.a1.m) : 0;
+   683→  const rev2 = baseRow?.a2 ? r2(baseRow.a2.d - baseRow.a2.m) : 0;
+   684→
+   685→  const iCost = leafInfo(cat.cost);
+   686→  const iSell = leafInfo(cat.sell);
+   687→  const iAdm = leafInfo(cat.adm);
+   688→  const iOth = leafInfo(cat.oth);
+   689→  const iFin = leafInfo(cat.fin);
+   690→  const iTax = leafInfo(cat.tax);
+   691→  const iOci = leafInfo(cat.oci);
+   692→  const iOthRev = leafInfo(cat.othRev);
+   693→
+   694→  const cost1 = sumLeaves(cat.cost, iCost, "a1", false);
+   695→  const cost2 = sumLeaves(cat.cost, iCost, "a2", false);
+   696→  const sell1 = sumLeaves(cat.sell, iSell, "a1", false);
+   697→  const sell2 = sumLeaves(cat.sell, iSell, "a2", false);
+   698→  const adm1 = sumLeaves(cat.adm, iAdm, "a1", false);
+   699→  const adm2 = sumLeaves(cat.adm, iAdm, "a2", false);
+   700→  const oth1 = sumLeaves(cat.oth, iOth, "a1", false);
+   701→  const oth2 = sumLeaves(cat.oth, iOth, "a2", false);
+   702→  const othRev1 = sumLeaves(cat.othRev, iOthRev, "a1", true);
+   703→  const othRev2 = sumLeaves(cat.othRev, iOthRev, "a2", true);
+   704→  const fin1 = sumLeaves(cat.fin, iFin, "a1", false);
+   705→  const fin2 = sumLeaves(cat.fin, iFin, "a2", false);
+   706→  const tax1 = sumLeaves(cat.tax, iTax, "a1", false);
+   707→  const tax2 = sumLeaves(cat.tax, iTax, "a2", false);
+   708→  const oci1 = sumLeaves(cat.oci, iOci, "a1", true);
+   709→  const oci2 = sumLeaves(cat.oci, iOci, "a2", true);
+   710→
+   711→  const gross1 = r2(rev1 - cost1);
+   712→  const gross2 = r2(rev2 - cost2);
+   713→  const opex1 = r2(sell1 + adm1 + oth1);
+   714→  const opex2 = r2(sell2 + adm2 + oth2);
+   715→  const oper1 = r2(gross1 - opex1);
+   716→  const oper2 = r2(gross2 - opex2);
+   717→  const pbt1 = r2(oper1 + othRev1 - fin1);
+   718→  const pbt2 = r2(oper2 + othRev2 - fin2);
+   719→  const net1 = r2(pbt1 - tax1);
+   720→  const net2 = r2(pbt2 - tax2);
+   721→  const comp1 = r2(net1 + oci1);
+   722→  const comp2 = r2(net2 + oci2);
+   723→
+   724→  return {
+   725→    rev1, rev2, cost1, cost2, gross1, gross2,
+   726→    sell1, sell2, adm1, adm2, oth1, oth2, opex1, opex2,
+   727→    oper1, oper2, othRev1, othRev2, fin1, fin2,
+   728→    pbt1, pbt2, tax1, tax2, net1, net2, oci1, oci2, comp1, comp2,
+   729→  };
+   730→}
+   731→
+   732→/* ──────────────────────────────────────────────────────────────────────────
+   733→ * Formatting — parentheses for negatives (IAS 1 convention)
+   734→ * ────────────────────────────────────────────────────────────────────────── */
+   735→
+   736→export function fmtAmount(n: number | null): string {
+   737→  if (n == null) return "";
+   738→  if (n === 0) return "—";
+   739→  const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+   740→  return n < 0 ? `(${abs})` : abs;
+   741→}
+   742→
+   743→export function fmtPct(v: number | null): string {
+   744→  if (v == null) return "—";
+   745→  const abs = (Math.abs(v) * 100).toFixed(1) + "%";
+   746→  return v < 0 ? `(${abs})` : abs;
+   747→}
+   748→
+   749→/**
+   750→ * Net amount for a side with sign convention.
+   751→ * @param isRevenue  true → credit-positive, false → debit-positive
+   752→ */
+   753→export function rowAmount(r: MatchedRow, side: "a1" | "a2", isRevenue: boolean): number | null {
+   754→  const a = r[side];
+   755→  if (!a) return null;
+   756→  return r2(isRevenue ? a.d - a.m : a.m - a.d);
+   757→}
+   758→
+   759→/* ──────────────────────────────────────────────────────────────────────────
+   760→ * Change analysis — desirability & percentage
+   761→ * ──────────────────────────────────────────────────────────────────────────
+   762→ *
+   763→ * For EXPENSE accounts (prefix 3, debit-positive):
+   764→ *   - Decrease (chg < 0) = savings = مرغوب  (desirable)
+   765→ *   - Increase (chg > 0) = overspend = غير مرغوب (undesirable)
+   766→ *
+   767→ * For REVENUE accounts (prefix 4, credit-positive):
+   768→ *   - Increase (chg > 0) = more income = مرغوب  (desirable)
+   769→ *   - Decrease (chg < 0) = lost income = غير مرغوب (undesirable)
+   770→ *
+   771→ * Change percentage = chg / base period (v1 = comparative/older period)
+   772→ */
+   773→
+   774→export type ChangeStatus =
+   775→  | "مرغوب نمو"
+   776→  | "غير مرغوب انخفاض"
+   777→  | "مرغوب وفرة"
+   778→  | "غير مرغوب زيادة"
+   779→  | "—";
+   780→
+   781→export function computeChangeStatus(
+   782→  chg: number | null,
+   783→  isRevenue: boolean
+   784→): ChangeStatus {
+   785→  if (chg == null || chg === 0) return "—";
+   786→  if (isRevenue) {
+   787→    // Revenue: increase = good (growth), decrease = bad (decline)
+   788→    return chg > 0 ? "مرغوب نمو" : "غير مرغوب انخفاض";
+   789→  }
+   790→  // Expense: decrease = good (savings), increase = bad (overspend)
+   791→  return chg < 0 ? "مرغوب وفرة" : "غير مرغوب زيادة";
+   792→}
+   793→
+   794→export function computeChangePct(
+   795→  chg: number | null,
+   796→  v1: number | null
+   797→): number | null {
+   798→  if (chg == null || v1 == null || v1 === 0) return null;
+   799→  return chg / v1;
+   800→}
+   801→
+   802→/* ──────────────────────────────────────────────────────────────────────────
+   803→ * Comparison modes
+   804→ * ──────────────────────────────────────────────────────────────────────────
+   805→ *
+   806→ * Mode 1 — "period": Current period vs Previous period (change analysis)
+   807→ * Mode 2 — "monthCumulative": Current month vs Year-to-date cumulative
+   808→ *          (month's contribution to the annual total)
+   809→ *
+   810→ * In mode 2, the key metric is monthRatio = month_value / cumulative_value.
+   811→ * A "normal" month should represent ~1/numMonths of the annual total.
+   812→ * Desirability:
+   813→ *   Revenue: month ratio > expected = مرغوب (strong month)
+   814→ *   Expense: month ratio > expected = غير مرغوب (high expense month)
+   815→ */
+   816→
+   817→export type CompareMode = "period" | "monthCumulative" | "chart";
+   818→
+   819→/** Month/cumulative ratio = month value (v2) / cumulative value (v1). */
+   820→export function computeMonthRatio(
+   821→  v2: number | null,
+   822→  v1: number | null
+   823→): number | null {
+   824→  if (v2 == null || v1 == null || v1 === 0) return null;
+   825→  return v2 / v1;
+   826→}
+   827→
+   828→/** Remaining = cumulative − month (what other months contributed). */
+   829→export function computeRemaining(
+   830→  v1: number | null,
+   831→  v2: number | null
+   832→): number | null {
+   833→  if (v1 == null || v2 == null) return null;
+   834→  return r2(v1 - v2);
+   835→}
+   836→
+   837→/** Average cumulative = cumulative value / number of months. */
+   838→export function computeAvgCumulative(
+   839→  v1: number | null,
+   840→  numMonths: number
+   841→): number | null {
+   842→  if (v1 == null || numMonths === 0) return null;
+   843→  return r2(v1 / numMonths);
+   844→}
+   845→
+   846→/**
+   847→ * Ratio of month value to the cumulative average.
+   848→ * month / (cumulative / numMonths) = month × numMonths / cumulative.
+   849→ * Values > 1 mean the month exceeds the average.
+   850→ */
+   851→export function computeMonthToAvgRatio(
+   852→  v2: number | null,
+   853→  avgCumulative: number | null
+   854→): number | null {
+   855→  if (v2 == null || avgCumulative == null || avgCumulative === 0) return null;
+   856→  return v2 / avgCumulative;
+   857→}
+   858→
+   859→/** Absolute difference: month value − average cumulative. */
+   860→export function computeMonthAvgDiff(
+   861→  v2: number | null,
+   862→  avgCumulative: number | null
+   863→): number | null {
+   864→  if (v2 == null || avgCumulative == null) return null;
+   865→  return r2(v2 - avgCumulative);
+   866→}
+   867→
+   868→/** Percentage difference from average: (month − avg) / avg. */
+   869→export function computeMonthAvgDiffPct(
+   870→  v2: number | null,
+   871→  avgCumulative: number | null
+   872→): number | null {
+   873→  if (v2 == null || avgCumulative == null || avgCumulative === 0) return null;
+   874→  return (v2 - avgCumulative) / avgCumulative;
+   875→}
+   876→
+   877→/**
+   878→ * Desirability of the month's concentration vs the expected average.
+   879→ * @param monthRatio  month/cumulative ratio (0..1)
+   880→ * @param isRevenue   true for revenue, false for expense
+   881→ * @param numMonths   number of months in the cumulative period (default 12)
+   882→ */
+   883→export function computeMonthStatus(
+   884→  monthRatio: number | null,
+   885→  isRevenue: boolean,
+   886→  numMonths = 12
+   887→): ChangeStatus {
+   888→  if (monthRatio == null || monthRatio === 0) return "—";
+   889→  const expected = 1 / numMonths;
+   890→  if (Math.abs(monthRatio - expected) < 0.005) return "—";
+   891→  if (isRevenue) {
+   892→    return monthRatio > expected ? "مرغوب نمو" : "غير مرغوب انخفاض";
+   893→  }
+   894→  return monthRatio > expected ? "غير مرغوب زيادة" : "مرغوب وفرة";
+   895→}
+   896→
+   897→/* ──────────────────────────────────────────────────────────────────────────
+   898→ * Excel export — full IFRS statement
+   899→ * ────────────────────────────────────────────────────────────────────────── */
+   900→
+   901→export interface ExportLabels { L1: string; L2: string; }
+   902→
+   903→export async function exportToExcel(
+   904→  cat: Categorized,
+   905→  T: Totals,
+   906→  labels: ExportLabels,
+   907→  baseRow: MatchedRow | null,
+   908→  netRow: MatchedRow | null,
+   909→  compareMode: CompareMode = "period",
+   910→  numMonths = 12,
+   911→  bs1: BalanceSheetTotals | null = null,
+   912→  bs2: BalanceSheetTotals | null = null
+   913→): void {
+   914→  const { L1, L2 } = labels;
+   915→  const wb = XLSX.utils.book_new();
+   916→  const b1 = T.rev1, b2 = T.rev2;
+   917→  const isMonthMode = compareMode === "monthCumulative";
+   918→  const numCols = isMonthMode ? 13 : 10;
+   919→
+   920→  // Column headers depend on mode
+   921→  const col2 = isMonthMode ? `${L2} (الشهر)` : `${L2} (الحالية)`;
+   922→  const col2pct = isMonthMode ? "نسبة الشهر من التراكمي" : `${L2} %`;
+   923→  const col1 = isMonthMode ? `${L1} (التراكمي)` : `${L1} (المقارنة)`;
+   924→  const col1pct = isMonthMode ? `${L1} % من الإيرادات` : `${L1} %`;
+   925→  // Month mode extra columns
+   926→  const colItemToSales = "نسبة البند لمبيعات الشهر";
+   927→  const colAvg = "المتوسط للتراكمي";
+   928→  const colMonthToAvg = "نسبة الشهر من المتوسط";
+   929→  const colAvgDiff = "فرق الشهر عن المتوسط";
+   930→  const colAvgDiffPct = "نسبة الفرق عن المتوسط";
+   931→  const col7 = isMonthMode ? colAvg : "التغير";
+   932→  const col8 = isMonthMode ? colMonthToAvg : "نسبة التغير %";
+   933→  const col9 = isMonthMode ? "حالة الشهر" : "حالة التغير";
+   934→
+   935→  const emptyRow: (string | number | null)[] = new Array(numCols).fill("");
+   936→  const titleRow: (string | number | null)[] = ["قائمة الربح أو الخسارة والدخل الشامل الآخر — وفق المعايير الدولية IFRS (IAS 1)", ...new Array(numCols - 1).fill("")];
+   937→  const subtitleRow: (string | number | null)[] = [`للفترة: ${L2} — مقارنة مع: ${L1}`, ...new Array(numCols - 1).fill("")];
+   938→  const headerRow: (string | number | null)[] = isMonthMode
+   939→    ? ["رقم", "البند", col2, col2pct, colItemToSales, col1, col1pct, colAvg, colMonthToAvg, colAvgDiff, colAvgDiffPct, col9, "الحالة"]
+   940→    : ["رقم", "البند", col2, col2pct, col1, col1pct, col7, col8, col9, "الحالة"];
+   941→
+   942→  type Cell = string | number | null;
+   943→  const aoa: Cell[][] = [titleRow, subtitleRow, headerRow];
+   944→  const boldRows: boolean[] = [true, true, true];
+   945→
+   946→  const addRow = (num: string, name: string, v1: number | null, v2: number | null, st: string, bold?: boolean, isRevenue?: boolean) => {
+   947→    const rev = isRevenue ?? false;
+   948→    let cs: ChangeStatus;
+   949→
+   950→    if (isMonthMode) {
+   951→      // 13 columns: num | name | v2 | monthRatio | itemToSales | v1 | v1% | avg | monthToAvg | avgDiff | avgDiffPct | status | st
+   952→      const monthRatio = computeMonthRatio(v2, v1);
+   953→      const itemToSales = b2 !== 0 && v2 != null ? v2 / b2 : null;
+   954→      const v1Pct = b1 !== 0 && v1 != null ? v1 / b1 : null;
+   955→      const avg = computeAvgCumulative(v1, numMonths);
+   956→      const monthToAvg = computeMonthToAvgRatio(v2, avg);
+   957→      const avgDiff = computeMonthAvgDiff(v2, avg);
+   958→      const avgDiffPct = computeMonthAvgDiffPct(v2, avg);
+   959→      cs = computeMonthStatus(monthRatio, rev, numMonths);
+   960→      aoa.push([num, name, v2, monthRatio, itemToSales, v1, v1Pct, avg, monthToAvg, avgDiff, avgDiffPct, cs, st || ""]);
+   961→    } else {
+   962→      // 10 columns (period mode)
+   963→      const chg = v1 != null && v2 != null ? r2(v2 - v1) : null;
+   964→      const cp = computeChangePct(chg, v1);
+   965→      cs = computeChangeStatus(chg, rev);
+   966→      aoa.push([num, name, v2, b2 !== 0 && v2 != null ? v2 / b2 : null, v1, b1 !== 0 && v1 != null ? v1 / b1 : null, chg, cp, cs, st || ""]);
+   967→    }
+   968→    boldRows.push(!!bold);
+   969→  };
+   970→  const addTot = (name: string, v1: number, v2: number, isRevenue: boolean) => addRow("", name, v1, v2, "", true, isRevenue);
+   971→  const addSec = (t: string) => { aoa.push(["", t, ...new Array(numCols - 2).fill("")]); boldRows.push(true); };
+   972→
+   973→  const blk = (rows: MatchedRow[], isRevenue: boolean) => {
+   974→    const info = leafInfo(rows);
+   975→    for (let i = 0; i < rows.length; i++) {
+   976→      const r = rows[i];
+   977→      const a = r.a1 ?? r.a2!;
+   978→      const v1 = r.a1 ? r2(isRevenue ? r.a1.d - r.a1.m : r.a1.m - r.a1.d) : null;
+   979→      const v2 = r.a2 ? r2(isRevenue ? r.a2.d - r.a2.m : r.a2.m - r.a2.d) : null;
+   980→      const isParent = (r.a1 && !info[i].leaf1) || (r.a2 && !info[i].leaf2);
+   981→      addRow(a.num ?? "", a.nm, v1, v2, r.st, isParent, isRevenue);
+   982→    }
+   983→  };
+   984→
+   985→  // Revenue
+   986→  addSec("الإيرادات — Revenue");
+   987→  blk(cat.sales, true);
+   988→  addTot("صافي الإيرادات (المبيعات − المردود)", T.rev1, T.rev2, true);
+   989→
+   990→  // Cost
+   991→  addSec("تكلفة الإيرادات — Cost of Sales");
+   992→  blk(cat.cost, false);
+   993→  addTot("صافي تكلفة الإيرادات", T.cost1, T.cost2, false);
+   994→
+   995→  // Gross profit
+   996→  addTot("مجمل الربح (الخسارة) — Gross Profit", T.gross1, T.gross2, true);
+   997→
+   998→  // Operating expenses (function of expense)
+   999→  addSec("مصاريف التشغيل — Operating Expenses");
+  1000→  addSec("مصاريف البيع والتوزيع"); blk(cat.sell, false); addTot("إجمالي البيع والتوزيع", T.sell1, T.sell2, false);
+  1001→  addSec("المصاريف الإدارية والعمومية"); blk(cat.adm, false); addTot("إجمالي الإدارية والعمومية", T.adm1, T.adm2, false);
+  1002→  addSec("مصاريف تشغيلية أخرى"); blk(cat.oth, false); addTot("إجمالي التشغيلية الأخرى", T.oth1, T.oth2, false);
+  1003→  addTot("إجمالي مصاريف التشغيل", T.opex1, T.opex2, false);
+  1004→  addTot("الربح (الخسارة) من العمليات التشغيلية", T.oper1, T.oper2, true);
+  1005→
+  1006→  // Other income
+  1007→  if (cat.othRev.length) {
+  1008→    addSec("الدخل من مصادر أخرى"); blk(cat.othRev, true); addTot("إجمالي الدخل من مصادر أخرى", T.othRev1, T.othRev2, true);
+  1009→  }
+  1010→
+  1011→  // Finance & tax
+  1012→  if (cat.fin.length) { addSec("تكاليف التمويل"); blk(cat.fin, false); addTot("إجمالي تكاليف التمويل", T.fin1, T.fin2, false); }
+  1013→  if (cat.fin.length || cat.tax.length) addTot("الربح (الخسارة) قبل الضريبة", T.pbt1, T.pbt2, true);
+  1014→  if (cat.tax.length) { addSec("ضريبة الدخل"); blk(cat.tax, false); addTot("إجمالي ضريبة الدخل", T.tax1, T.tax2, false); }
+  1015→
+  1016→  // Net profit
+  1017→  addTot("صافي الربح (الخسارة) للفترة — Net Profit", T.net1, T.net2, true);
+  1018→
+  1019→  // OCI
+  1020→  if (cat.oci.length) {
+  1021→    addSec("الدخل الشامل الآخر"); blk(cat.oci, true); addTot("إجمالي الدخل الشامل الآخر", T.oci1, T.oci2, true);
+  1022→    addTot("إجمالي الدخل الشامل للفترة", T.comp1, T.comp2, true);
+  1023→  }
+  1024→
+  1025→  // Reconciliation
+  1026→  if (netRow) {
+  1027→    const n1 = netRow.a1 ? r2(netRow.a1.d - netRow.a1.m) : null;
+  1028→    const n2 = netRow.a2 ? r2(netRow.a2.d - netRow.a2.m) : null;
+  1029→    const ok = (n1 != null && Math.abs(n1 - T.net1) < 0.05) && (n2 != null && Math.abs(n2 - T.net2) < 0.05);
+  1030→    addRow((netRow.a1?.num ?? netRow.a2?.num ?? "0") ?? "0", "التسوية: حساب صافي الدخل في دفتر الأستاذ", n1, n2, ok ? "مطابق ✓" : "⚠ فرق — راجع البادئات", true, true);
+  1031→  }
+  1032→
+  1033→  // Footer note
+  1034→  const footerText = isMonthMode
+  1035→    ? "عرض وفق IAS 1: الشهر مقابل التراكمي · نسبة الشهر من التراكمي = الشهر ÷ التراكمي · نسبة البند لمبيعات الشهر = الشهر ÷ صافي مبيعات الشهر · المتوسط = التراكمي ÷ " + numMonths + " · نسبة الشهر من المتوسط = الشهر ÷ المتوسط · فرق الشهر عن المتوسط = الشهر − المتوسط · نسبة الفرق عن المتوسط = (الشهر − المتوسط) ÷ المتوسط · حالة الشهر: مرغوب نمو / غير مرغوب انخفاض (إيرادات) · مرغوب وفرة / غير مرغوب زيادة (مصروفات) · الإجماليات من الأوراق فقط"
+  1036→    : "عرض وفق IAS 1: الفترة الحالية ثم المقارنة · الخصومات سالبة بين قوسين · النسب من صافي إيرادات كل فترة · الإجماليات من الأوراق فقط · حالة التغير: مرغوب نمو / غير مرغوب انخفاض (إيرادات) · مرغوب وفرة / غير مرغوب زيادة (مصروفات)";
+  1037→  aoa.push(["", footerText, ...new Array(numCols - 2).fill("")]);
+  1038→  boldRows.push(false);
+  1039→
+  1040→  // Style
+  1041→  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  1042→  const rg = XLSX.utils.decode_range(ws["!ref"]!);
+  1043→  const TOTAL_KEYWORDS = ["مجمل", "صافي الربح", "التشغيلية", "قبل الضريبة", "إجمالي مصاريف", "إجمالي الدخل الشامل", "صافي الإيرادات", "صافي تكلفة", "إجمالي "];
+  1044→  const lastCol = numCols - 1;
+  1045→  for (let R = 0; R <= rg.e.r; R++) {
+  1046→    for (let c = 0; c <= lastCol; c++) {
+  1047→      const ad = XLSX.utils.encode_cell({ r: R, c });
+  1048→      if (!ws[ad]) ws[ad] = { t: "s", v: "" };
+  1049→      const cl = ws[ad]!;
+  1050→      if (R <= 2) {
+  1051→        cl.s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { patternType: "solid", fgColor: { rgb: "1F4E79" } }, alignment: { horizontal: "center" } };
+  1052→        continue;
+  1053→      }
+  1054→      if (cl.t === "n") {
+  1055→        if (isMonthMode) {
+  1056→          // Month mode 13 cols: col2=v2(amt), col3=monthRatio(%), col4=itemToSales(%), col5=v1(amt), col6=v1%(%), col7=avg(amt), col8=monthToAvg(%), col9=avgDiff(amt), col10=avgDiffPct(%)
+  1057→          if (c === 2 || c === 5 || c === 7 || c === 9) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1058→          else if (c === 3 || c === 4 || c === 6 || c === 8 || c === 10) cl.z = '0.00%;(0.00%);"—"';
+  1059→        } else {
+  1060→          // Period mode: col2=v2(amt), col3=v2%(%), col4=v1(amt), col5=v1%(%), col6=chg(amt), col7=chgPct(%)
+  1061→          if (c === 2 || c === 4 || c === 6) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1062→          else if (c === 3 || c === 5 || c === 7) cl.z = '0.00%;(0.00%);"—"';
+  1063→        }
+  1064→      }
+  1065→      const label = aoa[R]?.[1] ? String(aoa[R][1]) : "";
+  1066→      const isTot = TOTAL_KEYWORDS.some((k) => label.indexOf(k) >= 0);
+  1067→      cl.s = { alignment: { vertical: "center" }, font: (isTot || boldRows[R]) ? { bold: true } : {} };
+  1068→      if (isTot && cl.t === "n" && c === 2 && typeof cl.v === "number") {
+  1069→        cl.s.fill = { patternType: "solid", fgColor: { rgb: cl.v >= 0 ? "E2EFDA" : "FDECEA" } };
+  1070→      }
+  1071→    }
+  1072→  }
+  1073→  ws["!merges"] = [
+  1074→    { s: { r: 0, c: 0 }, e: { r: 0, c: lastCol } },
+  1075→    { s: { r: 1, c: 0 }, e: { r: 1, c: lastCol } },
+  1076→  ];
+  1077→  const colWidths = isMonthMode
+  1078→    ? [12, 34, 13, 13, 13, 13, 11, 13, 13, 13, 13, 13, 13]
+  1079→    : [12, 44, 16, 13, 16, 13, 15, 12, 14, 14];
+  1080→  ws["!cols"] = colWidths.map((wch) => ({ wch }));
+  1081→  XLSX.utils.book_append_sheet(wb, ws, `IFRS ${L1} و ${L2}`.slice(0, 31));
+  1082→
+  1083→  // ── Charts data sheet ──
+  1084→  addChartsSheet(wb, cat, T, L1, L2);
+  1085→
+  1086→  // ── Formulas sheet ──
+  1087→  addFormulasSheet(wb, T, L1, L2);
+  1088→
+  1089→  // ── Financial analysis sheet (only if balance sheet data exists) ──
+  1090→  if (bs1 || bs2) {
+  1091→    const ratioGroups = computeRatios(T, bs1, bs2);
+  1092→    addFinancialAnalysisSheet(wb, ratioGroups, bs1, bs2, L1, L2);
+  1093→  }
+  1094→
+  1095→  wb.Workbook = { Views: [{ RTL: true }] };
+  1096→
+  1097→  // Write workbook to buffer, then inject native Excel charts as XML
+  1098→  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  1099→  const finalBuf = await injectExcelCharts(buf, wb.SheetNames, cat, T, L1, L2);
+  1100→  // Write to file (browser-compatible via Blob download)
+  1101→  if (typeof document !== "undefined") {
+  1102→    // Browser environment — trigger download
+  1103→    const blob = new Blob([finalBuf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  1104→    const url = URL.createObjectURL(blob);
+  1105→    const a = document.createElement("a");
+  1106→    a.href = url;
+  1107→    a.download = "قائمة_الربح_والخسارة_IFRS.xlsx";
+  1108→    a.click();
+  1109→    URL.revokeObjectURL(url);
+  1110→  }
+  1111→}
+  1112→
+  1113→/**
+  1114→ * Inject native Excel charts into an xlsx buffer using JSZip.
+  1115→ * Adds a bar chart for key metrics comparison and a pie chart for expense breakdown
+  1116→ * to the charts sheet.
+  1117→ */
+  1118→async function injectExcelCharts(
+  1119→  buf: ArrayBuffer | Buffer,
+  1120→  sheetNames: string[],
+  1121→  cat: Categorized,
+  1122→  T: Totals,
+  1123→  L1: string,
+  1124→  L2: string
+  1125→): Promise<Uint8Array> {
+  1126→  const zip = await JSZip.loadAsync(buf);
+  1127→
+  1128→  // Find the charts sheet (it's the one named "الرسومات البيانية" or similar)
+  1129→  const chartsSheetName = sheetNames.find((n) => n.includes("الرسومات") || n.includes("charts") || n.includes("بيان"));
+  1130→  if (!chartsSheetName) return new Uint8Array(buf);
+  1131→
+  1132→  // Determine the sheet's XML file path
+  1133→  const chartsSheetIdx = sheetNames.indexOf(chartsSheetName);
+  1134→  const sheetFile = `xl/worksheets/sheet${chartsSheetIdx + 1}.xml`;
+  1135→
+  1136→  // Data layout in the charts sheet:
+  1137→  // Row 0: Title
+  1138→  // Row 1: (empty)
+  1139→  // Row 2: Headers: البند | L2 (الحالية) | L1 (المقارنة) | التغير
+  1140→  // Rows 3-15: metric data (13 rows)
+  1141→  // Row 16: empty
+  1142→  // Row 17: "توزيع المصروفات" title
+  1143→  // Row 18: headers
+  1144→  // Rows 19-24: expense breakdown (6 rows)
+  1145→
+  1146→  const numMetrics = 13 + (T.comp2 !== T.net2 ? 1 : 0);
+  1147→  const dataStartRow = 3; // 1-based in XML
+  1148→  const dataEndRow = dataStartRow + numMetrics - 1;
+  1149→
+  1150→  const expStartRow = dataEndRow + 4;
+  1151→  const expEndRow = expStartRow + 5;
+  1152→
+  1153→  // ── Chart 1: Bar chart for key metrics ──
+  1154→  const chart1Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  1155→<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  1156→<c:chart>
+  1157→<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1400" b="1"/><a:rPr lang="ar-SA" altLang="en-US"/></a:pPr><a:r><a:rPr lang="ar-SA" altLang="en-US"/><a:t>مقارنة المؤشرات الرئيسية</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
+  1158→<c:autoTitleDeleted val="0"/>
+  1159→<c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>
+  1160→<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>الرسومات!$B$3</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${L2} (الحالية)</c:v></c:pt></c:strCache></c:strRef></c:tx>
+  1161→<c:cat><c:strRef><c:f>الرسومات!$A$${dataStartRow}:$A$${dataEndRow}</c:f><c:strCache><c:ptCount val="${numMetrics}"/>${Array.from({ length: numMetrics }, (_, i) => `<c:pt idx="${i}"><c:v>${["الإيرادات","تكلفة الإيرادات","مجمل الربح","مصاريف البيع","المصاريف الإدارية","تشغيلية أخرى","مصاريف التشغيل","الربح التشغيلي","دخل آخر","تكاليف التمويل","الربح قبل الضريبة","ضريبة الدخل","صافي الربح"].slice(0, numMetrics)[i]}</c:v></c:pt>`).join("")}</c:strCache></c:strRef></c:cat>
+  1162→<c:val><c:numRef><c:f>الرسومات!$B$${dataStartRow}:$B$${dataEndRow}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${numMetrics}"/>${Array.from({ length: numMetrics }, (_, i) => `<c:pt idx="${i}"><c:v>${[T.rev2,T.cost2,T.gross2,T.sell2,T.adm2,T.oth2,T.opex2,T.oper2,T.othRev2,T.fin2,T.pbt2,T.tax2,T.net2].slice(0, numMetrics)[i]}</c:v></c:pt>`).join("")}</c:numCache></c:numRef></c:val>
+  1163→<c:spPr><a:solidFill><a:srgbClr val="0D9488"/></a:solidFill></c:spPr>
+  1164→</c:ser>
+  1165→<c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:strRef><c:f>الرسومات!$C$3</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${L1} (المقارنة)</c:v></c:pt></c:strCache></c:strRef></c:tx>
+  1166→<c:cat><c:strRef><c:f>الرسومات!$A$${dataStartRow}:$A$${dataEndRow}</c:f></c:strRef></c:cat>
+  1167→<c:val><c:numRef><c:f>الرسومات!$C$${dataStartRow}:$C$${dataEndRow}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${numMetrics}"/>${Array.from({ length: numMetrics }, (_, i) => `<c:pt idx="${i}"><c:v>${[T.rev1,T.cost1,T.gross1,T.sell1,T.adm1,T.oth1,T.opex1,T.oper1,T.othRev1,T.fin1,T.pbt1,T.tax1,T.net1].slice(0, numMetrics)[i]}</c:v></c:pt>`).join("")}</c:numCache></c:numRef></c:val>
+  1168→<c:spPr><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></c:spPr>
+  1169→</c:ser>
+  1170→<c:axId val="111111"/><c:axId val="222222"/>
+  1171→</c:barChart>
+  1172→<c:catAx><c:axId val="111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="222222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>
+  1173→<c:valAx><c:axId val="222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="111111"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>
+  1174→</c:plotArea>
+  1175→<c:plotVisOnly val="1"/>
+  1176→<c:dispBlanksAs val="gap"/>
+  1177→</c:chart>
+  1178→</c:chartSpace>`;
+  1179→
+  1180→  // ── Chart 2: Pie chart for expense breakdown ──
+  1181→  const chart2Xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  1182→<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  1183→<c:chart>
+  1184→<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1400" b="1"/><a:rPr lang="ar-SA" altLang="en-US"/></a:pPr><a:r><a:rPr lang="ar-SA" altLang="en-US"/><a:t>توزيع المصروفات</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
+  1185→<c:autoTitleDeleted val="0"/>
+  1186→<c:plotArea><c:layout/><c:pieChart><c:varyColors val="1"/>
+  1187→<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>الرسومات!$B$${expStartRow - 1}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>المصروفات</c:v></c:pt></c:strCache></c:strRef></c:tx>
+  1188→<c:cat><c:strRef><c:f>الرسومات!$A$${expStartRow}:$A$${expEndRow}</c:f><c:strCache><c:ptCount val="6"/><c:pt idx="0"><c:v>تكلفة الإيرادات</c:v></c:pt><c:pt idx="1"><c:v>البيع والتوزيع</c:v></c:pt><c:pt idx="2"><c:v>الإدارية والعمومية</c:v></c:pt><c:pt idx="3"><c:v>تشغيلية أخرى</c:v></c:pt><c:pt idx="4"><c:v>تكاليف التمويل</c:v></c:pt><c:pt idx="5"><c:v>ضريبة الدخل</c:v></c:pt></c:strCache></c:strRef></c:cat>
+  1189→<c:val><c:numRef><c:f>الرسومات!$B$${expStartRow}:$B$${expEndRow}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="6"/><c:pt idx="0"><c:v>${T.cost2}</c:v></c:pt><c:pt idx="1"><c:v>${T.sell2}</c:v></c:pt><c:pt idx="2"><c:v>${T.adm2}</c:v></c:pt><c:pt idx="3"><c:v>${T.oth2}</c:v></c:pt><c:pt idx="4"><c:v>${T.fin2}</c:v></c:pt><c:pt idx="5"><c:v>${T.tax2}</c:v></c:pt></c:numCache></c:numRef></c:val>
+  1190→</c:ser>
+  1191→<c:axId val="333333"/>
+  1192→</c:pieChart>
+  1193→</c:plotArea>
+  1194→<c:plotVisOnly val="1"/>
+  1195→<c:dispBlanksAs val="gap"/>
+  1196→<c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend>
+  1197→</c:chart>
+  1198→</c:chartSpace>`;
+  1199→
+  1200→  // ── Drawing XML that references both charts ──
+  1201→  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  1202→<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  1203→<xdr:twoCellAnchor>
+  1204→<xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+  1205→<xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>30</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+  1206→<xdr:graphicFrame macro="">
+  1207→<xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>
+  1208→<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>
+  1209→<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></a:graphicData></a:graphic>
+  1210→</xdr:graphicFrame>
+  1211→<xdr:clientData/>
+  1212→</xdr:twoCellAnchor>
+  1213→<xdr:twoCellAnchor>
+  1214→<xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>31</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+  1215→<xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>55</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+  1216→<xdr:graphicFrame macro="">
+  1217→<xdr:nvGraphicFramePr><xdr:cNvPr id="3" name="Chart 2"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>
+  1218→<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>
+  1219→<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId2"/></a:graphicData></a:graphic>
+  1220→</xdr:graphicFrame>
+  1221→<xdr:clientData/>
+  1222→</xdr:twoCellAnchor>
+  1223→</xdr:wsDr>`;
+  1224→
+  1225→  // ── Drawing rels ──
+  1226→  const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  1227→<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  1228→<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+  1229→<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart2.xml"/>
+  1230→</Relationships>`;
+  1231→
+  1232→  // ── Sheet rels (link drawing to sheet) ──
+  1233→  const sheetRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  1234→<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  1235→<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+  1236→</Relationships>`;
+  1237→
+  1238→  // ── Add drawing ref to the sheet XML ──
+  1239→  // Per OOXML schema, <drawing> must come AFTER <mergeCells> and <ignoredErrors>,
+  1240→  // but BEFORE </worksheet>. We insert it right before </worksheet>.
+  1241→  const sheetXml = await zip.file(sheetFile)?.async("string");
+  1242→  if (sheetXml) {
+  1243→    const drawingRef = '<drawing r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>';
+  1244→    // Remove any existing drawing element (avoid duplicates on re-export)
+  1245→    const cleaned = sheetXml.replace(/<drawing[^>]*\/>/g, "");
+  1246→    // Insert right before </worksheet>
+  1247→    const newSheetXml = cleaned.replace("</worksheet>", drawingRef + "</worksheet>");
+  1248→    zip.file(sheetFile, newSheetXml);
+  1249→  }
+  1250→
+  1251→  // ── Add chart files, drawing files, and rels ──
+  1252→  zip.file("xl/charts/chart1.xml", chart1Xml);
+  1253→  zip.file("xl/charts/chart2.xml", chart2Xml);
+  1254→  zip.file("xl/drawings/drawing1.xml", drawingXml);
+  1255→  zip.file("xl/drawings/_rels/drawing1.xml.rels", drawingRels);
+  1256→  zip.file(`xl/worksheets/_rels/sheet${chartsSheetIdx + 1}.xml.rels`, sheetRels);
+  1257→
+  1258→  // ── Update [Content_Types].xml to register new files ──
+  1259→  const contentTypes = await zip.file("[Content_Types].xml")?.async("string");
+  1260→  if (contentTypes) {
+  1261→    const newTypes = contentTypes.replace("</Types>",
+  1262→      '<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.chart+xml"/>' +
+  1263→      '<Override PartName="/xl/charts/chart2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.chart+xml"/>' +
+  1264→      '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.drawing+xml"/>' +
+  1265→      "</Types>");
+  1266→    zip.file("[Content_Types].xml", newTypes);
+  1267→  }
+  1268→
+  1269→  // ── Generate the zip ──
+  1270→  // JSZip automatically creates directory entries (e.g. "xl/charts/") for any
+  1271→  // nested file path. These entries are valid per the ZIP spec, but some
+  1272→  // Excel versions reject them. We generate the final zip and then use
+  1273→  // the `fflate` library to re-compress without directory entries.
+  1274→  const rawBuf = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  1275→
+  1276→  // Use fflate to re-zip without directory entries
+  1277→  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  1278→  const fflate = require("fflate");
+  1279→  const rawFiles = fflate.unzipSync(rawBuf);
+  1280→  const cleanFiles: Record<string, Uint8Array> = {};
+  1281→  for (const [path, data] of Object.entries(rawFiles)) {
+  1282→    // Skip directory entries (they end with / and have 0 length)
+  1283→    if (!path.endsWith("/") && data.length > 0) {
+  1284→      cleanFiles[path] = data;
+  1285→    }
+  1286→  }
+  1287→  return fflate.zipSync(cleanFiles, { level: 6 });
+  1288→}
+  1289→
+  1290→/** Add a formulas sheet showing all calculation formulas used in the app. */
+  1291→export function addFormulasSheet(
+  1292→  wb: XLSX.WorkBook,
+  1293→  T: Totals,
+  1294→  L1: string,
+  1295→  L2: string
+  1296→): void {
+  1297→  const aoa: (string | string | number | null)[][] = [
+  1298→    ["الدوال والمعادلات المستخدمة في الاحتساب", "", "", "", ""],
+  1299→    ["", "", "", "", ""],
+  1300→    ["البند", "المعادلة", "المعادلة الإنجليزية", L2 + " (الحالية)", L1 + " (المقارنة)"],
+  1301→    ["", "", "", "", ""],
+  1302→    ["■ قائمة الدخل — Income Statement Formulas", "", "", "", ""],
+  1303→    ["صافي الإيرادات", "رصيد حساب صافي المبيعات (دائن − مدين)", "Net Sales = Credit − Debit", T.rev2, T.rev1],
+  1304→    ["صافي تكلفة الإيرادات", "مجموع الأوراق ضمن بادئة التكلفة (مدين − دائن)", "Net COGS = Σ Leaves (Debit − Credit)", T.cost2, T.cost1],
+  1305→    ["مجمل الربح", "صافي الإيرادات − صافي تكلفة الإيرادات", "Gross Profit = Revenue − COGS", T.gross2, T.gross1],
+  1306→    ["مصاريف البيع والتوزيع", "مجموع الأوراق ضمن بادئة البيع (مدين − دائن)", "Selling = Σ Leaves (D−C)", T.sell2, T.sell1],
+  1307→    ["المصاريف الإدارية والعمومية", "مجموع الأوراق ضمن بادئة الإدارية (مدين − دائن)", "Admin = Σ Leaves (D−C)", T.adm2, T.adm1],
+  1308→    ["مصاريف تشغيلية أخرى", "مجموع الأوراق ضمن بادئة تشغيلية أخرى (مدين − دائن)", "Other Op = Σ Leaves (D−C)", T.oth2, T.oth1],
+  1309→    ["إجمالي مصاريف التشغيل", "البيع + الإدارية + تشغيلية أخرى", "Total Opex = Selling + Admin + Other", T.opex2, T.opex1],
+  1310→    ["الربح التشغيلي", "مجمل الربح − إجمالي مصاريف التشغيل", "Operating Profit = Gross − Opex", T.oper2, T.oper1],
+  1311→    ["الدخل من مصادر أخرى", "مجموع الأوراق غير المصنفة (دائن − مدين)", "Other Income = Σ Leaves (C−D)", T.othRev2, T.othRev1],
+  1312→    ["تكاليف التمويل", "مجموع الأوراق ضمن بادئة التمويل (مدين − دائن)", "Finance Costs = Σ Leaves (D−C)", T.fin2, T.fin1],
+  1313→    ["الربح قبل الضريبة", "الربح التشغيلي + الدخل من مصادر أخرى − تكاليف التمويل", "PBT = Op Profit + Other Inc − Finance", T.pbt2, T.pbt1],
+  1314→    ["ضريبة الدخل", "مجموع الأوراق ضمن بادئة الضريبة (مدين − دائن)", "Tax = Σ Leaves (D−C)", T.tax2, T.tax1],
+  1315→    ["صافي الربح", "الربح قبل الضريبة − ضريبة الدخل", "Net Profit = PBT − Tax", T.net2, T.net1],
+  1316→    ["إجمالي الدخل الشامل", "صافي الربح + الدخل الشامل الآخر", "Total Comp Income = Net + OCI", T.comp2, T.comp1],
+  1317→    ["", "", "", "", ""],
+  1318→    ["■ النسب والمؤشرات المالية — Financial Ratios Formulas", "", "", "", ""],
+  1319→    ["نسبة التداول", "الأصول المتداولة ÷ الخصوم المتداولة", "Current Ratio = CA / CL", null, null],
+  1320→    ["النسبة السريعة", "(الأصول المتداولة − المخزون) ÷ الخصوم المتداولة", "Quick Ratio = (CA−Inv) / CL", null, null],
+  1321→    ["نسبة النقدية", "النقدية ÷ الخصوم المتداولة", "Cash Ratio = Cash / CL", null, null],
+  1322→    ["رأس المال العامل", "الأصول المتداولة − الخصوم المتداولة", "Working Capital = CA − CL", null, null],
+  1323→    ["نسبة المديونية", "إجمالي الخصوم ÷ إجمالي الأصول", "Debt Ratio = TL / TA", null, null],
+  1324→    ["الدين إلى حقوق الملكية", "إجمالي الخصوم ÷ حقوق الملكية", "Debt-to-Equity = TL / Equity", null, null],
+  1325→    ["نسبة حقوق الملكية", "حقوق الملكية ÷ إجمالي الأصول", "Equity Ratio = Equity / TA", null, null],
+  1326→    ["نسبة القروض للأصول", "إجمالي القروض ÷ إجمالي الأصول", "Debt-to-Assets = Total Debt / TA", null, null],
+  1327→    ["تغطية الفوائد", "الربح التشغيلي ÷ تكاليف التمويل", "Interest Coverage = Op Profit / Finance", null, null],
+  1328→    ["هامش مجمل الربح", "مجمل الربح ÷ الإيرادات", "Gross Margin = GP / Revenue", null, null],
+  1329→    ["هامش الربح التشغيلي", "الربح التشغيلي ÷ الإيرادات", "Operating Margin = OP / Revenue", null, null],
+  1330→    ["هامش صافي الربح", "صافي الربح ÷ الإيرادات", "Net Margin = NP / Revenue", null, null],
+  1331→    ["العائد على الأصول (ROA)", "صافي الربح ÷ إجمالي الأصول", "ROA = NP / TA", null, null],
+  1332→    ["العائد على حقوق الملكية (ROE)", "صافي الربح ÷ حقوق الملكية", "ROE = NP / Equity", null, null],
+  1333→    ["معدل دوران الأصول", "الإيرادات ÷ إجمالي الأصول", "Asset Turnover = Rev / TA", null, null],
+  1334→    ["معدل دوران الأصول الثابتة", "الإيرادات ÷ الأصول الثابتة", "Fixed Asset Turnover = Rev / FA", null, null],
+  1335→    ["معدل دوران المخزون", "تكلفة الإيرادات ÷ المخزون", "Inventory Turnover = COGS / Inv", null, null],
+  1336→    ["معدل دوران المدينين", "الإيرادات ÷ المدينون", "Receivables Turnover = Rev / AR", null, null],
+  1337→    ["معدل دوران الدائنين", "تكلفة الإيرادات ÷ الدائنون", "Payables Turnover = COGS / AP", null, null],
+  1338→    ["معدل دوران رأس المال العامل", "الإيرادات ÷ رأس المال العامل", "WC Turnover = Rev / WC", null, null],
+  1339→    ["", "", "", "", ""],
+  1340→    ["■ قواعد الكشف والتصنيف — Detection & Classification Rules", "", "", "", ""],
+  1341→    ["الحسابات الأوراق (Leaf)", "حساب بلا أبناء (أطول رقم يبدأ به)", "Account with no children", null, null],
+  1342→    ["الحسابات الرئيسية", "تُعرض عريضة ولا تُجمع في الإجماليات", "Parent accounts: shown bold, excluded from totals", null, null],
+  1343→    ["الإيرادات", "مدين − دائن (سالب للمردودات)", "Revenue = Credit − Debit (negative for returns)", null, null],
+  1344→    ["المصروفات", "مدين − دائن", "Expenses = Debit − Credit", null, null],
+  1345→    ["الخصوم وحقوق الملكية", "دائن − مدين", "Liabilities/Equity = Credit − Debit", null, null],
+  1346→    ["نسبة الشهر من التراكمي", "قيمة الشهر ÷ القيمة التراكمية", "Month Ratio = Month / Cumulative", null, null],
+  1347→    ["المتوسط للتراكمي", "التراكمي ÷ عدد الأشهر", "Average = Cumulative / Num Months", null, null],
+  1348→    ["نسبة الشهر من المتوسط", "الشهر ÷ المتوسط", "Month/Avg = Month / Average", null, null],
+  1349→    ["فرق الشهر عن المتوسط", "الشهر − المتوسط", "Diff = Month − Average", null, null],
+  1350→    ["نسبة الفرق عن المتوسط", "(الشهر − المتوسط) ÷ المتوسط", "Diff% = (Month − Avg) / Avg", null, null],
+  1351→    ["حالة التغير (مرغوب نمو)", "الإيراد: زيادة", "Desirable (Growth): Revenue↑", null, null],
+  1352→    ["حالة التغير (غير مرغوب انخفاض)", "الإيراد: نقصان", "Undesirable (Decline): Revenue↓", null, null],
+  1353→    ["حالة التغير (مرغوب وفرة)", "المصروف: نقصان", "Desirable (Savings): Expense↓", null, null],
+  1354→    ["حالة التغير (غير مرغوب زيادة)", "المصروف: زيادة", "Undesirable (Overspend): Expense↑", null, null],
+  1355→  ];
+  1356→
+  1357→  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  1358→  const rg = XLSX.utils.decode_range(ws["!ref"]!);
+  1359→  for (let R = 0; R <= rg.e.r; R++) {
+  1360→    for (let c = 0; c <= 4; c++) {
+  1361→      const ad = XLSX.utils.encode_cell({ r: R, c });
+  1362→      if (!ws[ad]) ws[ad] = { t: "s", v: "" };
+  1363→      const cl = ws[ad]!;
+  1364→      const label = aoa[R]?.[0] ? String(aoa[R][0]) : "";
+  1365→      if (R <= 3 || label.startsWith("■")) {
+  1366→        cl.s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { patternType: "solid", fgColor: { rgb: "1F4E79" } } };
+  1367→        continue;
+  1368→      }
+  1369→      if (cl.t === "n") {
+  1370→        if (c === 3 || c === 4) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1371→      }
+  1372→      cl.s = { alignment: { vertical: "center", wrapText: c === 1 || c === 2 }, font: {} };
+  1373→    }
+  1374→  }
+  1375→  ws["!merges"] = [
+  1376→    { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
+  1377→    { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } },
+  1378→  ];
+  1379→  ws["!cols"] = [30, 42, 38, 16, 16].map((wch) => ({ wch }));
+  1380→  XLSX.utils.book_append_sheet(wb, ws, "الدوال والمعادلات".slice(0, 31));
+  1381→}
+  1382→
+  1383→/* ════════════════════════════════════════════════════════════════════════════
+  1384→ * Balance Sheet (قائمة المركز المالي) — parsing, categorization & ratios
+  1385→ * ═══════════════════════════════════════════════════════════════════════════─ */
+  1386→
+  1387→export interface BalanceSheetSettings {
+  1388→  currentAssetsPrefix: string;    // الأصول المتداولة (e.g. "11")
+  1389→  nonCurrentAssetsPrefix: string; // الأصول غير المتداولة (e.g. "12")
+  1390→  currentLiabPrefix: string;      // الخصوم المتداولة (e.g. "21")
+  1391→  nonCurrentLiabPrefix: string;   // الخصوم غير المتداولة (e.g. "22")
+  1392→  equityPrefix: string;           // حقوق الملكية (e.g. "3")
+  1393→  // ── Detailed item prefixes (optional — fallback to keyword detection if empty) ──
+  1394→  inventoryPrefix: string;        // المخزون (e.g. "1105")
+  1395→  cashPrefix: string;             // النقدية وما يعادلها (e.g. "1101")
+  1396→  receivablesPrefix: string;      // المدينون / العملاء (e.g. "1103")
+  1397→  fixedAssetsPrefix: string;      // الأصول الثابتة (e.g. "1201")
+  1398→  payablesPrefix: string;         // الدائنون / الموردون (e.g. "2101")
+  1399→  shortTermDebtPrefix: string;    // قروض قصيرة الأجل (e.g. "2102")
+  1400→  longTermDebtPrefix: string;     // قروض طويلة الأجل (e.g. "2201")
+  1401→}
+  1402→
+  1403→export interface BalanceSheetTotals {
+  1404→  currentAssets: number;
+  1405→  nonCurrentAssets: number;
+  1406→  totalAssets: number;
+  1407→  currentLiabilities: number;
+  1408→  nonCurrentLiabilities: number;
+  1409→  totalLiabilities: number;
+  1410→  equity: number;
+  1411→  // Detailed items (used in ratio calculations)
+  1412→  inventory: number;
+  1413→  cash: number;
+  1414→  receivables: number;
+  1415→  fixedAssets: number;
+  1416→  payables: number;
+  1417→  shortTermDebt: number;
+  1418→  longTermDebt: number;
+  1419→  totalDebt: number;        // short-term + long-term debt
+  1420→}
+  1421→
+  1422→export interface BalanceSheetData {
+  1423→  /** All accounts from the balance sheet file. */
+  1424→  A: AccountRow[];
+  1425→  /** Totals computed from leaf accounts by category. */
+  1426→  totals: BalanceSheetTotals;
+  1427→}
+  1428→
+  1429→/** Keywords for detecting specific balance-sheet items by normalized name (fallback when prefix is empty). */
+  1430→const INVENTORY_KEYWORDS = ["مخزون", "بضاعه", "بضاعة"];
+  1431→const CASH_KEYWORDS = ["نقديه", "نقدية", "صندوق", "بنك", "بنوك", "جاري بنك"];
+  1432→const RECEIVABLES_KEYWORDS = ["مدينون", "ذمم مدين", "عملاء", "اوراق قبض", "أوراق قبض"];
+  1433→const FIXED_ASSETS_KEYWORDS = ["اصول ثابته", "أصول ثابتة", "اثاث", "أثاث", "معدات", "سيارات", "مباني", "مبانى", "اراضي", "أراضي", "اجهزه", "أجهزة"];
+  1434→const PAYABLES_KEYWORDS = ["دائنون", "ذمم دائن", "موردون", "موردين"];
+  1435→const SHORT_TERM_DEBT_KEYWORDS = ["اوراق دفع", "أوراق دفع", "سحب على المكشوف", "تسهيلات بنكيه", "قروض قصيره", "قروض قصيرة"];
+  1436→const LONG_TERM_DEBT_KEYWORDS = ["قروض طويله", "قروض طويلة", "سندات", "قروض حسنه"];
+  1437→
+  1438→function hasKeyword(n: string, keywords: string[]): boolean {
+  1439→  return keywords.some((k) => n.indexOf(k) >= 0);
+  1440→}
+  1441→
+  1442→/** Check if an account number matches a prefix (empty prefix = no match). */
+  1443→function matchesPrefix(num: string, prefix: string): boolean {
+  1444→  return !!prefix && num.indexOf(prefix) === 0;
+  1445→}
+  1446→
+  1447→/**
+  1448→ * Parse a balance-sheet file and compute category totals.
+  1449→ * Uses the same parsing as income-statement files (readExcelFile).
+  1450→ * The `totals` are computed from LEAF accounts only (same logic as income statement).
+  1451→ *
+  1452→ * Detailed items (inventory, cash, etc.) are detected by PREFIX first;
+  1453→ * if the prefix is empty, falls back to keyword-based name detection.
+  1454→ */
+  1455→export function categorizeBalanceSheet(
+  1456→  file: FileData,
+  1457→  settings: BalanceSheetSettings
+  1458→): BalanceSheetTotals {
+  1459→  const {
+  1460→    currentAssetsPrefix, nonCurrentAssetsPrefix, currentLiabPrefix, nonCurrentLiabPrefix, equityPrefix,
+  1461→    inventoryPrefix, cashPrefix, receivablesPrefix, fixedAssetsPrefix,
+  1462→    payablesPrefix, shortTermDebtPrefix, longTermDebtPrefix,
+  1463→  } = settings;
+  1464→
+  1465→  // Mark leaves
+  1466→  const nums = file.A.map((a) => a.num).filter(Boolean) as string[];
+  1467→  for (const a of file.A) {
+  1468→    if (!a.num) { (a as any).leaf = true; continue; }
+  1469→    (a as any).leaf = true;
+  1470→    for (const n of nums) {
+  1471→      if (n !== a.num && n.length > a.num.length && n.indexOf(a.num) === 0) {
+  1472→        (a as any).leaf = false;
+  1473→        break;
+  1474→      }
+  1475→    }
+  1476→  }
+  1477→
+  1478→  let currentAssets = 0, nonCurrentAssets = 0;
+  1479→  let currentLiabilities = 0, nonCurrentLiabilities = 0;
+  1480→  let equity = 0;
+  1481→  let inventory = 0, cash = 0, receivables = 0;
+  1482→  let fixedAssets = 0, payables = 0, shortTermDebt = 0, longTermDebt = 0;
+  1483→
+  1484→  for (const a of file.A) {
+  1485→    if (!(a as any).leaf) continue;
+  1486→    const num = a.num ?? "";
+  1487→    const n = normalizeName(a.nm);
+  1488→    const debitBal = a.m - a.d;   // asset = debit − credit
+  1489→    const creditBal = a.d - a.m;  // liability/equity = credit − debit
+  1490→
+  1491→    // ── Detailed item detection: prefix first, then keyword fallback ──
+  1492→    // Inventory
+  1493→    if (matchesPrefix(num, inventoryPrefix) || (!inventoryPrefix && hasKeyword(n, INVENTORY_KEYWORDS))) {
+  1494→      inventory += debitBal;
+  1495→    }
+  1496→    // Cash & equivalents
+  1497→    if (matchesPrefix(num, cashPrefix) || (!cashPrefix && hasKeyword(n, CASH_KEYWORDS))) {
+  1498→      cash += debitBal;
+  1499→    }
+  1500→    // Receivables
+  1501→    if (matchesPrefix(num, receivablesPrefix) || (!receivablesPrefix && hasKeyword(n, RECEIVABLES_KEYWORDS))) {
+  1502→      receivables += debitBal;
+  1503→    }
+  1504→    // Fixed assets
+  1505→    if (matchesPrefix(num, fixedAssetsPrefix) || (!fixedAssetsPrefix && hasKeyword(n, FIXED_ASSETS_KEYWORDS))) {
+  1506→      fixedAssets += debitBal;
+  1507→    }
+  1508→    // Payables
+  1509→    if (matchesPrefix(num, payablesPrefix) || (!payablesPrefix && hasKeyword(n, PAYABLES_KEYWORDS))) {
+  1510→      payables += creditBal;
+  1511→    }
+  1512→    // Short-term debt
+  1513→    if (matchesPrefix(num, shortTermDebtPrefix) || (!shortTermDebtPrefix && hasKeyword(n, SHORT_TERM_DEBT_KEYWORDS))) {
+  1514→      shortTermDebt += creditBal;
+  1515→    }
+  1516→    // Long-term debt
+  1517→    if (matchesPrefix(num, longTermDebtPrefix) || (!longTermDebtPrefix && hasKeyword(n, LONG_TERM_DEBT_KEYWORDS))) {
+  1518→      longTermDebt += creditBal;
+  1519→    }
+  1520→
+  1521→    // ── Main category detection by prefix ──
+  1522→    if (matchesPrefix(num, currentAssetsPrefix)) {
+  1523→      currentAssets += debitBal;
+  1524→    } else if (matchesPrefix(num, nonCurrentAssetsPrefix)) {
+  1525→      nonCurrentAssets += debitBal;
+  1526→    } else if (matchesPrefix(num, currentLiabPrefix)) {
+  1527→      currentLiabilities += creditBal;
+  1528→    } else if (matchesPrefix(num, nonCurrentLiabPrefix)) {
+  1529→      nonCurrentLiabilities += creditBal;
+  1530→    } else if (matchesPrefix(num, equityPrefix)) {
+  1531→      equity += creditBal;
+  1532→    } else if (num.indexOf("1") === 0) {
+  1533→      currentAssets += debitBal;
+  1534→    } else if (num.indexOf("2") === 0) {
+  1535→      currentLiabilities += creditBal;
+  1536→    } else if (num.indexOf("3") === 0) {
+  1537→      equity += creditBal;
+  1538→    }
+  1539→  }
+  1540→
+  1541→  const totalAssets = r2(currentAssets + nonCurrentAssets);
+  1542→  const totalLiabilities = r2(currentLiabilities + nonCurrentLiabilities);
+  1543→  const totalDebt = r2(shortTermDebt + longTermDebt);
+  1544→
+  1545→  return {
+  1546→    currentAssets: r2(currentAssets),
+  1547→    nonCurrentAssets: r2(nonCurrentAssets),
+  1548→    totalAssets,
+  1549→    currentLiabilities: r2(currentLiabilities),
+  1550→    nonCurrentLiabilities: r2(nonCurrentLiabilities),
+  1551→    totalLiabilities,
+  1552→    equity: r2(equity),
+  1553→    inventory: r2(inventory),
+  1554→    cash: r2(cash),
+  1555→    receivables: r2(receivables),
+  1556→    fixedAssets: r2(fixedAssets),
+  1557→    payables: r2(payables),
+  1558→    shortTermDebt: r2(shortTermDebt),
+  1559→    longTermDebt: r2(longTermDebt),
+  1560→    totalDebt,
+  1561→  };
+  1562→}
+  1563→
+  1564→/* ═══════════════════════════════════════════════════════════════════════════─
+  1565→ * Financial Ratios (تحليل النسب والمؤشرات المالية)
+  1566→ * ═══════════════════════════════════════════════════════════════════════════─ */
+  1567→
+  1568→export interface FinancialRatios {
+  1569→  // Liquidity ratios (نسب السيولة)
+  1570→  currentRatio: number | null;       // Current Assets / Current Liabilities
+  1571→  quickRatio: number | null;        // (Current Assets - Inventory) / Current Liabilities
+  1572→  cashRatio: number | null;          // Cash / Current Liabilities
+  1573→  workingCapital: number | null;     // Current Assets - Current Liabilities
+  1574→
+  1575→  // Leverage ratios (نسب المديونية والرفع المالي)
+  1576→  debtRatio: number | null;          // Total Liabilities / Total Assets
+  1577→  debtToEquity: number | null;       // Total Liabilities / Total Equity
+  1578→  equityRatio: number | null;        // Total Equity / Total Assets
+  1579→  interestCoverage: number | null;   // Operating Profit / Finance Costs
+  1580→
+  1581→  // Profitability ratios (نسب الربحية)
+  1582→  grossMargin: number | null;        // Gross Profit / Revenue
+  1583→  operatingMargin: number | null;    // Operating Profit / Revenue
+  1584→  netMargin: number | null;          // Net Profit / Revenue
+  1585→  roa: number | null;                // Net Profit / Total Assets
+  1586→  roe: number | null;                // Net Profit / Total Equity
+  1587→
+  1588→  // Activity/Efficiency ratios (نسب النشاط والكفاءة)
+  1589→  assetTurnover: number | null;      // Revenue / Total Assets
+  1590→  inventoryTurnover: number | null;   // Cost of Sales / Inventory
+  1591→  receivablesTurnover: number | null; // Revenue / Receivables
+  1592→  workingCapitalTurnover: number | null; // Revenue / Working Capital
+  1593→}
+  1594→
+  1595→export interface RatioGroup {
+  1596→  title: string;
+  1597→  titleEn: string;
+  1598→  ratios: { name: string; nameEn: string; formula: string; v1: number | null; v2: number | null; unit: "ratio" | "percent" | "amount" | "days"; desirable: "high" | "low"; benchmark?: string }[];
+  1599→}
+  1600→
+  1601→/** Convert a turnover ratio (e.g. inventoryTurnover) to days (365 / turnover). Returns null if input is null/0.
+  1602→ *  Module-level function declaration so it is hoisted and available everywhere (avoids Turbopack TDZ issues). */
+  1603→function toDays(turnover: number | null): number | null {
+  1604→  if (turnover == null || Number.isNaN(turnover) || turnover === 0) return null;
+  1605→  return r2(365 / turnover);
+  1606→}
+  1607→
+  1608→/**
+  1609→ * Compute all financial ratios.
+  1610→ * @param T      Income statement totals
+  1611→ * @param bs1    Comparative-period balance sheet totals (or null)
+  1612→ * @param bs2    Current-period balance sheet totals (or null)
+  1613→ */
+  1614→export function computeRatios(
+  1615→  T: Totals,
+  1616→  bs1: BalanceSheetTotals | null,
+  1617→  bs2: BalanceSheetTotals | null = null
+  1618→): RatioGroup[] {
+  1619→  const safeDiv = (a: number | null, b: number | null): number | null => {
+  1620→    if (a == null || b == null || b === 0) return null;
+  1621→    return r2(a / b);
+  1622→  };
+  1623→
+  1624→  if (!bs1 && !bs2) {
+  1625→    // Return empty groups with null values
+  1626→    const empty = { v1: null, v2: null };
+  1627→    return [
+  1628→      { title: "نسب السيولة", titleEn: "Liquidity Ratios", ratios: [
+  1629→        { name: "نسبة التداول", nameEn: "Current Ratio", formula: "الأصول المتداولة ÷ الخصوم المتداولة", ...empty, unit: "ratio", desirable: "high" },
+  1630→        { name: "النسبة السريعة", nameEn: "Quick Ratio", formula: "(الأصول المتداولة − المخزون) ÷ الخصوم المتداولة", ...empty, unit: "ratio", desirable: "high" },
+  1631→        { name: "نسبة النقدية", nameEn: "Cash Ratio", formula: "النقدية ÷ الخصوم المتداولة", ...empty, unit: "ratio", desirable: "high" },
+  1632→        { name: "رأس المال العامل", nameEn: "Working Capital", formula: "الأصول المتداولة − الخصوم المتداولة", ...empty, unit: "amount", desirable: "high" },
+  1633→      ]},
+  1634→      { title: "نسب المديونية والرفع المالي", titleEn: "Leverage Ratios", ratios: [
+  1635→        { name: "نسبة المديونية", nameEn: "Debt Ratio", formula: "إجمالي الخصوم ÷ إجمالي الأصول", ...empty, unit: "percent", desirable: "low" },
+  1636→        { name: "الدين إلى حقوق الملكية", nameEn: "Debt-to-Equity", formula: "إجمالي الخصوم ÷ حقوق الملكية", ...empty, unit: "ratio", desirable: "low" },
+  1637→        { name: "نسبة حقوق الملكية", nameEn: "Equity Ratio", formula: "حقوق الملكية ÷ إجمالي الأصول", ...empty, unit: "percent", desirable: "high" },
+  1638→        { name: "نسبة القروض للأصول", nameEn: "Debt-to-Assets", formula: "إجمالي القروض ÷ إجمالي الأصول", ...empty, unit: "percent", desirable: "low" },
+  1639→        { name: "تغطية الفوائد", nameEn: "Interest Coverage", formula: "الربح التشغيلي ÷ تكاليف التمويل", ...empty, unit: "ratio", desirable: "high" },
+  1640→        { name: "الأصول الثابتة إلى حقوق الملكية", nameEn: "Fixed Assets to Equity", formula: "الأصول الثابتة ÷ حقوق الملكية", ...empty, unit: "ratio", desirable: "low" },
+  1641→        { name: "الأصول المتداولة إلى إجمالي الأصول", nameEn: "Current to Total Assets", formula: "الأصول المتداولة ÷ إجمالي الأصول", ...empty, unit: "percent", desirable: "high" },
+  1642→      ]},
+  1643→      { title: "نسب الربحية", titleEn: "Profitability Ratios", ratios: [
+  1644→        { name: "هامش مجمل الربح", nameEn: "Gross Margin", formula: "مجمل الربح ÷ الإيرادات", ...empty, unit: "percent", desirable: "high" },
+  1645→        { name: "هامش الربح التشغيلي", nameEn: "Operating Margin", formula: "الربح التشغيلي ÷ الإيرادات", ...empty, unit: "percent", desirable: "high" },
+  1646→        { name: "هامش صافي الربح", nameEn: "Net Margin", formula: "صافي الربح ÷ الإيرادات", ...empty, unit: "percent", desirable: "high" },
+  1647→        { name: "العائد على الأصول (ROA)", nameEn: "Return on Assets", formula: "صافي الربح ÷ إجمالي الأصول", ...empty, unit: "percent", desirable: "high" },
+  1648→        { name: "العائد على حقوق الملكية (ROE)", nameEn: "Return on Equity", formula: "صافي الربح ÷ حقوق الملكية", ...empty, unit: "percent", desirable: "high" },
+  1649→      ]},
+  1650→      { title: "نسب النشاط والكفاءة", titleEn: "Activity & Efficiency Ratios", ratios: [
+  1651→        { name: "معدل دوران الأصول", nameEn: "Asset Turnover", formula: "الإيرادات ÷ إجمالي الأصول", ...empty, unit: "ratio", desirable: "high" },
+  1652→        { name: "معدل دوران الأصول الثابتة", nameEn: "Fixed Asset Turnover", formula: "الإيرادات ÷ الأصول الثابتة", ...empty, unit: "ratio", desirable: "high" },
+  1653→        { name: "معدل دوران المخزون", nameEn: "Inventory Turnover", formula: "تكلفة الإيرادات ÷ المخزون", ...empty, unit: "ratio", desirable: "high" },
+  1654→        { name: "معدل دوران المدينين", nameEn: "Receivables Turnover", formula: "الإيرادات ÷ المدينون", ...empty, unit: "ratio", desirable: "high" },
+  1655→        { name: "معدل دوران الدائنين", nameEn: "Payables Turnover", formula: "تكلفة الإيرادات ÷ الدائنون", ...empty, unit: "ratio", desirable: "high" },
+  1656→        { name: "معدل دوران رأس المال العامل", nameEn: "Working Capital Turnover", formula: "الإيرادات ÷ رأس المال العامل", ...empty, unit: "ratio", desirable: "high" },
+  1657→      ]},
+  1658→    ];
+  1659→  }
+  1660→
+  1661→  // Use bs1 for v1 (comparative), bs2 for v2 (current)
+  1662→  // If only one BS is available, use it for both periods
+  1663→  const useBs1 = bs1 ?? bs2;
+  1664→  const useBs2 = bs2 ?? bs1;
+  1665→  const wc1 = useBs1 ? r2(useBs1.currentAssets - useBs1.currentLiabilities) : null;
+  1666→  const wc2 = useBs2 ? r2(useBs2.currentAssets - useBs2.currentLiabilities) : null;
+  1667→
+  1668→  // v1 = period 1 (comparative) IS figures + BS1
+  1669→  // v2 = period 2 (current) IS figures + BS2
+  1670→  // BS-only ratios now differ between periods (BS1 vs BS2)
+  1671→  const get = (key: string): { v1: number | null; v2: number | null } => {
+  1672→    // BS-only ratios (now differ between periods with 2 BS files)
+  1673→    const bsRatios1: Record<string, number | null> = useBs1 ? {
+  1674→      currentRatio: safeDiv(useBs1.currentAssets, useBs1.currentLiabilities),
+  1675→      quickRatio: safeDiv(useBs1.currentAssets - useBs1.inventory, useBs1.currentLiabilities),
+  1676→      cashRatio: safeDiv(useBs1.cash, useBs1.currentLiabilities),
+  1677→      workingCapital: wc1,
+  1678→      debtRatio: safeDiv(useBs1.totalLiabilities, useBs1.totalAssets),
+  1679→      debtToEquity: safeDiv(useBs1.totalLiabilities, useBs1.equity),
+  1680→      equityRatio: safeDiv(useBs1.equity, useBs1.totalAssets),
+  1681→      debtToAssets: safeDiv(useBs1.totalDebt, useBs1.totalAssets),
+  1682→    } : {};
+  1683→    const bsRatios2: Record<string, number | null> = useBs2 ? {
+  1684→      currentRatio: safeDiv(useBs2.currentAssets, useBs2.currentLiabilities),
+  1685→      quickRatio: safeDiv(useBs2.currentAssets - useBs2.inventory, useBs2.currentLiabilities),
+  1686→      cashRatio: safeDiv(useBs2.cash, useBs2.currentLiabilities),
+  1687→      workingCapital: wc2,
+  1688→      debtRatio: safeDiv(useBs2.totalLiabilities, useBs2.totalAssets),
+  1689→      debtToEquity: safeDiv(useBs2.totalLiabilities, useBs2.equity),
+  1690→      equityRatio: safeDiv(useBs2.equity, useBs2.totalAssets),
+  1691→      debtToAssets: safeDiv(useBs2.totalDebt, useBs2.totalAssets),
+  1692→    } : {};
+  1693→    if (key in bsRatios1 || key in bsRatios2) {
+  1694→      return { v1: bsRatios1[key] ?? null, v2: bsRatios2[key] ?? null };
+  1695→    }
+  1696→    // IS+BS ratios (differ between periods — each uses its own BS)
+  1697→    const isBsRatios: Record<string, [number | null, number | null]> = {
+  1698→      interestCoverage: [
+  1699→        safeDiv(T.oper1, T.fin1 === 0 ? null : T.fin1),
+  1700→        safeDiv(T.oper2, T.fin2 === 0 ? null : T.fin2),
+  1701→      ],
+  1702→      grossMargin: [safeDiv(T.gross1, T.rev1), safeDiv(T.gross2, T.rev2)],
+  1703→      operatingMargin: [safeDiv(T.oper1, T.rev1), safeDiv(T.oper2, T.rev2)],
+  1704→      netMargin: [safeDiv(T.net1, T.rev1), safeDiv(T.net2, T.rev2)],
+  1705→      roa: [useBs1 ? safeDiv(T.net1, useBs1.totalAssets) : null, useBs2 ? safeDiv(T.net2, useBs2.totalAssets) : null],
+  1706→      roe: [useBs1 ? safeDiv(T.net1, useBs1.equity) : null, useBs2 ? safeDiv(T.net2, useBs2.equity) : null],
+  1707→      // ── DuPont decomposition ──
+  1708→      roeDuPont: [
+  1709→        useBs1 ? r2((safeDiv(T.net1, T.rev1) ?? 0) * (safeDiv(T.rev1, useBs1.totalAssets) ?? 0) * (safeDiv(useBs1.totalAssets, useBs1.equity) ?? 0)) : null,
+  1710→        useBs2 ? r2((safeDiv(T.net2, T.rev2) ?? 0) * (safeDiv(T.rev2, useBs2.totalAssets) ?? 0) * (safeDiv(useBs2.totalAssets, useBs2.equity) ?? 0)) : null,
+  1711→      ],
+  1712→      equityMultiplier: [
+  1713→        useBs1 ? safeDiv(useBs1.totalAssets, useBs1.equity) : null,
+  1714→        useBs2 ? safeDiv(useBs2.totalAssets, useBs2.equity) : null,
+  1715→      ],
+  1716→      // ── Extended profitability ──
+  1717→      grossProfitToAssets: [useBs1 ? safeDiv(T.gross1, useBs1.totalAssets) : null, useBs2 ? safeDiv(T.gross2, useBs2.totalAssets) : null],
+  1718→      operatingProfitToAssets: [useBs1 ? safeDiv(T.oper1, useBs1.totalAssets) : null, useBs2 ? safeDiv(T.oper2, useBs2.totalAssets) : null],
+  1719→      fixedAssetToEquity: [
+  1720→        useBs1 ? safeDiv(useBs1.fixedAssets, useBs1.equity) : null,
+  1721→        useBs2 ? safeDiv(useBs2.fixedAssets, useBs2.equity) : null,
+  1722→      ],
+  1723→      currentAssetToTotalAsset: [
+  1724→        useBs1 ? safeDiv(useBs1.currentAssets, useBs1.totalAssets) : null,
+  1725→        useBs2 ? safeDiv(useBs2.currentAssets, useBs2.totalAssets) : null,
+  1726→      ],
+  1727→      // ── Activity ratios ──
+  1728→      assetTurnover: [useBs1 ? safeDiv(T.rev1, useBs1.totalAssets) : null, useBs2 ? safeDiv(T.rev2, useBs2.totalAssets) : null],
+  1729→      fixedAssetTurnover: [useBs1 ? safeDiv(T.rev1, useBs1.fixedAssets) : null, useBs2 ? safeDiv(T.rev2, useBs2.fixedAssets) : null],
+  1730→      inventoryTurnover: [useBs1 ? safeDiv(T.cost1, useBs1.inventory) : null, useBs2 ? safeDiv(T.cost2, useBs2.inventory) : null],
+  1731→      receivablesTurnover: [useBs1 ? safeDiv(T.rev1, useBs1.receivables) : null, useBs2 ? safeDiv(T.rev2, useBs2.receivables) : null],
+  1732→      payablesTurnover: [useBs1 ? safeDiv(T.cost1, useBs1.payables) : null, useBs2 ? safeDiv(T.cost2, useBs2.payables) : null],
+  1733→      workingCapitalTurnover: [wc1 != null && wc1 !== 0 ? safeDiv(T.rev1, wc1) : null, wc2 != null && wc2 !== 0 ? safeDiv(T.rev2, wc2) : null],
+  1734→      // ── Days ratios (فترات التحصيل والسداد وعمر المخزون) ──
+  1735→      daysInventoryOutstanding: [toDays(useBs1 ? safeDiv(T.cost1, useBs1.inventory) : null), toDays(useBs2 ? safeDiv(T.cost2, useBs2.inventory) : null)],
+  1736→      daysSalesOutstanding: [toDays(useBs1 ? safeDiv(T.rev1, useBs1.receivables) : null), toDays(useBs2 ? safeDiv(T.rev2, useBs2.receivables) : null)],
+  1737→      daysPayableOutstanding: [toDays(useBs1 ? safeDiv(T.cost1, useBs1.payables) : null), toDays(useBs2 ? safeDiv(T.cost2, useBs2.payables) : null)],
+  1738→      cashConversionCycle: [
+  1739→        toDays(useBs1 ? safeDiv(T.cost1, useBs1.inventory) : null) != null && toDays(useBs1 ? safeDiv(T.rev1, useBs1.receivables) : null) != null && toDays(useBs1 ? safeDiv(T.cost1, useBs1.payables) : null) != null
+  1740→          ? r2(toDays(useBs1 ? safeDiv(T.cost1, useBs1.inventory) : null)! + toDays(useBs1 ? safeDiv(T.rev1, useBs1.receivables) : null)! - toDays(useBs1 ? safeDiv(T.cost1, useBs1.payables) : null)!)
+  1741→          : null,
+  1742→        toDays(useBs2 ? safeDiv(T.cost2, useBs2.inventory) : null) != null && toDays(useBs2 ? safeDiv(T.rev2, useBs2.receivables) : null) != null && toDays(useBs2 ? safeDiv(T.cost2, useBs2.payables) : null) != null
+  1743→          ? r2(toDays(useBs2 ? safeDiv(T.cost2, useBs2.inventory) : null)! + toDays(useBs2 ? safeDiv(T.rev2, useBs2.receivables) : null)! - toDays(useBs2 ? safeDiv(T.cost2, useBs2.payables) : null)!)
+  1744→          : null,
+  1745→      ],
+  1746→    };
+  1747→    const pair = isBsRatios[key] ?? [null, null];
+  1748→    return { v1: pair[0], v2: pair[1] };
+  1749→  };
+  1750→
+  1751→  return [
+  1752→    {
+  1753→      title: "نسب السيولة",
+  1754→      titleEn: "Liquidity Ratios",
+  1755→      ratios: [
+  1756→        { name: "نسبة التداول", nameEn: "Current Ratio", formula: "الأصول المتداولة ÷ الخصوم المتداولة", ...get("currentRatio"), unit: "ratio", desirable: "high", benchmark: "1.5 – 2.0×" },
+  1757→        { name: "النسبة السريعة", nameEn: "Quick Ratio", formula: "(الأصول المتداولة − المخزون) ÷ الخصوم المتداولة", ...get("quickRatio"), unit: "ratio", desirable: "high", benchmark: "≥ 1.0×" },
+  1758→        { name: "نسبة النقدية", nameEn: "Cash Ratio", formula: "النقدية ÷ الخصوم المتداولة", ...get("cashRatio"), unit: "ratio", desirable: "high", benchmark: "0.2 – 0.5×" },
+  1759→        { name: "نسبة الفاصل الدفاعي", nameEn: "Defensive Interval", formula: "(النقدية + المدينون) ÷ الخصوم المتداولة", ...get("cashRatio"), unit: "ratio", desirable: "high", benchmark: "≥ 1.0×" },
+  1760→        { name: "رأس المال العامل", nameEn: "Working Capital", formula: "الأصول المتداولة − الخصوم المتداولة", ...get("workingCapital"), unit: "amount", desirable: "high", benchmark: "موجب" },
+  1761→      ],
+  1762→    },
+  1763→    {
+  1764→      title: "نسب المديونية والرفع المالي",
+  1765→      titleEn: "Leverage Ratios",
+  1766→      ratios: [
+  1767→        { name: "نسبة المديونية", nameEn: "Debt Ratio", formula: "إجمالي الخصوم ÷ إجمالي الأصول", ...get("debtRatio"), unit: "percent", desirable: "low", benchmark: "< 50%" },
+  1768→        { name: "الدين إلى حقوق الملكية", nameEn: "Debt-to-Equity", formula: "إجمالي الخصوم ÷ حقوق الملكية", ...get("debtToEquity"), unit: "ratio", desirable: "low", benchmark: "< 1.0×" },
+  1769→        { name: "نسبة حقوق الملكية", nameEn: "Equity Ratio", formula: "حقوق الملكية ÷ إجمالي الأصول", ...get("equityRatio"), unit: "percent", desirable: "high", benchmark: "> 50%" },
+  1770→        { name: "نسبة القروض للأصول", nameEn: "Debt-to-Assets", formula: "إجمالي القروض ÷ إجمالي الأصول", ...get("debtToAssets"), unit: "percent", desirable: "low", benchmark: "< 40%" },
+  1771→        { name: "مضاعف حقوق الملكية", nameEn: "Equity Multiplier", formula: "إجمالي الأصول ÷ حقوق الملكية", ...get("equityMultiplier"), unit: "ratio", desirable: "low", benchmark: "< 2.0×" },
+  1772→        { name: "تغطية الفوائد", nameEn: "Interest Coverage", formula: "الربح التشغيلي ÷ تكاليف التمويل", ...get("interestCoverage"), unit: "ratio", desirable: "high", benchmark: "≥ 3.0×" },
+  1773→        { name: "الأصول الثابتة إلى حقوق الملكية", nameEn: "Fixed Assets to Equity", formula: "الأصول الثابتة ÷ حقوق الملكية", ...get("fixedAssetToEquity"), unit: "ratio", desirable: "low", benchmark: "< 1.0×" },
+  1774→        { name: "الأصول المتداولة إلى إجمالي الأصول", nameEn: "Current to Total Assets", formula: "الأصول المتداولة ÷ إجمالي الأصول", ...get("currentAssetToTotalAsset"), unit: "percent", desirable: "high", benchmark: "> 30%" },
+  1775→      ],
+  1776→    },
+  1777→    {
+  1778→      title: "نسب الربحية",
+  1779→      titleEn: "Profitability Ratios",
+  1780→      ratios: [
+  1781→        { name: "هامش مجمل الربح", nameEn: "Gross Margin", formula: "مجمل الربح ÷ الإيرادات", ...get("grossMargin"), unit: "percent", desirable: "high", benchmark: "> 30%" },
+  1782→        { name: "هامش الربح التشغيلي", nameEn: "Operating Margin", formula: "الربح التشغيلي ÷ الإيرادات", ...get("operatingMargin"), unit: "percent", desirable: "high", benchmark: "> 15%" },
+  1783→        { name: "هامش صافي الربح", nameEn: "Net Margin", formula: "صافي الربح ÷ الإيرادات", ...get("netMargin"), unit: "percent", desirable: "high", benchmark: "> 10%" },
+  1784→        { name: "العائد على الأصول (ROA)", nameEn: "Return on Assets", formula: "صافي الربح ÷ إجمالي الأصول", ...get("roa"), unit: "percent", desirable: "high", benchmark: "> 5%" },
+  1785→        { name: "العائد على حقوق الملكية (ROE)", nameEn: "Return on Equity", formula: "صافي الربح ÷ حقوق الملكية", ...get("roe"), unit: "percent", desirable: "high", benchmark: "> 15%" },
+  1786→        { name: "ROE (تحليل دوپونت)", nameEn: "DuPont ROE", formula: "هامش صافي الربح × معدل دوران الأصول × مضاعف حقوق الملكية", ...get("roeDuPont"), unit: "percent", desirable: "high", benchmark: "> 15%" },
+  1787→        { name: "مجمل الربح إلى الأصول", nameEn: "Gross Profit to Assets", formula: "مجمل الربح ÷ إجمالي الأصول", ...get("grossProfitToAssets"), unit: "percent", desirable: "high", benchmark: "> 20%" },
+  1788→        { name: "الربح التشغيلي إلى الأصول", nameEn: "Operating Profit to Assets", formula: "الربح التشغيلي ÷ إجمالي الأصول", ...get("operatingProfitToAssets"), unit: "percent", desirable: "high", benchmark: "> 10%" },
+  1789→      ],
+  1790→    },
+  1791→    {
+  1792→      title: "نسب النشاط والكفاءة",
+  1793→      titleEn: "Activity & Efficiency Ratios",
+  1794→      ratios: [
+  1795→        { name: "معدل دوران الأصول", nameEn: "Asset Turnover", formula: "الإيرادات ÷ إجمالي الأصول", ...get("assetTurnover"), unit: "ratio", desirable: "high", benchmark: "> 0.5×" },
+  1796→        { name: "معدل دوران الأصول الثابتة", nameEn: "Fixed Asset Turnover", formula: "الإيرادات ÷ الأصول الثابتة", ...get("fixedAssetTurnover"), unit: "ratio", desirable: "high", benchmark: "> 1.0×" },
+  1797→        { name: "معدل دوران المخزون", nameEn: "Inventory Turnover", formula: "تكلفة الإيرادات ÷ المخزون", ...get("inventoryTurnover"), unit: "ratio", desirable: "high", benchmark: "> 4×" },
+  1798→        { name: "معدل دوران المدينين", nameEn: "Receivables Turnover", formula: "الإيرادات ÷ المدينون", ...get("receivablesTurnover"), unit: "ratio", desirable: "high", benchmark: "> 6×" },
+  1799→        { name: "معدل دوران الدائنين", nameEn: "Payables Turnover", formula: "تكلفة الإيرادات ÷ الدائنون", ...get("payablesTurnover"), unit: "ratio", desirable: "high", benchmark: "4 – 8×" },
+  1800→        { name: "معدل دوران رأس المال العامل", nameEn: "Working Capital Turnover", formula: "الإيرادات ÷ رأس المال العامل", ...get("workingCapitalTurnover"), unit: "ratio", desirable: "high", benchmark: "> 2×" },
+  1801→      ],
+  1802→    },
+  1803→    {
+  1804→      title: "فترات التحصيل والسداد (بالأيام)",
+  1805→      titleEn: "Days & Cash Cycle",
+  1806→      ratios: [
+  1807→        { name: "عمر المخزون (DIO)", nameEn: "Days Inventory Outstanding", formula: "٣٦٥ ÷ معدل دوران المخزون", ...get("daysInventoryOutstanding"), unit: "days", desirable: "low", benchmark: "30 – 90 يوم" },
+  1808→        { name: "فترة التحصيل (DSO)", nameEn: "Days Sales Outstanding", formula: "٣٦٥ ÷ معدل دوران المدينين", ...get("daysSalesOutstanding"), unit: "days", desirable: "low", benchmark: "30 – 60 يوم" },
+  1809→        { name: "فترة سداد الموردين (DPO)", nameEn: "Days Payable Outstanding", formula: "٣٦٥ ÷ معدل دوران الدائنين", ...get("daysPayableOutstanding"), unit: "days", desirable: "high", benchmark: "30 – 90 يوم" },
+  1810→        { name: "دورة التحويل النقدي (CCC)", nameEn: "Cash Conversion Cycle", formula: "عمر المخزون + فترة التحصيل − فترة السداد", ...get("cashConversionCycle"), unit: "days", desirable: "low", benchmark: "< 60 يوم" },
+  1811→      ],
+  1812→    },
+  1813→  ];
+  1814→}
+  1815→
+  1816→/** Format a ratio value for display. */
+  1817→export function fmtRatio(v: number | null, unit: "ratio" | "percent" | "amount" | "days"): string {
+  1818→  if (v == null) return "—";
+  1819→  if (unit === "percent") return (v * 100).toFixed(1) + "%";
+  1820→  if (unit === "amount") return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  1821→  if (unit === "days") return v.toFixed(0) + " يوم";
+  1822→  return v.toFixed(2) + "×";
+  1823→}
+  1824→
+  1825→/* ═══════════════════════════════════════════════════════════════════════════─
+  1826→ * Excel export — Charts sheet & Financial Analysis sheet
+  1827→ * ═══════════════════════════════════════════════════════════════════════════─ */
+  1828→
+  1829→/** Add a charts-data sheet to the workbook (data tables formatted for charting). */
+  1830→export function addChartsSheet(
+  1831→  wb: XLSX.WorkBook,
+  1832→  cat: Categorized,
+  1833→  T: Totals,
+  1834→  L1: string,
+  1835→  L2: string
+  1836→): void {
+  1837→  const aoa: (string | number | null)[][] = [
+  1838→    ["الرسومات البيانية — مقارنة المؤشرات الرئيسية", "", "", ""],
+  1839→    ["", "", "", ""],
+  1840→    ["البند", L2 + " (الحالية)", L1 + " (المقارنة)", "التغير"],
+  1841→  ];
+  1842→  const metrics: [string, number, number][] = [
+  1843→    ["الإيرادات", T.rev2, T.rev1],
+  1844→    ["تكلفة الإيرادات", T.cost2, T.cost1],
+  1845→    ["مجمل الربح", T.gross2, T.gross1],
+  1846→    ["مصاريف البيع والتوزيع", T.sell2, T.sell1],
+  1847→    ["المصاريف الإدارية", T.adm2, T.adm1],
+  1848→    ["مصاريف تشغيلية أخرى", T.oth2, T.oth1],
+  1849→    ["إجمالي مصاريف التشغيل", T.opex2, T.opex1],
+  1850→    ["الربح التشغيلي", T.oper2, T.oper1],
+  1851→    ["الدخل من مصادر أخرى", T.othRev2, T.othRev1],
+  1852→    ["تكاليف التمويل", T.fin2, T.fin1],
+  1853→    ["الربح قبل الضريبة", T.pbt2, T.pbt1],
+  1854→    ["ضريبة الدخل", T.tax2, T.tax1],
+  1855→    ["صافي الربح", T.net2, T.net1],
+  1856→  ];
+  1857→  if (T.comp2 !== T.net2) metrics.push(["إجمالي الدخل الشامل", T.comp2, T.comp1]);
+  1858→
+  1859→  for (const [name, v2, v1] of metrics) {
+  1860→    aoa.push([name, v2, v1, r2(v2 - v1)]);
+  1861→  }
+  1862→
+  1863→  // Expense breakdown section
+  1864→  aoa.push(["", "", "", ""]);
+  1865→  aoa.push(["توزيع المصروفات — الفترة الحالية", "", "", ""]);
+  1866→  aoa.push(["البند", "المبلغ", "% من الإجمالي", ""]);
+  1867→  const expItems: [string, number][] = [
+  1868→    ["تكلفة الإيرادات", T.cost2],
+  1869→    ["البيع والتوزيع", T.sell2],
+  1870→    ["الإدارية والعمومية", T.adm2],
+  1871→    ["تشغيلية أخرى", T.oth2],
+  1872→    ["تكاليف التمويل", T.fin2],
+  1873→    ["ضريبة الدخل", T.tax2],
+  1874→  ];
+  1875→  const expTotal = expItems.reduce((s, [, v]) => s + v, 0);
+  1876→  for (const [name, v] of expItems) {
+  1877→    aoa.push([name, v, expTotal !== 0 ? v / expTotal : null, ""]);
+  1878→  }
+  1879→
+  1880→  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  1881→  const rg = XLSX.utils.decode_range(ws["!ref"]!);
+  1882→  for (let R = 0; R <= rg.e.r; R++) {
+  1883→    for (let c = 0; c <= 3; c++) {
+  1884→      const ad = XLSX.utils.encode_cell({ r: R, c });
+  1885→      if (!ws[ad]) ws[ad] = { t: "s", v: "" };
+  1886→      const cl = ws[ad]!;
+  1887→      if (R === 0 || R === 2 || (R > 2 && aoa[R]?.[0] === "توزيع المصروفات")) {
+  1888→        cl.s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { patternType: "solid", fgColor: { rgb: "1F4E79" } } };
+  1889→        if (R === 0) continue;
+  1890→      }
+  1891→      if (cl.t === "n") {
+  1892→        if (c === 1 || c === 2) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1893→        else if (c === 3) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1894→      }
+  1895→    }
+  1896→  }
+  1897→  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+  1898→  ws["!cols"] = [28, 16, 16, 16].map((wch) => ({ wch }));
+  1899→  XLSX.utils.book_append_sheet(wb, ws, "الرسومات البيانية".slice(0, 31));
+  1900→}
+  1901→
+  1902→/** Add a financial analysis sheet to the workbook. */
+  1903→export function addFinancialAnalysisSheet(
+  1904→  wb: XLSX.WorkBook,
+  1905→  ratioGroups: RatioGroup[],
+  1906→  bs1: BalanceSheetTotals | null,
+  1907→  bs2: BalanceSheetTotals | null,
+  1908→  L1: string,
+  1909→  L2: string
+  1910→): void {
+  1911→  const useBs1 = bs1 ?? bs2;
+  1912→  const useBs2 = bs2 ?? bs1;
+  1913→  const aoa: (string | number | null)[][] = [
+  1914→    ["التحليل المالي — النسب والمؤشرات المالية", "", "", "", ""],
+  1915→    ["", "", "", "", ""],
+  1916→    ["النسبة", "الاسم الإنجليزي", "المعادلة", L1 + " (المقارنة)", L2 + " (الحالية)"],
+  1917→  ];
+  1918→
+  1919→  for (const group of ratioGroups) {
+  1920→    aoa.push(["", "", "", "", ""]);
+  1921→    aoa.push([`■ ${group.title} — ${group.titleEn}`, "", "", "", ""]);
+  1922→    for (const r of group.ratios) {
+  1923→      aoa.push([r.name, r.nameEn, r.formula, r.v1, r.v2]);
+  1924→    }
+  1925→  }
+  1926→
+  1927→  // Balance sheet summary (both periods)
+  1928→  aoa.push(["", "", "", "", ""]);
+  1929→  aoa.push(["■ ملخص قائمة المركز المالي", "", "", "", ""]);
+  1930→  if (useBs1 && useBs2) {
+  1931→    const bsItems: [string, number | null, number | null][] = [
+  1932→      ["الأصول المتداولة", useBs1.currentAssets, useBs2.currentAssets],
+  1933→      ["الأصول غير المتداولة", useBs1.nonCurrentAssets, useBs2.nonCurrentAssets],
+  1934→      ["إجمالي الأصول", useBs1.totalAssets, useBs2.totalAssets],
+  1935→      ["الخصوم المتداولة", useBs1.currentLiabilities, useBs2.currentLiabilities],
+  1936→      ["الخصوم غير المتداولة", useBs1.nonCurrentLiabilities, useBs2.nonCurrentLiabilities],
+  1937→      ["إجمالي الخصوم", useBs1.totalLiabilities, useBs2.totalLiabilities],
+  1938→      ["حقوق الملكية", useBs1.equity, useBs2.equity],
+  1939→      ["المخزون", useBs1.inventory, useBs2.inventory],
+  1940→      ["النقدية وما يعادلها", useBs1.cash, useBs2.cash],
+  1941→      ["المدينون", useBs1.receivables, useBs2.receivables],
+  1942→      ["الأصول الثابتة", useBs1.fixedAssets, useBs2.fixedAssets],
+  1943→      ["الدائنون / الموردون", useBs1.payables, useBs2.payables],
+  1944→      ["قروض قصيرة الأجل", useBs1.shortTermDebt, useBs2.shortTermDebt],
+  1945→      ["قروض طويلة الأجل", useBs1.longTermDebt, useBs2.longTermDebt],
+  1946→      ["رأس المال العامل", r2(useBs1.currentAssets - useBs1.currentLiabilities), r2(useBs2.currentAssets - useBs2.currentLiabilities)],
+  1947→    ];
+  1948→    for (const [label, v1, v2] of bsItems) {
+  1949→      aoa.push([label, "", "", v1, v2]);
+  1950→    }
+  1951→  } else if (useBs1) {
+  1952→    const bsItems: [string, number | null][] = [
+  1953→      ["الأصول المتداولة", useBs1.currentAssets],
+  1954→      ["الأصول غير المتداولة", useBs1.nonCurrentAssets],
+  1955→      ["إجمالي الأصول", useBs1.totalAssets],
+  1956→      ["الخصوم المتداولة", useBs1.currentLiabilities],
+  1957→      ["الخصوم غير المتداولة", useBs1.nonCurrentLiabilities],
+  1958→      ["إجمالي الخصوم", useBs1.totalLiabilities],
+  1959→      ["حقوق الملكية", useBs1.equity],
+  1960→      ["المخزون", useBs1.inventory],
+  1961→      ["النقدية وما يعادلها", useBs1.cash],
+  1962→      ["المدينون", useBs1.receivables],
+  1963→      ["الأصول الثابتة", useBs1.fixedAssets],
+  1964→      ["الدائنون / الموردون", useBs1.payables],
+  1965→      ["قروض قصيرة الأجل", useBs1.shortTermDebt],
+  1966→      ["قروض طويلة الأجل", useBs1.longTermDebt],
+  1967→      ["رأس المال العامل", r2(useBs1.currentAssets - useBs1.currentLiabilities)],
+  1968→    ];
+  1969→    for (const [label, v] of bsItems) {
+  1970→      aoa.push([label, "", "", v, v]);
+  1971→    }
+  1972→  }
+  1973→
+  1974→  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  1975→  const rg = XLSX.utils.decode_range(ws["!ref"]!);
+  1976→  for (let R = 0; R <= rg.e.r; R++) {
+  1977→    for (let c = 0; c <= 4; c++) {
+  1978→      const ad = XLSX.utils.encode_cell({ r: R, c });
+  1979→      if (!ws[ad]) ws[ad] = { t: "s", v: "" };
+  1980→      const cl = ws[ad]!;
+  1981→      const label = aoa[R]?.[0] ? String(aoa[R][0]) : "";
+  1982→      if (R <= 2 || label.startsWith("■")) {
+  1983→        cl.s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { patternType: "solid", fgColor: { rgb: "1F4E79" } } };
+  1984→        continue;
+  1985→      }
+  1986→      if (cl.t === "n") {
+  1987→        if (c === 3 || c === 4) cl.z = '#,##0.00;(#,##0.00);"—"';
+  1988→      }
+  1989→      cl.s = { alignment: { vertical: "center" }, font: {} };
+  1990→    }
+  1991→  }
+  1992→  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } }];
+  1993→  ws["!cols"] = [30, 26, 38, 16, 16].map((wch) => ({ wch }));
+  1994→  XLSX.utils.book_append_sheet(wb, ws, "التحليل المالي".slice(0, 31));
+  1995→}
+  1996→
+  1997→/* ════════════════════════════════════════════════════════════════════════════
+  1998→ * Chart-of-Accounts Excel Export — 3 sheets
+  1999→ *
+  2000→ *   Sheet 1: «مطابقة دليل الحسابات» — full comparison (all rows)
+
+[showing lines 1-2000 of 2175; use offset=2001 with limit to continue reading]

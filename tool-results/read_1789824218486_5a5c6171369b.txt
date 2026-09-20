@@ -1,0 +1,1409 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import Link from "next/link";
+     5→import { useSession, signOut } from "next-auth/react";
+     6→import { motion } from "framer-motion";
+     7→import { ArrowLeftRight, Download, Play, Settings2, FileSpreadsheet, Info, BarChart3, Table2, Calculator, ChevronDown, Scale, Save, FolderOpen, Trash2, BookCheck, LogOut, UserCog, FolderPlus, Pencil, FolderX, User as UserIcon, Loader2, ShieldCheck } from "lucide-react";
+     8→
+     9→import { Button } from "@/components/ui/button";
+    10→import { Input } from "@/components/ui/input";
+    11→import { Label } from "@/components/ui/label";
+    12→import { Badge } from "@/components/ui/badge";
+    13→import { cn } from "@/lib/utils";
+    14→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+    15→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+    16→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    17→import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+    18→import {
+    19→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+    20→} from "@/components/ui/dialog";
+    21→import {
+    22→  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    23→  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    24→} from "@/components/ui/alert-dialog";
+    25→import { useToast } from "@/hooks/use-toast";
+    26→import { ModeToggle } from "@/components/mode-toggle";
+    27→import { FileDropzone, type FileStatus } from "@/components/accounts/file-dropzone";
+    28→import { SummaryCards } from "@/components/accounts/summary-cards";
+    29→import { ResultsTable } from "@/components/accounts/results-table";
+    30→import { ChartResultsTable } from "@/components/accounts/chart-results-table";
+    31→import { ChartsView } from "@/components/accounts/charts-view";
+    32→import { FinancialAnalysis } from "@/components/accounts/financial-analysis";
+    33→import { BsPrefixSelect } from "@/components/accounts/bs-prefix-select";
+    34→import { parsePermissions, DEFAULT_USER_PERMISSIONS, type Permissions } from "@/lib/permissions";
+    35→import {
+    36→  type FileData, type MatchedRow, type CategorySettings, type CompareMode,
+    37→  type BalanceSheetSettings, type BalanceSheetTotals, type RatioGroup,
+    38→  calcTotals, categorize, categorizeBalanceSheet, collectBaseOptions, computeRatios,
+    39→  exportToExcel, exportChartToExcel, findNetRow, fmtAmount,
+    40→  matchFiles, matchChartOfAccounts, readExcelFile, reExtract,
+    41→} from "@/lib/accounts";
+    42→
+    43→/* ── Column-select helper ──────────────────────────────────────────────── */
+    44→
+    45→function ColumnSelect({ headers, value, onChange, placeholder }: {
+    46→  headers: string[]; value: number | null; onChange: (v: number) => void; placeholder: string;
+    47→}) {
+    48→  return (
+    49→    <Select value={value == null ? "" : String(value)} onValueChange={(v) => onChange(Number(v))} disabled={headers.length === 0}>
+    50→      <SelectTrigger className="w-full" size="sm"><SelectValue placeholder={placeholder} /></SelectTrigger>
+    51→      <SelectContent className="max-h-72">
+    52→        {headers.map((h, j) => (
+    53→          <SelectItem key={j} value={String(j)}>
+    54→            <span className="text-muted-foreground">{j}</span>{" — "}<span className="truncate">{h || `(فارغ ${j})`}</span>
+    55→          </SelectItem>
+    56→        ))}
+    57→      </SelectContent>
+    58→    </Select>
+    59→  );
+    60→}
+    61→
+    62→/* ── Prefix input helper ──────────────────────────────────────────────── */
+    63→
+    64→function PrefixInput({ id, label, value, onChange, disabled }: {
+    65→  id: string; label: string; value: string; onChange: (v: string) => void; disabled?: boolean;
+    66→}) {
+    67→  return (
+    68→    <div className="space-y-1">
+    69→      <Label htmlFor={id} className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{label}</Label>
+    70→      <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} className="tnum w-full" dir="ltr" placeholder="—" disabled={disabled} />
+    71→    </div>
+    72→  );
+    73→}
+    74→
+    75→/* ── Page ──────────────────────────────────────────────────────────────── */
+    76→
+    77→export default function Home() {
+    78→  const { toast } = useToast();
+    79→  const { data: session, status: sessionStatus } = useSession();
+    80→
+    81→  // Parse current user permissions from session (stored as JSON string)
+    82→  const perms = React.useMemo<Permissions>(() => {
+    83→    if (!session?.user) return { ...DEFAULT_USER_PERMISSIONS };
+    84→    const raw = (session.user as any).permissions;
+    85→    if (typeof raw === "string") return parsePermissions(raw);
+    86→    if (raw && typeof raw === "object") return { ...DEFAULT_USER_PERMISSIONS, ...raw };
+    87→    return { ...DEFAULT_USER_PERMISSIONS };
+    88→  }, [session]);
+    89→
+    90→  const canAdd = perms.add;
+    91→  const canDelete = perms.delete;
+    92→  const canExport = perms.export;
+    93→  const canManageGroups = perms.groups;
+    94→  const canManageUsers = perms.manageUsers;
+    95→  const settingsLocked = !perms.settings;
+    96→  const currentUserId = (session?.user as any)?.id as string | undefined;
+    97→
+    98→  const [raw1, setRaw1] = React.useState<FileData | null>(null);
+    99→  const [raw2, setRaw2] = React.useState<FileData | null>(null);
+   100→  const [cn1, setCn1] = React.useState<number | null>(null);
+   101→  const [cd1, setCd1] = React.useState<number | null>(null);
+   102→  const [cn2, setCn2] = React.useState<number | null>(null);
+   103→  const [cd2, setCd2] = React.useState<number | null>(null);
+   104→  const [status1, setStatus1] = React.useState<FileStatus>({ kind: "idle" });
+   105→  const [status2, setStatus2] = React.useState<FileStatus>({ kind: "idle" });
+   106→
+   107→  // Balance sheet files (optional — 2 files in period mode: comparative + current,
+   108→  // 1 file in month mode: cumulative only; hidden entirely in chart mode)
+   109→  const [bsRaw1, setBsRaw1] = React.useState<FileData | null>(null);
+   110→  const [bsCn1, setBsCn1] = React.useState<number | null>(null);
+   111→  const [bsCd1, setBsCd1] = React.useState<number | null>(null);
+   112→  const [bsStatus1, setBsStatus1] = React.useState<FileStatus>({ kind: "idle" });
+   113→  const [bsRaw2, setBsRaw2] = React.useState<FileData | null>(null);
+   114→  const [bsCn2, setBsCn2] = React.useState<number | null>(null);
+   115→  const [bsCd2, setBsCd2] = React.useState<number | null>(null);
+   116→  const [bsStatus2, setBsStatus2] = React.useState<FileStatus>({ kind: "idle" });
+   117→  const [bsOpen, setBsOpen] = React.useState(false);
+   118→
+   119→  // Comparison mode: "period" = current vs previous, "monthCumulative" = month vs year
+   120→  const [compareMode, setCompareMode] = React.useState<CompareMode>("period");
+   121→  const [numMonths, setNumMonths] = React.useState(12);
+   122→
+   123→  const [l1, setL1] = React.useState("");
+   124→  const [l2, setL2] = React.useState("");
+   125→  const [base, setBase] = React.useState<string | null>(null);
+   126→
+   127→  // 7 IFRS prefixes
+   128→  const [costPrefix, setCostPrefix] = React.useState("31101");
+   129→  const [sellPrefix, setSellPrefix] = React.useState("31103");
+   130→  const [adminPrefix, setAdminPrefix] = React.useState("312");
+   131→  const [otherOpPrefix, setOtherOpPrefix] = React.useState("313");
+   132→  const [financePrefix, setFinancePrefix] = React.useState("321");
+   133→  const [taxPrefix, setTaxPrefix] = React.useState("61");
+   134→  const [ociPrefix, setOciPrefix] = React.useState("72");
+   135→
+   136→  // 5 Balance sheet prefixes (defaults)
+   137→  const [caPrefix, setCaPrefix] = React.useState("11");     // current assets
+   138→  const [ncaPrefix, setNcaPrefix] = React.useState("12");    // non-current assets
+   139→  const [clPrefix, setClPrefix] = React.useState("21");      // current liabilities
+   140→  const [nclPrefix, setNclPrefix] = React.useState("22");    // non-current liabilities
+   141→  const [eqPrefix, setEqPrefix] = React.useState("3");        // equity
+   142→  // Detailed BS item prefixes (optional — empty = keyword fallback)
+   143→  const [invPrefix, setInvPrefix] = React.useState("");       // inventory
+   144→  const [cashPrefix, setCashPrefix] = React.useState("");     // cash & equivalents
+   145→  const [recPrefix, setRecPrefix] = React.useState("");       // receivables
+   146→  const [faPrefix, setFaPrefix] = React.useState("");          // fixed assets
+   147→  const [payPrefix, setPayPrefix] = React.useState("");        // payables
+   148→  const [stdPrefix, setStdPrefix] = React.useState("");       // short-term debt
+   149→  const [ltdPrefix, setLtdPrefix] = React.useState("");       // long-term debt
+   150→
+   151→  const [result, setResult] = React.useState<MatchedRow[] | null>(null);
+   152→
+   153→  const effF1 = React.useMemo<FileData | null>(() => {
+   154→    if (!raw1 || cn1 == null || cd1 == null) return raw1;
+   155→    return { ...raw1, A: reExtract(raw1, cn1, cd1), nameCol: cn1, debitCol: cd1 };
+   156→  }, [raw1, cn1, cd1]);
+   157→
+   158→  const effF2 = React.useMemo<FileData | null>(() => {
+   159→    if (!raw2 || cn2 == null || cd2 == null) return raw2;
+   160→    return { ...raw2, A: reExtract(raw2, cn2, cd2), nameCol: cn2, debitCol: cd2 };
+   161→  }, [raw2, cn2, cd2]);
+   162→
+   163→  // Effective BS files (with re-extracted account rows if columns customized)
+   164→  const effBs1 = React.useMemo<FileData | null>(() => {
+   165→    if (!bsRaw1 || bsCn1 == null || bsCd1 == null) return bsRaw1;
+   166→    return { ...bsRaw1, A: reExtract(bsRaw1, bsCn1, bsCd1), nameCol: bsCn1, debitCol: bsCd1 };
+   167→  }, [bsRaw1, bsCn1, bsCd1]);
+   168→  const effBs2 = React.useMemo<FileData | null>(() => {
+   169→    if (!bsRaw2 || bsCn2 == null || bsCd2 == null) return bsRaw2;
+   170→    return { ...bsRaw2, A: reExtract(bsRaw2, bsCn2, bsCd2), nameCol: bsCn2, debitCol: bsCd2 };
+   171→  }, [bsRaw2, bsCn2, bsCd2]);
+   172→
+   173→  const baseOptions = React.useMemo(() => collectBaseOptions([effF1, effF2]), [effF1, effF2]);
+   174→
+   175→  React.useEffect(() => {
+   176→    if (baseOptions.length === 0) { if (base !== null) setBase(null); return; }
+   177→    if (!baseOptions.some((o) => o.nk === base)) setBase(baseOptions[0].nk);
+   178→  }, [baseOptions, base]);
+   179→
+   180→  const bsSettings: BalanceSheetSettings = React.useMemo(() => ({
+   181→    currentAssetsPrefix: caPrefix.trim(),
+   182→    nonCurrentAssetsPrefix: ncaPrefix.trim(),
+   183→    currentLiabPrefix: clPrefix.trim(),
+   184→    nonCurrentLiabPrefix: nclPrefix.trim(),
+   185→    equityPrefix: eqPrefix.trim(),
+   186→    inventoryPrefix: invPrefix.trim(),
+   187→    cashPrefix: cashPrefix.trim(),
+   188→    receivablesPrefix: recPrefix.trim(),
+   189→    fixedAssetsPrefix: faPrefix.trim(),
+   190→    payablesPrefix: payPrefix.trim(),
+   191→    shortTermDebtPrefix: stdPrefix.trim(),
+   192→    longTermDebtPrefix: ltdPrefix.trim(),
+   193→  }), [caPrefix, ncaPrefix, clPrefix, nclPrefix, eqPrefix, invPrefix, cashPrefix, recPrefix, faPrefix, payPrefix, stdPrefix, ltdPrefix]);
+   194→
+   195→  // BS totals — period mode: both files; month mode: single file (bs1) for both periods
+   196→  const bsTotals1: BalanceSheetTotals | null = React.useMemo(
+   197→    () => (effBs1 ? categorizeBalanceSheet(effBs1, bsSettings) : null),
+   198→    [effBs1, bsSettings]
+   199→  );
+   200→  const bsTotals2: BalanceSheetTotals | null = React.useMemo(
+   201→    () => (effBs2 ? categorizeBalanceSheet(effBs2, bsSettings) : null),
+   202→    [effBs2, bsSettings]
+   203→  );
+   204→
+   205→  const hasBsData = !!(bsTotals1 || bsTotals2);
+   206→
+   207→  const settings: CategorySettings = React.useMemo(() => ({
+   208→    base, costPrefix: costPrefix.trim(), sellPrefix: sellPrefix.trim(),
+   209→    adminPrefix: adminPrefix.trim(), otherOpPrefix: otherOpPrefix.trim(),
+   210→    financePrefix: financePrefix.trim(), taxPrefix: taxPrefix.trim(), ociPrefix: ociPrefix.trim(),
+   211→  }), [base, costPrefix, sellPrefix, adminPrefix, otherOpPrefix, financePrefix, taxPrefix, ociPrefix]);
+   212→
+   213→  const cat = React.useMemo(() => (result ? categorize(result, settings) : null), [result, settings]);
+   214→
+   215→  const baseRow = React.useMemo(() => (result && base ? result.find((r) => r.nk === base) ?? null : null), [result, base]);
+   216→  const netRow = React.useMemo(() => (result ? findNetRow(result) : null), [result]);
+   217→
+   218→  const T = React.useMemo(() => (result && cat ? calcTotals(cat, baseRow) : null), [result, cat, baseRow]);
+   219→
+   220→  // Ratios — period mode: compare BS1 vs BS2; month mode: use BS1 for both periods
+   221→  const ratioGroups: RatioGroup[] = React.useMemo(
+   222→    () => (T ? computeRatios(T, compareMode === "monthCumulative" ? bsTotals1 : bsTotals1, compareMode === "monthCumulative" ? bsTotals1 : bsTotals2) : []),
+   223→    [T, bsTotals1, bsTotals2, compareMode]
+   224→  );
+   225→
+   226→  const counts = React.useMemo(() => {
+   227→    const c = { matched: 0, firstOnly: 0, secondOnly: 0 };
+   228→    if (result) for (const r of result) {
+   229→      if (r.st === "مطابق") c.matched++;
+   230→      else if (r.st === "في الملف الأول فقط") c.firstOnly++;
+   231→      else c.secondOnly++;
+   232→    }
+   233→    return c;
+   234→  }, [result]);
+   235→
+   236→  const bothReady = !!(effF1 && effF2);
+   237→
+   238→  async function handleFile(file: File, num: 1 | 2) {
+   239→    const setStatus = num === 1 ? setStatus1 : setStatus2;
+   240→    const setRaw = num === 1 ? setRaw1 : setRaw2;
+   241→    const setCn = num === 1 ? setCn1 : setCn2;
+   242→    const setCd = num === 1 ? setCd1 : setCd2;
+   243→    setStatus({ kind: "loading" });
+   244→    try {
+   245→      const data = await readExcelFile(file);
+   246→      setRaw(data); setCn(data.nameCol); setCd(data.debitCol);
+   247→      setStatus({ kind: "ok", count: data.A.length, filename: file.name });
+   248→    } catch (err) {
+   249→      const message = err instanceof Error ? err.message : "خطأ غير معروف";
+   250→      setStatus({ kind: "error", message }); setRaw(null);
+   251→      toast({ title: "تعذّرت قراءة الملف", description: message, variant: "destructive" });
+   252→    }
+   253→  }
+   254→
+   255→  async function handleBsFile(file: File, num: 1 | 2) {
+   256→    const setStatus = num === 1 ? setBsStatus1 : setBsStatus2;
+   257→    const setRaw = num === 1 ? setBsRaw1 : setBsRaw2;
+   258→    const setCn = num === 1 ? setBsCn1 : setBsCn2;
+   259→    const setCd = num === 1 ? setBsCd1 : setBsCd2;
+   260→    setStatus({ kind: "loading" });
+   261→    try {
+   262→      const data = await readExcelFile(file);
+   263→      setRaw(data); setCn(data.nameCol); setCd(data.debitCol);
+   264→      setStatus({ kind: "ok", count: data.A.length, filename: file.name });
+   265→    } catch (err) {
+   266→      const message = err instanceof Error ? err.message : "خطأ غير معروف";
+   267→      setStatus({ kind: "error", message }); setRaw(null);
+   268→      toast({ title: "تعذّرت قراءة ملف المركز المالي", description: message, variant: "destructive" });
+   269→    }
+   270→  }
+   271→
+   272→  function handleMatch() {
+   273→    if (!effF1 || !effF2) return;
+   274→    try {
+   275→      if (compareMode === "chart") {
+   276→        const out = matchChartOfAccounts(effF1, effF2);
+   277→        setResult(out);
+   278→        const matched = out.filter((r) => r.st === "مطابق").length;
+   279→        const nameMatchNumDiff = out.filter((r) => r.st === "مطابق الاسم مختلف الرقم").length;
+   280→        const fundamental = out.filter((r) => r.st === "تغير جوهري").length;
+   281→        const unmatched = out.filter((r) => r.st === "في الملف الأول فقط" || r.st === "في الملف الثاني فقط" || r.st === "غير مطابق").length;
+   282→        toast({
+   283→          title: "اكتملت مطابقة دليل الحسابات",
+   284→          description: `${out.length} حساب — ${matched} مطابق الاسم والرقم · ${nameMatchNumDiff} مطابق الاسم مختلف الرقم · ${unmatched} غير مطابق · ${fundamental} تغير جوهري`,
+   285→        });
+   286→        return;
+   287→      }
+   288→      const out = matchFiles(effF1, effF2);
+   289→      setResult(out);
+   290→      toast({ title: "اكتملت المطابقة", description: `${out.length} حساب — ${out.filter((r) => r.st === "مطابق").length} مطابق` });
+   291→    } catch (err) {
+   292→      toast({ title: "خطأ أثناء المطابقة", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   293→    }
+   294→  }
+   295→
+   296→  async function handleExport() {
+   297→    if (!result) return;
+   298→    // Chart-of-accounts mode — separate 3-sheet export
+   299→    if (compareMode === "chart") {
+   300→      const L1 = l1.trim() || "الدليل الأول";
+   301→      const L2 = l2.trim() || "الدليل الثاني";
+   302→      await exportChartToExcel(result, { L1, L2 });
+   303→      toast({
+   304→        title: "تم التصدير",
+   305→        description: "مطابقة_دليل_الحسابات.xlsx (يشمل 4 شيتات: مطابق الاسم والرقم + مطابق الاسم مختلف الرقم + غير المطابق + التغيرات الجوهرية)",
+   306→      });
+   307→      return;
+   308→    }
+   309→    if (!cat || !T) return;
+   310→    const L1 = l1.trim() || (compareMode === "monthCumulative" ? "التراكمي" : "الفترة المقارنة");
+   311→    const L2 = l2.trim() || (compareMode === "monthCumulative" ? "الشهر الحالي" : "الفترة الحالية");
+   312→    // BS export: period mode = both, month mode = single BS (bs1) for both periods
+   313→    const exportBs1 = bsTotals1;
+   314→    const exportBs2 = compareMode === "monthCumulative" ? bsTotals1 : bsTotals2;
+   315→    await exportToExcel(cat, T, { L1, L2 }, baseRow, netRow, compareMode, numMonths, exportBs1, exportBs2);
+   316→    toast({
+   317→      title: "تم التصدير",
+   318→      description: hasBsData ? "قائمة_الربح_والخسارة_IFRS.xlsx (يشمل الرسوم والتحليل المالي)" : "قائمة_الربح_والخسارة_IFRS.xlsx",
+   319→    });
+   320→  }
+   321→
+   322→  /* ── Save / Load reports + groups ─────────────────────────────────────── */
+   323→  const [saveDialogOpen, setSaveDialogOpen] = React.useState(false);
+   324→  const [loadDialogOpen, setLoadDialogOpen] = React.useState(false);
+   325→  const [reportName, setReportName] = React.useState("");
+   326→  const [savedReports, setSavedReports] = React.useState<{ id: string; name: string; label1: string; label2: string; updatedAt: string; groupId: string | null; userId: string | null }[]>([]);
+   327→
+   328→  // Groups
+   329→  const [groups, setGroups] = React.useState<{ id: string; name: string; reportCount: number; createdAt: string; updatedAt: string }[]>([]);
+   330→  const [selectedGroupId, setSelectedGroupId] = React.useState<string | null>(null); // group chosen in save dialog
+   331→  // Group management UI state
+   332→  const [newGroupName, setNewGroupName] = React.useState("");
+   333→  const [creatingGroup, setCreatingGroup] = React.useState(false);
+   334→  const [renamingGroupId, setRenamingGroupId] = React.useState<string | null>(null);
+   335→  const [renameValue, setRenameValue] = React.useState("");
+   336→  const [deleteGroupTarget, setDeleteGroupTarget] = React.useState<{ id: string; name: string } | null>(null);
+   337→  const [groupBusyId, setGroupBusyId] = React.useState<string | null>(null);
+   338→
+   339→  async function handleSave() {
+   340→    if (!effF1 || !effF2) {
+   341→      toast({ title: "لا يمكن الحفظ", description: "ارفع الملفين أولاً", variant: "destructive" });
+   342→      return;
+   343→    }
+   344→    const name = reportName.trim() || `تقرير ${new Date().toLocaleDateString("ar")}`;
+   345→    try {
+   346→      const payload = {
+   347→        name,
+   348→        label1: l1, label2: l2,
+   349→        compareMode, numMonths,
+   350→        groupId: canManageGroups ? selectedGroupId : null,
+   351→        isSettings: {
+   352→          base, costPrefix, sellPrefix, adminPrefix, otherOpPrefix,
+   353→          financePrefix, taxPrefix, ociPrefix,
+   354→        },
+   355→        bsSettings: {
+   356→          caPrefix, ncaPrefix, clPrefix, nclPrefix, eqPrefix,
+   357→          invPrefix, cashPrefix, recPrefix, faPrefix, payPrefix, stdPrefix, ltdPrefix,
+   358→        },
+   359→        isFile1Data: effF1.A,
+   360→        isFile2Data: effF2.A,
+   361→        isFile1Headers: effF1.headers,
+   362→        isFile2Headers: effF2.headers,
+   363→        isFile1Cols: { nameCol: cn1, numCol: effF1.numCol, debitCol: cd1 },
+   364→        isFile2Cols: { nameCol: cn2, numCol: effF2.numCol, debitCol: cd2 },
+   365→        bsFile1Data: effBs1?.A ?? [],
+   366→        bsFile1Headers: effBs1?.headers ?? [],
+   367→        bsFile1Cols: { nameCol: bsCn1, numCol: effBs1?.numCol ?? 0, debitCol: bsCd1 },
+   368→        bsFile2Data: effBs2?.A ?? [],
+   369→        bsFile2Headers: effBs2?.headers ?? [],
+   370→        bsFile2Cols: { nameCol: bsCn2, numCol: effBs2?.numCol ?? 0, debitCol: bsCd2 },
+   371→      };
+   372→      const res = await fetch("/api/reports", {
+   373→        method: "POST",
+   374→        headers: { "Content-Type": "application/json" },
+   375→        body: JSON.stringify(payload),
+   376→      });
+   377→      if (!res.ok) throw new Error("فشل الحفظ");
+   378→      toast({ title: "تم الحفظ", description: name });
+   379→      setSaveDialogOpen(false);
+   380→      setReportName("");
+   381→      setSelectedGroupId(null);
+   382→    } catch (err) {
+   383→      toast({ title: "خطأ في الحفظ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   384→    }
+   385→  }
+   386→
+   387→  async function handleLoadList() {
+   388→    try {
+   389→      const [reportsRes, groupsRes] = await Promise.all([
+   390→        fetch("/api/reports", { cache: "no-store" }),
+   391→        canManageGroups ? fetch("/api/groups", { cache: "no-store" }) : Promise.resolve(null),
+   392→      ]);
+   393→      if (!reportsRes.ok) throw new Error("فشل جلب التقارير");
+   394→      const data = await reportsRes.json();
+   395→      setSavedReports(data);
+   396→      if (groupsRes && groupsRes.ok) {
+   397→        const gData = await groupsRes.json();
+   398→        setGroups(gData);
+   399→      } else if (!groupsRes) {
+   400→        setGroups([]);
+   401→      }
+   402→    } catch (err) {
+   403→      toast({ title: "خطأ في جلب القائمة", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   404→    }
+   405→  }
+   406→
+   407→  // Group CRUD
+   408→  async function handleCreateGroup() {
+   409→    const name = newGroupName.trim();
+   410→    if (!name) {
+   411→      toast({ title: "اسم المجموعة مطلوب", variant: "destructive" });
+   412→      return;
+   413→    }
+   414→    // Case-insensitive duplicate check (client-side, before hitting the server)
+   415→    const dup = groups.some((g) => g.name.trim().toLowerCase() === name.toLowerCase());
+   416→    if (dup) {
+   417→      toast({ title: "يوجد مجموعة بنفس الاسم", variant: "destructive" });
+   418→      return;
+   419→    }
+   420→    setCreatingGroup(true);
+   421→    try {
+   422→      const res = await fetch("/api/groups", {
+   423→        method: "POST",
+   424→        headers: { "Content-Type": "application/json" },
+   425→        body: JSON.stringify({ name }),
+   426→      });
+   427→      const data = await res.json().catch(() => ({}));
+   428→      if (!res.ok) throw new Error((data as { error?: string }).error || "فشل الإنشاء");
+   429→      toast({ title: "تم إنشاء المجموعة", description: name });
+   430→      setNewGroupName("");
+   431→      // Refresh groups
+   432→      const gRes = await fetch("/api/groups", { cache: "no-store" });
+   433→      if (gRes.ok) setGroups(await gRes.json());
+   434→    } catch (err) {
+   435→      toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   436→    } finally {
+   437→      setCreatingGroup(false);
+   438→    }
+   439→  }
+   440→
+   441→  async function handleRenameGroup(id: string) {
+   442→    const name = renameValue.trim();
+   443→    if (!name) {
+   444→      toast({ title: "اسم المجموعة مطلوب", variant: "destructive" });
+   445→      return;
+   446→    }
+   447→    // Case-insensitive duplicate check (excluding the group being renamed)
+   448→    const dup = groups.some((g) => g.id !== id && g.name.trim().toLowerCase() === name.toLowerCase());
+   449→    if (dup) {
+   450→      toast({ title: "يوجد مجموعة بنفس الاسم", variant: "destructive" });
+   451→      return;
+   452→    }
+   453→    setGroupBusyId(id);
+   454→    try {
+   455→      const res = await fetch(`/api/groups/${id}`, {
+   456→        method: "PUT",
+   457→        headers: { "Content-Type": "application/json" },
+   458→        body: JSON.stringify({ name }),
+   459→      });
+   460→      const data = await res.json().catch(() => ({}));
+   461→      if (!res.ok) throw new Error((data as { error?: string }).error || "فشل التحديث");
+   462→      toast({ title: "تم تحديث المجموعة", description: name });
+   463→      setRenamingGroupId(null);
+   464→      setRenameValue("");
+   465→      const gRes = await fetch("/api/groups", { cache: "no-store" });
+   466→      if (gRes.ok) setGroups(await gRes.json());
+   467→    } catch (err) {
+   468→      toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   469→    } finally {
+   470→      setGroupBusyId(null);
+   471→    }
+   472→  }
+   473→
+   474→  async function handleDeleteGroup(id: string) {
+   475→    setGroupBusyId(id);
+   476→    try {
+   477→      const res = await fetch(`/api/groups/${id}`, { method: "DELETE" });
+   478→      const data = await res.json().catch(() => ({}));
+   479→      if (!res.ok) throw new Error((data as { error?: string }).error || "فشل الحذف");
+   480→      toast({ title: "تم حذف المجموعة", description: "نُقلت تقاريرها إلى «بدون مجموعة»" });
+   481→      setDeleteGroupTarget(null);
+   482→      // Refresh both groups and reports (report counts changed)
+   483→      await handleLoadList();
+   484→      // Clear selectedGroupId if it was the deleted group
+   485→      setSelectedGroupId((cur) => (cur === id ? null : cur));
+   486→    } catch (err) {
+   487→      toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   488→    } finally {
+   489→      setGroupBusyId(null);
+   490→    }
+   491→  }
+   492→
+   493→  async function handleLoadReport(id: string) {
+   494→    try {
+   495→      const res = await fetch(`/api/reports/${id}`);
+   496→      if (!res.ok) throw new Error("فشل التحميل");
+   497→      const data = await res.json();
+   498→      // Restore labels and mode
+   499→      setL1(data.label1 || ""); setL2(data.label2 || "");
+   500→      setCompareMode(data.compareMode || "period");
+   501→      setNumMonths(data.numMonths || 12);
+   502→      // Restore IS settings
+   503→      const isSet = JSON.parse(data.isSettings || "{}");
+   504→      if (isSet.base !== undefined) setBase(isSet.base);
+   505→      if (isSet.costPrefix) setCostPrefix(isSet.costPrefix);
+   506→      if (isSet.sellPrefix) setSellPrefix(isSet.sellPrefix);
+   507→      if (isSet.adminPrefix) setAdminPrefix(isSet.adminPrefix);
+   508→      if (isSet.otherOpPrefix) setOtherOpPrefix(isSet.otherOpPrefix);
+   509→      if (isSet.financePrefix) setFinancePrefix(isSet.financePrefix);
+   510→      if (isSet.taxPrefix) setTaxPrefix(isSet.taxPrefix);
+   511→      if (isSet.ociPrefix) setOciPrefix(isSet.ociPrefix);
+   512→      // Restore BS settings
+   513→      const bsSet = JSON.parse(data.bsSettings || "{}");
+   514→      if (bsSet.caPrefix !== undefined) setCaPrefix(bsSet.caPrefix);
+   515→      if (bsSet.ncaPrefix !== undefined) setNcaPrefix(bsSet.ncaPrefix);
+   516→      if (bsSet.clPrefix !== undefined) setClPrefix(bsSet.clPrefix);
+   517→      if (bsSet.nclPrefix !== undefined) setNclPrefix(bsSet.nclPrefix);
+   518→      if (bsSet.eqPrefix !== undefined) setEqPrefix(bsSet.eqPrefix);
+   519→      if (bsSet.invPrefix !== undefined) setInvPrefix(bsSet.invPrefix);
+   520→      if (bsSet.cashPrefix !== undefined) setCashPrefix(bsSet.cashPrefix);
+   521→      if (bsSet.recPrefix !== undefined) setRecPrefix(bsSet.recPrefix);
+   522→      if (bsSet.faPrefix !== undefined) setFaPrefix(bsSet.faPrefix);
+   523→      if (bsSet.payPrefix !== undefined) setPayPrefix(bsSet.payPrefix);
+   524→      if (bsSet.stdPrefix !== undefined) setStdPrefix(bsSet.stdPrefix);
+   525→      if (bsSet.ltdPrefix !== undefined) setLtdPrefix(bsSet.ltdPrefix);
+   526→      // Restore IS file data
+   527→      const f1Data = JSON.parse(data.isFile1Data || "[]");
+   528→      const f1Headers = JSON.parse(data.isFile1Headers || "[]");
+   529→      const f1Cols = JSON.parse(data.isFile1Cols || "{}");
+   530→      if (f1Data.length > 0) {
+   531→        setRaw1({ A: f1Data, headers: f1Headers, nameCol: f1Cols.nameCol ?? 1, numCol: f1Cols.numCol ?? 0, debitCol: f1Cols.debitCol ?? 2, headerRow: 0, rawRows: [] });
+   532→        setCn1(f1Cols.nameCol ?? null);
+   533→        setCd1(f1Cols.debitCol ?? null);
+   534→        setStatus1({ kind: "ok", count: f1Data.length, filename: data.label1 || "ملف 1" });
+   535→      }
+   536→      const f2Data = JSON.parse(data.isFile2Data || "[]");
+   537→      const f2Headers = JSON.parse(data.isFile2Headers || "[]");
+   538→      const f2Cols = JSON.parse(data.isFile2Cols || "{}");
+   539→      if (f2Data.length > 0) {
+   540→        setRaw2({ A: f2Data, headers: f2Headers, nameCol: f2Cols.nameCol ?? 1, numCol: f2Cols.numCol ?? 0, debitCol: f2Cols.debitCol ?? 2, headerRow: 0, rawRows: [] });
+   541→        setCn2(f2Cols.nameCol ?? null);
+   542→        setCd2(f2Cols.debitCol ?? null);
+   543→        setStatus2({ kind: "ok", count: f2Data.length, filename: data.label2 || "ملف 2" });
+   544→      }
+   545→      // Restore BS file data (2 files: bs1 = comparative/cumulative, bs2 = current)
+   546→      const bs1Data = JSON.parse(data.bsFile1Data || data.bsFileData || "[]");
+   547→      const bs1Headers = JSON.parse(data.bsFile1Headers || data.bsFileHeaders || "[]");
+   548→      const bs1Cols = JSON.parse(data.bsFile1Cols || data.bsFileCols || "{}");
+   549→      if (bs1Data.length > 0) {
+   550→        setBsRaw1({ A: bs1Data, headers: bs1Headers, nameCol: bs1Cols.nameCol ?? 1, numCol: bs1Cols.numCol ?? 0, debitCol: bs1Cols.debitCol ?? 2, headerRow: 0, rawRows: [] });
+   551→        setBsCn1(bs1Cols.nameCol ?? null);
+   552→        setBsCd1(bs1Cols.debitCol ?? null);
+   553→        setBsStatus1({ kind: "ok", count: bs1Data.length, filename: "مركز مالي 1" });
+   554→      }
+   555→      const bs2Data = JSON.parse(data.bsFile2Data || "[]");
+   556→      const bs2Headers = JSON.parse(data.bsFile2Headers || "[]");
+   557→      const bs2Cols = JSON.parse(data.bsFile2Cols || "{}");
+   558→      if (bs2Data.length > 0) {
+   559→        setBsRaw2({ A: bs2Data, headers: bs2Headers, nameCol: bs2Cols.nameCol ?? 1, numCol: bs2Cols.numCol ?? 0, debitCol: bs2Cols.debitCol ?? 2, headerRow: 0, rawRows: [] });
+   560→        setBsCn2(bs2Cols.nameCol ?? null);
+   561→        setBsCd2(bs2Cols.debitCol ?? null);
+   562→        setBsStatus2({ kind: "ok", count: bs2Data.length, filename: "مركز مالي 2" });
+   563→      }
+   564→      setLoadDialogOpen(false);
+   565→      toast({ title: "تم تحميل التقرير", description: data.name });
+   566→    } catch (err) {
+   567→      toast({ title: "خطأ في التحميل", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   568→    }
+   569→  }
+   570→
+   571→  async function handleDeleteReport(id: string) {
+   572→    try {
+   573→      const res = await fetch(`/api/reports/${id}`, { method: "DELETE" });
+   574→      if (!res.ok) throw new Error("فشل الحذف");
+   575→      setSavedReports(prev => prev.filter(r => r.id !== id));
+   576→      toast({ title: "تم الحذف" });
+   577→    } catch (err) {
+   578→      toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+   579→    }
+   580→  }
+   581→
+   582→  const L1 = l1.trim() || (compareMode === "monthCumulative" ? "التراكمي" : compareMode === "chart" ? "الدليل القديم" : "الفترة المقارنة");
+   583→  const L2 = l2.trim() || (compareMode === "monthCumulative" ? "الشهر الحالي" : compareMode === "chart" ? "الدليل الجديد" : "الفترة الحالية");
+   584→
+   585→  return (
+   586→    <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
+   587→      {/* Header */}
+   588→      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
+   589→        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+   590→          <div className="flex items-center gap-3">
+   591→            <div className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white shadow-md">
+   592→              <ArrowLeftRight className="size-5" />
+   593→            </div>
+   594→            <div>
+   595→              <h1 className="text-base font-extrabold leading-tight text-slate-800 dark:text-slate-100 sm:text-lg">
+   596→                قائمة الربح أو الخسارة والدخل الشامل
+   597→              </h1>
+   598→              <p className="text-[11px] text-slate-500 dark:text-slate-400 sm:text-xs">
+   599→                مقارنة فترتين وفق IFRS (IAS 1 — طريقة الوظيفة)
+   600→              </p>
+   601→            </div>
+   602→          </div>
+   603→          <div className="flex items-center gap-2">
+   604→            {/* Admin link */}
+   605→            {canManageUsers && (
+   606→              <Button variant="outline" size="sm" asChild className="gap-1.5 border-emerald-300 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-950/50">
+   607→                <Link href="/admin">
+   608→                  <UserCog className="size-3.5" />
+   609→                  <span className="hidden sm:inline">المستخدمون</span>
+   610→                </Link>
+   611→              </Button>
+   612→            )}
+   613→            {/* Save button */}
+   614→            {canAdd && (
+   615→            <Dialog open={saveDialogOpen} onOpenChange={(open) => {
+   616→              if (!open) setSelectedGroupId(null);
+   617→              setSaveDialogOpen(open);
+   618→            }}>
+   619→              <DialogTrigger asChild>
+   620→                <Button variant="outline" size="sm" className="gap-1.5 border-slate-300 dark:border-slate-700" disabled={!bothReady}>
+   621→                  <Save className="size-3.5" />
+   622→                  <span className="hidden sm:inline">حفظ</span>
+   623→                </Button>
+   624→              </DialogTrigger>
+   625→              <DialogContent>
+   626→                <DialogHeader>
+   627→                  <DialogTitle>حفظ التقرير</DialogTitle>
+   628→                  <DialogDescription>أدخل اسماً للتقرير لحفظه في قاعدة البيانات</DialogDescription>
+   629→                </DialogHeader>
+   630→                <div className="space-y-3">
+   631→                  <Input
+   632→                    value={reportName}
+   633→                    onChange={(e) => setReportName(e.target.value)}
+   634→                    placeholder="مثلاً: مقارنة يونيو ٢٠٢٦"
+   635→                    autoFocus
+   636→                  />
+   637→                  {canManageGroups && (
+   638→                    <div className="space-y-1.5">
+   639→                      <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+   640→                        المجموعة (اختياري)
+   641→                      </Label>
+   642→                      <Select
+   643→                        value={selectedGroupId ?? "__none__"}
+   644→                        onValueChange={(v) => setSelectedGroupId(v === "__none__" ? null : v)}
+   645→                      >
+   646→                        <SelectTrigger className="w-full" size="sm">
+   647→                          <SelectValue placeholder="— بدون مجموعة —" />
+   648→                        </SelectTrigger>
+   649→                        <SelectContent>
+   650→                          <SelectItem value="__none__">— بدون مجموعة —</SelectItem>
+   651→                          {groups.map((g) => (
+   652→                            <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+   653→                          ))}
+   654→                        </SelectContent>
+   655→                      </Select>
+   656→                      {groups.length === 0 && (
+   657→                        <p className="text-[11px] text-slate-400">
+   658→                          لا توجد مجموعات بعد. يمكنك إنشاء مجموعة من نافذة «فتح».
+   659→                        </p>
+   660→                      )}
+   661→                    </div>
+   662→                  )}
+   663→                </div>
+   664→                <DialogFooter>
+   665→                  <Button variant="outline" onClick={() => {
+   666→                    setSaveDialogOpen(false);
+   667→                    setSelectedGroupId(null);
+   668→                  }}>إلغاء</Button>
+   669→                  <Button onClick={handleSave} className="bg-emerald-600 text-white hover:bg-emerald-700">
+   670→                    <Save className="size-4" /> حفظ
+   671→                  </Button>
+   672→                </DialogFooter>
+   673→              </DialogContent>
+   674→            </Dialog>
+   675→            )}
+   676→            {/* Load button */}
+   677→            <Dialog open={loadDialogOpen} onOpenChange={(open) => {
+   678→              setLoadDialogOpen(open);
+   679→              if (open) {
+   680→                void handleLoadList();
+   681→              } else {
+   682→                setRenamingGroupId(null);
+   683→                setRenameValue("");
+   684→                setNewGroupName("");
+   685→              }
+   686→            }}>
+   687→              <DialogTrigger asChild>
+   688→                <Button variant="outline" size="sm" className="gap-1.5 border-slate-300 dark:border-slate-700">
+   689→                  <FolderOpen className="size-3.5" />
+   690→                  <span className="hidden sm:inline">فتح</span>
+   691→                </Button>
+   692→              </DialogTrigger>
+   693→              <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-2xl">
+   694→                <DialogHeader>
+   695→                  <DialogTitle>التقارير المحفوظة</DialogTitle>
+   696→                  <DialogDescription>
+   697→                    اختر تقريراً لتحميله{canManageGroups ? " · نُظّمت حسب المجموعة" : ""}
+   698→                  </DialogDescription>
+   699→                </DialogHeader>
+   700→
+   701→                {/* Group creation (only if user has groups permission) */}
+   702→                {canManageGroups && (
+   703→                  <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-2 dark:border-slate-700 dark:bg-slate-900/40">
+   704→                    <FolderPlus className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   705→                    <Input
+   706→                      value={newGroupName}
+   707→                      onChange={(e) => setNewGroupName(e.target.value)}
+   708→                      placeholder="اسم مجموعة جديدة"
+   709→                      className="h-8"
+   710→                      onKeyDown={(e) => {
+   711→                        if (e.key === "Enter" && !creatingGroup) {
+   712→                          e.preventDefault();
+   713→                          void handleCreateGroup();
+   714→                        }
+   715→                      }}
+   716→                    />
+   717→                    <Button
+   718→                      size="sm"
+   719→                      onClick={handleCreateGroup}
+   720→                      disabled={creatingGroup || !newGroupName.trim()}
+   721→                      className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
+   722→                    >
+   723→                      {creatingGroup ? <Loader2 className="size-3.5 animate-spin" /> : <FolderPlus className="size-3.5" />}
+   724→                      <span className="hidden sm:inline">إنشاء</span>
+   725→                    </Button>
+   726→                  </div>
+   727→                )}
+   728→
+   729→                {savedReports.length === 0 && groups.length === 0 ? (
+   730→                  <p className="py-8 text-center text-sm text-slate-400">لا توجد تقارير محفوظة</p>
+   731→                ) : (
+   732→                  <div className="space-y-3">
+   733→                    {/* Grouped reports — one section per group */}
+   734→                    {canManageGroups && groups.map((g) => {
+   735→                      const reports = savedReports.filter((r) => r.groupId === g.id);
+   736→                      return (
+   737→                        <div key={g.id} className="rounded-lg border border-slate-200 dark:border-slate-700">
+   738→                          <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/40">
+   739→                            <div className="flex items-center gap-2">
+   740→                              <FolderOpen className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+   741→                              {renamingGroupId === g.id ? (
+   742→                                <div className="flex items-center gap-1">
+   743→                                  <Input
+   744→                                    value={renameValue}
+   745→                                    onChange={(e) => setRenameValue(e.target.value)}
+   746→                                    className="h-7 w-40 text-sm"
+   747→                                    autoFocus
+   748→                                    onKeyDown={(e) => {
+   749→                                      if (e.key === "Enter" && groupBusyId !== g.id) {
+   750→                                        e.preventDefault();
+   751→                                        void handleRenameGroup(g.id);
+   752→                                      }
+   753→                                      if (e.key === "Escape") {
+   754→                                        setRenamingGroupId(null);
+   755→                                        setRenameValue("");
+   756→                                      }
+   757→                                    }}
+   758→                                  />
+   759→                                  <Button
+   760→                                    size="icon"
+   761→                                    variant="ghost"
+   762→                                    className="size-7 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+   763→                                    onClick={() => void handleRenameGroup(g.id)}
+   764→                                    disabled={groupBusyId === g.id}
+   765→                                  >
+   766→                                    {groupBusyId === g.id ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
+   767→                                  </Button>
+   768→                                </div>
+   769→                              ) : (
+   770→                                <span className="text-sm font-bold text-slate-700 dark:text-slate-200">{g.name}</span>
+   771→                              )}
+   772→                              <Badge variant="outline" className="border-slate-300 px-1.5 py-0 text-[9px] text-slate-500 dark:border-slate-600 dark:text-slate-400">
+   773→                                {reports.length} تقرير
+   774→                              </Badge>
+   775→                            </div>
+   776→                            {renamingGroupId !== g.id && (
+   777→                              <div className="flex items-center gap-0.5">
+   778→                                <Button
+   779→                                  size="icon"
+   780→                                  variant="ghost"
+   781→                                  className="size-7 text-slate-500 hover:bg-slate-100 hover:text-emerald-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-emerald-400"
+   782→                                  onClick={() => {
+   783→                                    setRenamingGroupId(g.id);
+   784→                                    setRenameValue(g.name);
+   785→                                  }}
+   786→                                  aria-label="تعديل الاسم"
+   787→                                  title="تعديل الاسم"
+   788→                                  disabled={!!groupBusyId}
+   789→                                >
+   790→                                  <Pencil className="size-3.5" />
+   791→                                </Button>
+   792→                                <Button
+   793→                                  size="icon"
+   794→                                  variant="ghost"
+   795→                                  className="size-7 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+   796→                                  onClick={() => setDeleteGroupTarget({ id: g.id, name: g.name })}
+   797→                                  aria-label="حذف المجموعة"
+   798→                                  title="حذف المجموعة"
+   799→                                  disabled={!!groupBusyId}
+   800→                                >
+   801→                                  <FolderX className="size-3.5" />
+   802→                                </Button>
+   803→                              </div>
+   804→                            )}
+   805→                          </div>
+   806→                          {reports.length === 0 ? (
+   807→                            <p className="px-3 py-3 text-center text-[11px] text-slate-400">لا توجد تقارير في هذه المجموعة</p>
+   808→                          ) : (
+   809→                            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+   810→                              {reports.map((r) => (
+   811→                                <ReportRow key={r.id} r={r} onLoad={handleLoadReport} onDelete={handleDeleteReport} canDelete={canDelete} isOwner={!currentUserId || r.userId === currentUserId} />
+   812→                              ))}
+   813→                            </div>
+   814→                          )}
+   815→                        </div>
+   816→                      );
+   817→                    })}
+   818→
+   819→                    {/* Ungrouped reports */}
+   820→                    {(() => {
+   821→                      const ungrouped = savedReports.filter((r) => r.groupId === null || r.groupId === undefined);
+   822→                      if (ungrouped.length === 0 && groups.length > 0) return null;
+   823→                      const showHeader = canManageGroups && groups.length > 0;
+   824→                      return (
+   825→                        <div className={cn("rounded-lg", showHeader && "border border-slate-200 dark:border-slate-700")}>
+   826→                          {showHeader && (
+   827→                            <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/40">
+   828→                              <FolderX className="size-3.5 text-slate-500" />
+   829→                              <span className="text-sm font-bold text-slate-600 dark:text-slate-300">بدون مجموعة</span>
+   830→                              <Badge variant="outline" className="border-slate-300 px-1.5 py-0 text-[9px] text-slate-500 dark:border-slate-600 dark:text-slate-400">
+   831→                                {ungrouped.length} تقرير
+   832→                              </Badge>
+   833→                            </div>
+   834→                          )}
+   835→                          {ungrouped.length === 0 ? (
+   836→                            <p className="px-3 py-3 text-center text-[11px] text-slate-400">لا توجد تقارير</p>
+   837→                          ) : (
+   838→                            <div className={cn("divide-y divide-slate-100 dark:divide-slate-800", showHeader && "")}>
+   839→                              {ungrouped.map((r) => (
+   840→                                <ReportRow key={r.id} r={r} onLoad={handleLoadReport} onDelete={handleDeleteReport} canDelete={canDelete} isOwner={!currentUserId || r.userId === currentUserId} />
+   841→                              ))}
+   842→                            </div>
+   843→                          )}
+   844→                        </div>
+   845→                      );
+   846→                    })()}
+   847→                  </div>
+   848→                )}
+   849→              </DialogContent>
+   850→            </Dialog>
+   851→
+   852→            {/* User chip + logout */}
+   853→            {sessionStatus === "authenticated" && session?.user && (
+   854→              <div className="hidden items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5 text-xs dark:border-slate-700 sm:flex">
+   855→                <div className="flex size-6 items-center justify-center rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+   856→                  <UserIcon className="size-3.5" />
+   857→                </div>
+   858→                <div className="leading-tight">
+   859→                  <div className="font-semibold text-slate-800 dark:text-slate-100">{session.user.name || (session.user as any).username}</div>
+   860→                  <div className="text-[10px] text-slate-400">{perms.role || session.user.role || "user"}</div>
+   861→                </div>
+   862→              </div>
+   863→            )}
+   864→            <Button
+   865→              variant="ghost"
+   866→              size="icon"
+   867→              className="size-9 text-slate-500 hover:bg-rose-50 hover:text-rose-600 dark:text-slate-400 dark:hover:bg-rose-950/30"
+   868→              onClick={() => signOut({ callbackUrl: "/login" })}
+   869→              aria-label="تسجيل الخروج"
+   870→              title="تسجيل الخروج"
+   871→            >
+   872→              <LogOut className="size-4" />
+   873→            </Button>
+   874→            <ModeToggle />
+   875→          </div>
+   876→        </div>
+   877→      </header>
+   878→
+   879→      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
+   880→        {/* Intro */}
+   881→        <motion.section initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="mb-6">
+   882→          <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-900/50 dark:bg-emerald-950/20">
+   883→            <Info className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+   884→            <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+   885→              {compareMode === "period" ? (
+   886→                <>ارفع ملفَي أرصدة الحسابات (Excel) — <strong>الفترة المقارنة (السابقة)</strong> ثم
+   887→                <strong> الفترة الحالية</strong> — وحدّد بادئات بنود القائمة وفق IAS 1. تُعرض
+   888→                <strong> الفترة الحالية أولاً</strong> ثم المقارنة، والخصومات سالبة بين قوسين،
+   889→                والإجماليات من الحسابات الفرعية (الأوراق) فقط. حالة التغير:
+   890→                <strong>مرغوب نمو</strong> (أخضر) = زيادة الإيراد ·
+   891→                <strong>غير مرغوب انخفاض</strong> (أحمر) = نقصان الإيراد ·
+   892→                <strong>مرغوب وفرة</strong> (أخضر) = نقصان المصروف ·
+   893→                <strong>غير مرغوب زيادة</strong> (أحمر) = زيادة المصروف.</>
+   894→              ) : compareMode === "monthCumulative" ? (
+   895→                <>ارفع ملفين — <strong>التراكمي للسنة</strong> ثم <strong>الشهر الحالي</strong> —
+   896→                لمعرفة نسبة الشهر من التراكمي لكل بند. يُعرض <strong>الشهر الحالي</strong> أولاً ثم التراكمي،
+   897→                مع <strong>نسبة الشهر من التراكمي</strong> و<strong>نسبة البند لمبيعات الشهر</strong> و<strong>المتوسط للتراكمي</strong>
+   898→                و<strong>نسبة الشهر من المتوسط</strong> و<strong>فرق الشهر عن المتوسط</strong> و<strong>نسبة الفرق عن المتوسط</strong>
+   899→                وحالة الشهر:
+   900→                <strong>مرغوب نمو</strong> (أخضر) = الشهر أعلى من المتوسط ({(100 / numMonths).toFixed(1)}%) ·
+   901→                <strong>غير مرغوب انخفاض</strong> (أحمر) = الشهر أقل من المتوسط ·
+   902→                <strong>مرغوب وفرة</strong> (أخضر) = مصروف الشهر أقل من المتوسط ·
+   903→                <strong>غير مرغوب زيادة</strong> (أحمر) = مصروف الشهر أعلى من المتوسط.</>
+   904→              ) : (
+   905→                <>ارفع ملفَي <strong>دليل الحسابات</strong> — <strong>الدليل القديم</strong> ثم
+   906→                <strong> الدليل الجديد</strong> — لمطابقة الحسابات <strong>بالاسم (≥ 90%) أو برقم الحساب</strong>.
+   907→                يُظهر لك: (1) المطابقة الكاملة بنسبة التطابق، (2) الحسابات التي تغير <strong>رقمها</strong> في شيت مستقل،
+   908→                (3) الحسابات التي تغيرت <strong>جوهريًا في موقعها</strong> (من أصول إلى خصوم، أو من مصروف إلى إيراد…) في شيت ثالث.
+   909→                يُصدّر إلى Excel بـ 3 شيتات منفصلة.</>
+   910→              )}
+   911→            </p>
+   912→          </div>
+   913→        </motion.section>
+   914→
+   915→        {/* Settings */}
+   916→        <Card className="mb-6 border-slate-200 shadow-sm dark:border-slate-800">
+   917→          <CardHeader className="pb-0">
+   918→            <CardTitle className="flex items-center gap-2 text-slate-800 dark:text-slate-100">
+   919→              <Settings2 className="size-4 text-emerald-600 dark:text-emerald-400" />
+   920→              إعدادات المطابقة
+   921→            </CardTitle>
+   922→            <CardDescription>ارفع الملفات واضبط الأعمدة والبادئات</CardDescription>
+   923→          </CardHeader>
+   924→          <CardContent className="space-y-6 pt-4">
+   925→            {/* Comparison mode selector */}
+   926→            <div className="space-y-2">
+   927→              <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+   928→                نمط المقارنة
+   929→              </Label>
+   930→              <div className="flex flex-wrap items-center gap-3">
+   931→                <label className={cn(
+   932→                  "flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-colors",
+   933→                  compareMode === "period"
+   934→                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+   935→                    : "border-slate-300 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800/50"
+   936→                )}>
+   937→                  <input
+   938→                    type="radio" name="compareMode" value="period"
+   939→                    checked={compareMode === "period"}
+   940→                    onChange={() => setCompareMode("period")}
+   941→                    className="size-3.5 accent-emerald-600"
+   942→                  />
+   943→                  <span className="font-semibold">الفترة الحالية مقابل السابقة</span>
+   944→                </label>
+   945→                <label className={cn(
+   946→                  "flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-colors",
+   947→                  compareMode === "monthCumulative"
+   948→                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+   949→                    : "border-slate-300 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800/50"
+   950→                )}>
+   951→                  <input
+   952→                    type="radio" name="compareMode" value="monthCumulative"
+   953→                    checked={compareMode === "monthCumulative"}
+   954→                    onChange={() => setCompareMode("monthCumulative")}
+   955→                    className="size-3.5 accent-emerald-600"
+   956→                  />
+   957→                  <span className="font-semibold">الشهر مقابل التراكمي (نسبة الشهر من السنة)</span>
+   958→                </label>
+   959→                <label className={cn(
+   960→                  "flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-colors",
+   961→                  compareMode === "chart"
+   962→                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+   963→                    : "border-slate-300 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800/50"
+   964→                )}>
+   965→                  <input
+   966→                    type="radio" name="compareMode" value="chart"
+   967→                    checked={compareMode === "chart"}
+   968→                    onChange={() => setCompareMode("chart")}
+   969→                    className="size-3.5 accent-emerald-600"
+   970→                  />
+   971→                  <BookCheck className="size-3.5 text-emerald-500" />
+   972→                  <span className="font-semibold">مطابقة دليل الحسابات (بالاسم أو الرقم)</span>
+   973→                </label>
+   974→                {compareMode === "monthCumulative" && (
+   975→                  <div className="flex items-center gap-1.5">
+   976→                    <Label className="text-xs font-semibold text-slate-500">عدد أشهر التراكمي:</Label>
+   977→                    <Input
+   978→                      type="number" min={1} max={24} value={numMonths}
+   979→                      onChange={(e) => setNumMonths(Math.max(1, Math.min(24, Number(e.target.value) || 12)))}
+   980→                      className="tnum w-16" dir="ltr"
+   981→                    />
+   982→                  </div>
+   983→                )}
+   984→              </div>
+   985→              <p className="text-[11px] text-slate-400 dark:text-slate-500">
+   986→                {compareMode === "period"
+   987→                  ? "المقارنة بين فترتين متساويتين (شهر مقابل شهر، أو سنة مقابل سنة) — يُعرض التغير ونسبته وحالة التغير."
+   988→                  : compareMode === "monthCumulative"
+   989→                    ? "المقارنة بين الشهر الحالي والتراكمي السنوي — يُعرض نسبة الشهر من التراكمي والمتبقي وحالة الشهر."
+   990→                    : "مطابقة دليل الحسابات بالاسم (≥ 90%) أو برقم الحساب — التصنيفات: أصول (1) · خصوم (2) · مصروفات (3، 5، 6) · إيرادات (4، 7). التغير الجوهري = تغير تصنيف الحساب."}
+   991→              </p>
+   992→            </div>
+   993→
+   994→            {/* Files */}
+   995→            <div className="grid gap-4 lg:grid-cols-2">
+   996→              <FileSlot num={1} accent="amber" status={status1} label={l1} onLabel={setL1}
+   997→                onFile={(f) => handleFile(f, 1)} headers={raw1?.headers ?? []}
+   998→                cn={cn1} cd={cd1} setCn={setCn1} setCd={setCd1}
+   999→                periodLabel={compareMode === "monthCumulative" ? "التراكمي للسنة" : compareMode === "chart" ? "الدليل القديم" : "الفترة المقارنة (السابقة)"}
+  1000→                labelPlaceholder={compareMode === "monthCumulative" ? "السنة 2026م" : compareMode === "chart" ? "الدليل القديم" : "يونيو 2025م"}
+  1001→              />
+  1002→              <FileSlot num={2} accent="emerald" status={status2} label={l2} onLabel={setL2}
+  1003→                onFile={(f) => handleFile(f, 2)} headers={raw2?.headers ?? []}
+  1004→                cn={cn2} cd={cd2} setCn={setCn2} setCd={setCd2}
+  1005→                periodLabel={compareMode === "monthCumulative" ? "الشهر الحالي" : compareMode === "chart" ? "الدليل الجديد" : "الفترة الحالية"}
+  1006→                labelPlaceholder={compareMode === "monthCumulative" ? "يونيو 2026م" : compareMode === "chart" ? "الدليل الجديد" : "يونيو 2026م"}
+  1007→              />
+  1008→            </div>
+  1009→
+  1010→            {/* Base account + prefixes — hidden in chart mode */}
+  1011→            {compareMode !== "chart" && (
+  1012→            <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-900/40">
+  1013→              <div className="space-y-1.5">
+  1014→                <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+  1015→                  حساب صافي الإيرادات (الأساس)
+  1016→                </Label>
+  1017→                <Select value={base ?? ""} onValueChange={(v) => setBase(v || null)} disabled={baseOptions.length === 0 || settingsLocked}>
+  1018→                  <SelectTrigger className="w-full" size="sm"><SelectValue placeholder="— اختر الحساب —" /></SelectTrigger>
+  1019→                  <SelectContent className="max-h-72">
+  1020→                    {baseOptions.map((o) => (<SelectItem key={o.nk} value={o.nk}>{o.nm}</SelectItem>))}
+  1021→                  </SelectContent>
+  1022→                </Select>
+  1023→              </div>
+  1024→
+  1025→              <div>
+  1026→                <p className="mb-2 text-xs font-bold text-slate-700 dark:text-slate-200">
+  1027→                  بادئات بنود القائمة (IAS 1 — طريقة الوظيفة)
+  1028→                </p>
+  1029→                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+  1030→                  <PrefixInput id="cp" label="تكلفة الإيرادات" value={costPrefix} onChange={setCostPrefix} disabled={settingsLocked} />
+  1031→                  <PrefixInput id="sp" label="البيع والتوزيع" value={sellPrefix} onChange={setSellPrefix} disabled={settingsLocked} />
+  1032→                  <PrefixInput id="gp" label="الإدارية والعمومية" value={adminPrefix} onChange={setAdminPrefix} disabled={settingsLocked} />
+  1033→                  <PrefixInput id="op" label="تشغيلية أخرى" value={otherOpPrefix} onChange={setOtherOpPrefix} disabled={settingsLocked} />
+  1034→                  <PrefixInput id="fp" label="التمويل" value={financePrefix} onChange={setFinancePrefix} disabled={settingsLocked} />
+  1035→                  <PrefixInput id="tp" label="ضريبة الدخل" value={taxPrefix} onChange={setTaxPrefix} disabled={settingsLocked} />
+  1036→                  <PrefixInput id="ocip" label="الدخل الشامل الآخر" value={ociPrefix} onChange={setOciPrefix} disabled={settingsLocked} />
+  1037→                </div>
+  1038→                <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+  1039→                  ⚠ الإجماليات من الحسابات الفرعية (الأوراق) فقط — الرئيسية تُعرض عريضة ·
+  1040→                  البنود غير المصنفة تحت البادئة <b>3</b> تظهر ضمن «تشغيلية أخرى».
+  1041→                  {settingsLocked && <span className="text-amber-600 dark:text-amber-400"> · الصلاحيات مطلوبة لتعديل البادئات.</span>}
+  1042→                </p>
+  1043→              </div>
+  1044→            </div>
+  1045→            )}
+  1046→
+  1047→            {/* Balance sheet (optional) — collapsible. Hidden in chart mode */}
+  1048→            {compareMode !== "chart" && (
+  1049→            <Collapsible open={bsOpen} onOpenChange={setBsOpen} className="rounded-xl border border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40">
+  1050→              <CollapsibleTrigger asChild>
+  1051→                <button
+  1052→                  type="button"
+  1053→                  className={cn(
+  1054→                    "flex w-full items-center justify-between gap-2 px-4 py-3 text-right transition-colors",
+  1055→                    "hover:bg-slate-100/70 dark:hover:bg-slate-800/40",
+  1056→                    "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40"
+  1057→                  )}
+  1058→                  aria-expanded={bsOpen}
+  1059→                >
+  1060→                  <span className="flex items-center gap-2">
+  1061→                    <Scale className="size-4 text-emerald-600 dark:text-emerald-400" />
+  1062→                    <span className="text-sm font-bold text-slate-700 dark:text-slate-200">قائمة المركز المالي</span>
+  1063→                    <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
+  1064→                      اختياري
+  1065→                    </span>
+  1066→                    {hasBsData && (
+  1067→                      <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+  1068→                        ✓ مُفعّل — للتحليل المالي
+  1069→                      </span>
+  1070→                    )}
+  1071→                  </span>
+  1072→                  <ChevronDown
+  1073→                    className={cn(
+  1074→                      "size-4 text-slate-500 transition-transform",
+  1075→                      bsOpen && "rotate-180"
+  1076→                    )}
+  1077→                  />
+  1078→                </button>
+  1079→              </CollapsibleTrigger>
+  1080→              <CollapsibleContent className="space-y-4 border-t border-slate-200 p-4 dark:border-slate-800">
+  1081→                <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+  1082→                  {compareMode === "period"
+  1083→                    ? "ارفع ملفي أرصدة قائمة المركز المالي (مقارنة + حالي) لتفعيل"
+  1084→                    : "ارفع ملف أرصدة قائمة المركز المالي (للتراكمي) لتفعيل"}
+  1085→                  <strong className="font-semibold text-slate-700 dark:text-slate-200"> التحليل المالي</strong> —
+  1086→                  نسب السيولة والمديونية والربحية والكفاءة. تُحسب الأصول بـ«مدين − دائن» والخصوم وحقوق الملكية بـ«دائن − مدين».
+  1087→                </p>
+  1088→
+  1089→                {/* BS Files — dynamic: 2 files in period mode, 1 file in month mode */}
+  1090→                {compareMode === "period" ? (
+  1091→                  <div className="grid gap-4 lg:grid-cols-2">
+  1092→                    <FileSlot num={1} accent="amber" status={bsStatus1} label="" onLabel={() => {}}
+  1093→                      onFile={(f) => handleBsFile(f, 1)} headers={bsRaw1?.headers ?? []}
+  1094→                      cn={bsCn1} cd={bsCd1} setCn={setBsCn1} setCd={setBsCd1}
+  1095→                      periodLabel="مركز مالي — مقارنة (سابقة)"
+  1096→                      labelPlaceholder=""
+  1097→                    />
+  1098→                    <FileSlot num={2} accent="emerald" status={bsStatus2} label="" onLabel={() => {}}
+  1099→                      onFile={(f) => handleBsFile(f, 2)} headers={bsRaw2?.headers ?? []}
+  1100→                      cn={bsCn2} cd={bsCd2} setCn={setBsCn2} setCd={setBsCd2}
+  1101→                      periodLabel="مركز مالي — حالي"
+  1102→                      labelPlaceholder=""
+  1103→                    />
+  1104→                  </div>
+  1105→                ) : (
+  1106→                  <FileSlot num={1} accent="amber" status={bsStatus1} label="" onLabel={() => {}}
+  1107→                    onFile={(f) => handleBsFile(f, 1)} headers={bsRaw1?.headers ?? []}
+  1108→                    cn={bsCn1} cd={bsCd1} setCn={setBsCn1} setCd={setBsCd1}
+  1109→                    periodLabel="مركز مالي — للتراكمي"
+  1110→                    labelPlaceholder=""
+  1111→                  />
+  1112→                )}
+  1113→
+  1114→                {/* BS Prefixes — Main categories */}
+  1115→                <div>
+  1116→                  <p className="mb-2 text-xs font-bold text-slate-700 dark:text-slate-200">
+  1117→                    بادئات البنود الرئيسية لقائمة المركز المالي
+  1118→                  </p>
+  1119→                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+  1120→                    <BsPrefixSelect id="bsca" label="أصول متداولة" value={caPrefix} onChange={setCaPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1121→                    <BsPrefixSelect id="bsnca" label="أصول غير متداولة" value={ncaPrefix} onChange={setNcaPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1122→                    <BsPrefixSelect id="bscl" label="خصوم متداولة" value={clPrefix} onChange={setClPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1123→                    <BsPrefixSelect id="bsncl" label="خصوم غير متداولة" value={nclPrefix} onChange={setNclPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1124→                    <BsPrefixSelect id="bseq" label="حقوق الملكية" value={eqPrefix} onChange={setEqPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1125→                  </div>
+  1126→                </div>
+  1127→
+  1128→                {/* BS Prefixes — Detailed items */}
+  1129→                <div>
+  1130→                  <p className="mb-2 text-xs font-bold text-slate-700 dark:text-slate-200">
+  1131→                    بادئات البنود التفصيلية (اختياري — يُكتشف بالاسم عند التركيب فارغاً)
+  1132→                  </p>
+  1133→                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+  1134→                    <BsPrefixSelect id="bsinv" label="المخزون" value={invPrefix} onChange={setInvPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1135→                    <BsPrefixSelect id="bscash" label="النقدية" value={cashPrefix} onChange={setCashPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1136→                    <BsPrefixSelect id="bsrec" label="المدينون" value={recPrefix} onChange={setRecPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1137→                    <BsPrefixSelect id="bsfa" label="أصول ثابتة" value={faPrefix} onChange={setFaPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1138→                    <BsPrefixSelect id="bspay" label="الدائنون" value={payPrefix} onChange={setPayPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1139→                    <BsPrefixSelect id="bsstd" label="قروض قصيرة" value={stdPrefix} onChange={setStdPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1140→                    <BsPrefixSelect id="bsltd" label="قروض طويلة" value={ltdPrefix} onChange={setLtdPrefix} accounts={effBs1?.A ?? effBs2?.A ?? []} />
+  1141→                  </div>
+  1142→                  <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+  1143→                    ⚠ يمكنك تحديد <strong className="font-semibold text-slate-600 dark:text-slate-300">أكثر من حساب أب</strong> لكل بند: اكتب البادئة ثم اضغط Enter أو الفاصلة لإضافتها كـ chip، ثم أضف بادئة أخرى. اضغط × على الـ chip لإزالتها. اترك الحقل فارغًا لاكتشاف البند بالاسم تلقائيًا (للبنود التفصيلية فقط).
+  1144→                  </p>
+  1145→                </div>
+  1146→
+  1147→                {/* BS Quick stats */}
+  1148→                {hasBsData && (
+  1149→                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-900/50 dark:bg-emerald-950/20 sm:grid-cols-3 lg:grid-cols-5">
+  1150→                    <BsStat label="إجمالي الأصول (مقارنة)" value={bsTotals1?.totalAssets ?? null} />
+  1151→                    <BsStat label="إجمالي الأصول (حالي)" value={bsTotals2?.totalAssets ?? bsTotals1?.totalAssets ?? null} />
+  1152→                    <BsStat label="حقوق الملكية (حالي)" value={bsTotals2?.equity ?? bsTotals1?.equity ?? null} />
+  1153→                    <BsStat label="إجمالي الخصوم (حالي)" value={bsTotals2?.totalLiabilities ?? bsTotals1?.totalLiabilities ?? null} />
+  1154→                    <BsStat label="رأس المال العامل (حالي)" value={bsTotals2 ? bsTotals2.currentAssets - bsTotals2.currentLiabilities : bsTotals1 ? bsTotals1.currentAssets - bsTotals1.currentLiabilities : null} />
+  1155→                  </div>
+  1156→                )}
+  1157→              </CollapsibleContent>
+  1158→            </Collapsible>
+  1159→            )}
+  1160→
+  1161→            {/* Actions */}
+  1162→            <div className="flex flex-wrap items-center gap-3">
+  1163→              {canAdd ? (
+  1164→                <Button onClick={handleMatch} disabled={!bothReady} className="bg-emerald-600 text-white shadow-sm hover:bg-emerald-700">
+  1165→                  <Play className="size-4" /> {compareMode === "chart" ? "بدء مطابقة الدليل" : "بدء المطابقة"}
+  1166→                </Button>
+  1167→              ) : (
+  1168→                <span className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
+  1169→                  ⚠ صلاحية «إضافة» مطلوبة لتشغيل المطابقة
+  1170→                </span>
+  1171→              )}
+  1172→              {canExport && (
+  1173→                <Button onClick={handleExport} disabled={!result} variant="outline" className="border-slate-300 dark:border-slate-700">
+  1174→                  <Download className="size-4" /> تنزيل Excel
+  1175→                </Button>
+  1176→              )}
+  1177→              {!bothReady && canAdd && <span className="text-xs text-slate-400 dark:text-slate-500">ارفع الملفين لتفعيل المطابقة</span>}
+  1178→            </div>
+  1179→          </CardContent>
+  1180→        </Card>
+  1181→
+  1182→        {/* Results — Chart-of-accounts mode */}
+  1183→        {result && compareMode === "chart" && (
+  1184→          <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="space-y-4">
+  1185→            <div className="mb-2 flex items-center justify-between gap-2">
+  1186→              <h2 className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+  1187→                <BookCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
+  1188→                مطابقة دليل الحسابات
+  1189→                <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">بالاسم أو الرقم</span>
+  1190→              </h2>
+  1191→              <span className="text-xs text-slate-400 dark:text-slate-500">{L1} ← {L2}</span>
+  1192→            </div>
+  1193→            <ChartResultsTable rows={result} L1={L1} L2={L2} />
+  1194→          </motion.section>
+  1195→        )}
+  1196→
+  1197→        {/* Results — Period/Month modes */}
+  1198→        {result && cat && T && compareMode !== "chart" && (
+  1199→          <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} className="space-y-4">
+  1200→            <SummaryCards counts={counts} T={T} compareMode={compareMode} />
+  1201→            <div>
+  1202→              <div className="mb-2 flex items-center justify-between gap-2">
+  1203→                <h2 className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+  1204→                  <FileSpreadsheet className="size-4 text-emerald-600 dark:text-emerald-400" />
+  1205→                  قائمة الربح أو الخسارة والدخل الشامل
+  1206→                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">IFRS · IAS 1</span>
+  1207→                </h2>
+  1208→                <span className="text-xs text-slate-400 dark:text-slate-500">{L1} ← {L2}</span>
+  1209→              </div>
+  1210→              <Tabs defaultValue="table" className="w-full">
+  1211→                <TabsList className="bg-slate-100 dark:bg-slate-800">
+  1212→                  <TabsTrigger value="table" className="gap-1.5">
+  1213→                    <Table2 className="size-3.5" />
+  1214→                    جدول المقارنة
+  1215→                  </TabsTrigger>
+  1216→                  <TabsTrigger value="charts" className="gap-1.5">
+  1217→                    <BarChart3 className="size-3.5" />
+  1218→                    الرسومات البيانية
+  1219→                  </TabsTrigger>
+  1220→                  <TabsTrigger value="analysis" className="gap-1.5">
+  1221→                    <Calculator className="size-3.5" />
+  1222→                    التحليل المالي
+  1223→                  </TabsTrigger>
+  1224→                </TabsList>
+  1225→                <TabsContent value="table" className="mt-3">
+  1226→                  <ResultsTable cat={cat} T={T} L1={L1} L2={L2} netRow={netRow} compareMode={compareMode} numMonths={numMonths} />
+  1227→                </TabsContent>
+  1228→                <TabsContent value="charts" className="mt-3">
+  1229→                  <ChartsView cat={cat} T={T} L1={L1} L2={L2} />
+  1230→                </TabsContent>
+  1231→                <TabsContent value="analysis" className="mt-3">
+  1232→                  {hasBsData ? (
+  1233→                    <FinancialAnalysis ratioGroups={ratioGroups} L1={L1} L2={L2} />
+  1234→                  ) : (
+  1235→                    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-amber-300 bg-amber-50/40 py-14 text-center dark:border-amber-900/50 dark:bg-amber-950/20">
+  1236→                      <div className="flex size-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
+  1237→                        <Scale className="size-6" />
+  1238→                      </div>
+  1239→                      <div>
+  1240→                        <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">التحليل المالي غير متاح</p>
+  1241→                        <p className="text-xs text-slate-500 dark:text-slate-400">
+  1242→                          ارفع ملف قائمة المركز المالي لعرض التحليل المالي
+  1243→                        </p>
+  1244→                      </div>
+  1245→                    </div>
+  1246→                  )}
+  1247→                </TabsContent>
+  1248→              </Tabs>
+  1249→            </div>
+  1250→          </motion.section>
+  1251→        )}
+  1252→
+  1253→        {!result && (
+  1254→          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-slate-300 bg-white/50 py-16 text-center dark:border-slate-700 dark:bg-slate-900/30">
+  1255→            <div className="flex size-14 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400">
+  1256→              <FileSpreadsheet className="size-7" />
+  1257→            </div>
+  1258→            <div>
+  1259→              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">لم تُنتج المطابقة بعد</p>
+  1260→              <p className="text-xs text-slate-400 dark:text-slate-500">ارفع الملفين واضبط البادئات ثم اضغط «بدء المطابقة»</p>
+  1261→            </div>
+  1262→          </div>
+  1263→        )}
+  1264→      </main>
+  1265→
+  1266→      {/* Sticky footer */}
+  1267→      <footer className="mt-auto border-t border-slate-200 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
+  1268→        <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-1 px-4 py-4 text-center sm:flex-row sm:px-6 sm:text-right">
+  1269→          <p className="text-xs text-slate-500 dark:text-slate-400">
+  1270→            قائمة الربح أو الخسارة والدخل الشامل — IFRS (IAS 1) · تُجرى كل المعالجة محليًا في متصفحك.
+  1271→          </p>
+  1272→          <p className="text-xs text-slate-400 dark:text-slate-500">Next.js 16 · TypeScript · shadcn/ui</p>
+  1273→        </div>
+  1274→      </footer>
+  1275→
+  1276→      {/* Delete-group confirmation */}
+  1277→      <AlertDialog open={!!deleteGroupTarget} onOpenChange={(open) => {
+  1278→        if (!open && groupBusyId !== deleteGroupTarget?.id) setDeleteGroupTarget(null);
+  1279→      }}>
+  1280→        <AlertDialogContent>
+  1281→          <AlertDialogHeader>
+  1282→            <AlertDialogTitle className="flex items-center gap-2">
+  1283→              <FolderX className="size-5 text-rose-600" />
+  1284→              حذف المجموعة
+  1285→            </AlertDialogTitle>
+  1286→            <AlertDialogDescription>
+  1287→              سيتم حذف المجموعة <strong className="text-slate-800 dark:text-slate-100">{deleteGroupTarget?.name}</strong>.
+  1288→              التقارير بداخلها لن تُحذف — ستنتقل تلقائياً إلى «بدون مجموعة».
+  1289→            </AlertDialogDescription>
+  1290→          </AlertDialogHeader>
+  1291→          <AlertDialogFooter>
+  1292→            <AlertDialogCancel disabled={!!groupBusyId}>إلغاء</AlertDialogCancel>
+  1293→            <AlertDialogAction
+  1294→              onClick={(e) => {
+  1295→                e.preventDefault();
+  1296→                if (deleteGroupTarget) void handleDeleteGroup(deleteGroupTarget.id);
+  1297→              }}
+  1298→              disabled={!!groupBusyId}
+  1299→              className="gap-1.5 bg-rose-600 text-white hover:bg-rose-700"
+  1300→            >
+  1301→              {groupBusyId ? (
+  1302→                <><Loader2 className="size-4 animate-spin" /> جارٍ الحذف…</>
+  1303→              ) : (
+  1304→                <><FolderX className="size-4" /> حذف المجموعة</>
+  1305→              )}
+  1306→            </AlertDialogAction>
+  1307→          </AlertDialogFooter>
+  1308→        </AlertDialogContent>
+  1309→      </AlertDialog>
+  1310→    </div>
+  1311→  );
+  1312→}
+  1313→
+  1314→/* ── FileSlot component ──────────────────────────────────────────────── */
+  1315→
+  1316→function FileSlot({ num, accent, status, label, onLabel, onFile, headers, cn, cd, setCn, setCd, periodLabel, labelPlaceholder }: {
+  1317→  num: 1 | 2; accent: "emerald" | "amber"; status: FileStatus; label: string; onLabel: (v: string) => void;
+  1318→  onFile: (f: File) => void; headers: string[]; cn: number | null; cd: number | null;
+  1319→  setCn: (v: number) => void; setCd: (v: number) => void; periodLabel: string; labelPlaceholder: string;
+  1320→}) {
+  1321→  return (
+  1322→    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/40">
+  1323→      <div className="mb-3 flex items-center justify-between gap-2">
+  1324→        <div className="flex items-center gap-2">
+  1325→          <span className={"flex size-6 items-center justify-center rounded-md text-xs font-bold text-white " + (accent === "emerald" ? "bg-emerald-600" : "bg-amber-500")}>{num}</span>
+  1326→          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">الملف {num === 1 ? "الأول" : "الثاني"}</span>
+  1327→        </div>
+  1328→        <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500">{periodLabel}</span>
+  1329→      </div>
+  1330→      <FileDropzone status={status} onFile={onFile} accent={accent} />
+  1331→      <div className="mt-3 space-y-1.5">
+  1332→        <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">التسمية</Label>
+  1333→        <Input value={label} onChange={(e) => onLabel(e.target.value)}
+  1334→          placeholder={labelPlaceholder} className="w-full" />
+  1335→      </div>
+  1336→      {headers.length > 0 && (
+  1337→        <div className="mt-3 grid grid-cols-2 gap-2">
+  1338→          <div className="space-y-1.5">
+  1339→            <Label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">عمود الاسم</Label>
+  1340→            <ColumnSelect headers={headers} value={cn} onChange={setCn} placeholder="الاسم" />
+  1341→          </div>
+  1342→          <div className="space-y-1.5">
+  1343→            <Label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">عمود المدين</Label>
+  1344→            <ColumnSelect headers={headers} value={cd} onChange={setCd} placeholder="المدين" />
+  1345→          </div>
+  1346→        </div>
+  1347→      )}
+  1348→    </div>
+  1349→  );
+  1350→}
+  1351→
+  1352→/* ── BsStat component (small inline stat for BS quick preview) ────────── */
+  1353→
+  1354→function BsStat({ label, value }: { label: string; value: number | null }) {
+  1355→  const display = value == null ? "—" : fmtAmount(value);
+  1356→  const isNeg = value != null && value < 0;
+  1357→  return (
+  1358→    <div className="flex flex-col gap-0.5 rounded-md bg-white/70 px-2.5 py-1.5 dark:bg-slate-900/50">
+  1359→      <span className="text-[10px] text-slate-500 dark:text-slate-400">{label}</span>
+  1360→      <span className={cn(
+  1361→        "tnum text-xs font-bold leading-tight",
+  1362→        isNeg ? "text-rose-600 dark:text-rose-400" : "text-slate-800 dark:text-slate-100"
+  1363→      )}>{display}</span>
+  1364→    </div>
+  1365→  );
+  1366→}
+  1367→
+  1368→/* ── ReportRow (single saved report entry inside the load dialog) ─────── */
+  1369→
+  1370→function ReportRow({
+  1371→  r, onLoad, onDelete, canDelete, isOwner,
+  1372→}: {
+  1373→  r: { id: string; name: string; label1: string; label2: string; updatedAt: string; groupId: string | null; userId: string | null };
+  1374→  onLoad: (id: string) => void;
+  1375→  onDelete: (id: string) => void;
+  1376→  canDelete: boolean;
+  1377→  /**
+  1378→   * Whether the current user owns this report. Reports in linked groups (shared
+  1379→   * by another admin) are read-only — the delete button is hidden for them.
+  1380→   */
+  1381→  isOwner: boolean;
+  1382→}) {
+  1383→  return (
+  1384→    <div className="flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+  1385→      <button
+  1386→        onClick={() => onLoad(r.id)}
+  1387→        className="flex-1 text-right transition-colors"
+  1388→      >
+  1389→        <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{r.name}</div>
+  1390→        <div className="text-[11px] text-slate-400">
+  1391→          {r.label1 || "—"} ← {r.label2 || "—"} · {new Date(r.updatedAt).toLocaleDateString("ar")}
+  1392→        </div>
+  1393→      </button>
+  1394→      {canDelete && isOwner && (
+  1395→        <Button
+  1396→          size="icon"
+  1397→          variant="ghost"
+  1398→          className="size-8 shrink-0 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+  1399→          onClick={() => onDelete(r.id)}
+  1400→          aria-label="حذف التقرير"
+  1401→          title="حذف التقرير"
+  1402→        >
+  1403→          <Trash2 className="size-3.5" />
+  1404→        </Button>
+  1405→      )}
+  1406→    </div>
+  1407→  );
+  1408→}
+  1409→

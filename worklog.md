@@ -1,0 +1,306 @@
+# Project Worklog
+
+---
+Task ID: 0
+Agent: main (Z.ai Code)
+Task: ترقية المشروع من GLM-5.2 إلى GLM-5.3-Flash
+
+Work Log:
+- فحص المشروع: قالب Next.js 16 + Tailwind 4 + shadcn/ui + Prisma (SQLite) بدون أي استخدام سابق لنماذج GLM في الكود
+- اختبار SDK (z-ai-web-dev-sdk): يدعم معامل `model` في chat.completions.create
+- اختبار حي: نموذج `GLM-5.3-Flash` يعمل بنجاح عبر SDK (استجابة صحيحة بالعربية والإنجليزية)
+
+Stage Summary:
+- الخطة: بناء تطبيق محادثة AI كامل يستخدم GLM-5.3-Flash كنموذج افتراضي مع إبقاء GLM-5.2 كخيار قديم (legacy) لإظهار الترقية، مع streaming وحفظ المحادثات في SQLite عبر Prisma
+
+---
+Task ID: 1-7 (كامل)
+Agent: main (Z.ai Code)
+Task: تنفيذ ترقية المشروع إلى GLM-5.3-Flash كاملًا (واجهة + backend + تحقق بالمتصفح)
+
+Work Log:
+- Prisma: إضافة نموذجي Conversation و Message (حذف User/Post غير المستخدمين) + db:push ناجح
+- src/lib/ai-config.ts: سجل نماذج مشترك — GLM-5.3-Flash (افتراضي، شارة "مُفعّل" خضراء) و GLM-5.2 (قديم، شارة "قديم" كهرمانية) + DEFAULT_MODEL
+- الواجهة (src/components/chat/): chat-app (إدارة الحالة + بث NDJSON + AbortController)، model-selector، upgrade-banner (قابلة للإخفاء)، conversations-sidebar (إنشاء/فتح/حذف)، message-list (شاشة ترحيب + اقتراحات)، message-bubble (Markdown + شارات النموذج + collapsible للتفكير)، composer (إرسال/إيقاف + وضع التفكير)
+- layout.tsx: lang=ar + dir=rtl + خط IBM Plex Sans Arabic + ThemeProvider (فاتح/داكن/نظام)
+- Backend: POST /api/chat (بث NDJSON: meta/thinking/delta/done/error مع حفظ الرسائل حتى عند الانقطاع)، GET /api/conversations، GET/PATCH/DELETE /api/conversations/[id]
+- إصلاحات: خطأ lint set-state-in-effect (rAF)، إصلاح ارتفاع التخطيط إلى h-dvh ليظهر الـ composer والتذييل دائمًا
+- تحقق Agent Browser: إرسال رسالة → بث حي → حفظ؛ سياق متعدد الأدوار (فهم الضمائر)؛ تبديل النموذج 5.3↔5.2 مع شارات صحيحة؛ فتح/حذف محادثة؛ موبايل 390px (Sheet جانبي)؛ وضع داكن؛ وضع التفكير؛ footer ثابت أسفله؛ لا أخطاء console حرجة
+- تنظيف: حذف بيانات الاختبار من DB + lint نظيف + dev.log سليم
+
+Stage Summary:
+- المشروع مُرقّى بنجاح من GLM-5.2 إلى GLM-5.3-Flash: تطبيق محادثة عربي RTL كامل بالبث المباشر، حفظ المحادثات، محدد نماذج يوضح الترقية (5.2 قديم ← 5.3-Flash الحالي)، دعم وضع التفكير، وضع داكن، وتصميم متجاوب — تم التحقق من كل المسارات الذهبية بالمتصفح
+
+---
+Task ID: 8
+Agent: main (Z.ai Code)
+Task: ترقية مشروع IFRS المرفوع (نظام مطابقة قوائم الحسابات وفق IFRS) من GLM-5.2 إلى GLM-5.3-Flash
+
+Work Log:
+- استخراج الأرشيف المرفوع workspace-0062213b...tar إلى /tmp/uploaded-projects والتحقق: مشروع "نظام مطابقة قوائم الحسابات وفق IFRS" (Next.js 16 + Prisma + NextAuth) بدون أي تكامل AI سابق
+- نسخ احتياطي لتطبيق المحادثة السابق في /home/z/backup-chatapp-glm/
+- ترحيل المشروع إلى /home/z/my-project: (src, public, prisma, db/custom.db, package.json, bun.lock, .env, README, CHANGELOG, LICENSE) + أرشفة worklog الأصلي في worklog-archive-ifrs.md
+- bun install (أضاف bcryptjs, jszip, xlsx-js-style) + db:generate + db:push + إعادة تشغيل الخادم
+- التحقق بالمتصفح من عمل المشروع بعد الترحيل (الصفحة الرئيسية، الملفات، المطابقة)
+- الترقية الفعلية:
+  * src/lib/ai-config.ts: سجل النماذج (GLM-5.3-Flash الحالي، GLM-5.2 قديم)
+  * POST /api/ai/analyze: بث NDJSON (meta/delta/done/error) بنموذج GLM-5.3-Flash + تنقية المدخلات + prompt محلل مالي CFA بالعربية
+  * src/components/accounts/ai-analysis-panel.tsx: لوحة "التحليل الذكي المعزّز" مع شارة GLM-5.3-Flash وشارة "ترقية من GLM-5.2"، بث مباشر، إيقاف، إعادة توليد، نسخ
+  * الدمج في financial-analysis.tsx بعد شريط التنبيهات
+- توليد 4 ملفات Excel اختبارية (ميزانا مراجعة + قائمتا مركز مالي) في tests/gen-test-files.ts واختبار التدفق الكامل بالمتصفح: رفع → مطابقة → تبويب التحليل → توليد التحليل الذكي → نتيجة دقيقة بأرقام حقيقية (CCC=87.19 يوم، دوران المخزون 3.3×)
+- تحقق إضافي: الوضع الداكن، موبايل 390px، lint نظيف، dev.log سليم
+- توثيق الترقية في CHANGELOG.md و README.md
+
+Stage Summary:
+- المشروع المرفوع أصبح هو المشروع النشط في مساحة العمل، وتمت ترقيته فعلياً من GLM-5.2 إلى GLM-5.3-Flash عبر ميزة "التحليل الذكي المعزّز" مع بث مباشر — تم التحقق من التدفق الكامل بالمتصفح ببيانات مالية واقعية
+
+---
+Task ID: 9
+Agent: main (Z.ai Code)
+Task: (1) إصلاح عدم استعادة «حساب صافي الإيرادات» عند فتح الملفات المحفوظة، (2) إضافة البحث عن الحساب في قائمة المركز المالي، (3) إعادة تسمية «جدول المقارنة» إلى «قائمة الربح والخسارة والدخل الشامل الآخر»
+
+Work Log:
+- فحص الصورة المرفوعة: تطبيق القوائم المالية (React على / + نسخة HTML مستقلة على /قائمة-الربح-IFRS.html)
+- اكتشاف 3 جذور جذرية لخلل الحفظ/الفتح:
+  * الجذر 1 (الأخطر): غياب NEXTAUTH_SECRET في .env — next-auth v4 يعتمد hash(JSON.stringify(options)) كسر افتراضي، بينما getServerSession يستبدل providers:[] فيتولد مفتاح مختلف عن مسار /api/auth/* → فشل فك تشفير JWT → كل مسارات /api/reports و /api/users و /api/groups ترجع 401 (تأكيد بالمتصفح ثم بالإصلاح). أضفت NEXTAUTH_SECRET عشوائي + NEXTAUTH_URL في .env وأعدت تشغيل الخادم → GET /api/reports أصبح 200
+  * الجذر 2: reExtract() كانت تعيد [] للملفات المستعادة من DB لأن rawRows=[] وأصبحت تُعيد file.A كما هي عند غياب rawRows (src/lib/accounts.ts) — كان هذا يفرّغ baseOptions فيُصفَّر الحساب الأساسي عبر التأثير التلقائي، ويكسر إعادة المطابقة بعد الفتح (0 حساب)
+  * الجذر 3: الواجهة ترسل bsFile1Data/bsFile1Headers/bsFile1Cols بينما الخادم يقرأ body.bsFileData → بيانات ملف المركز المالي تُسقط صامتاً عند الحفظ. وحّدت القراءة في POST/PUT /api/reports لقبول التسميتين
+- البحث عن الحساب في قائمة المركز المالي:
+  * BsPrefixSelect: زر قائمة منسدلة (ScanSearch) مع بحث عربي مطبَّع + بحث برقم، قائمة الحسابات الرئيسية، إضافة chips متعددة دون إغلاق، إزالة datalist الأصلي (src/components/accounts/bs-prefix-select.tsx)
+  * AccountSelect جديد قابل للبحث لحساب صافي الإيرادات (Popover + بحث + أرقام حسابات + Check) — src/components/accounts/account-select.tsx، مع تصدير filterAccounts وإضافة num إلى BaseOption في accounts.ts
+  * النسخة HTML: حقل بحث bsSearch في شريط تبويب قائمة المركز المالي يرشّح صفوف الجدول ويحدّث العدّاد
+- إعادة التسمية: تبويب React (page.tsx) و HTML (1144) من «جدول المقارنة» إلى «قائمة الربح والخسارة والدخل الشامل الآخر» + document.title وملف CSV في HTML + TabsList flex-wrap للالتفاف على الموبايل
+- تحقق متصفح كامل (Agent Browser): رفع 3 ملفات → اختيار «إيرادات أخرى» كحساب أساس عبر البحث → إضافة chips عبر البحث → مطابقة (26 صف) → حفظ → reload → فتح التقرير → استعادة كل شيء: الحساب الأساسي «إيرادات أخرى» ✓، ملفات 6+6 حساب ✓، مركز مالي 14 حساب ✓ مع شارة «✓ مُفعّل» ✓، chip «11· الأصول المتداولة» ✓، إعادة المطابقة والتحليل المالي يعملان ✓
+- تحقق النسخة HTML: تسجيل دخول، رفع ملفات برمجياً، المطابقة، التبويب المُعاد تسميته، بحث «الموردون» في العرض الخام رشّح للصف 2101 فقط ✓
+- موبايل 390px + وضع داكن سليمان، lint نظيف، حذف 6 تقارير اختبار من DB، تحديث CHANGELOG.md
+
+Stage Summary:
+- الدورة الكاملة حفظ→فتح أصبحت تعمل فعلياً لأول مرة في تطبيق React (كانت معطلة بالكامل بسبب 401 + إفراغ البيانات + إسقاط بيانات المركز المالي). الحساب الأساسي وملفات القائمتين وإعدادات البادئات تُستعاد بالكامل، مع بحث جديد عن الحسابات في قائمة المركز المالي في النسختين، والتبويب يحمل الاسم الجديد
+- ملاحظة للمستخدم: بسبب إضافة NEXTAUTH_SECRET يجب تسجيل الدخول من جديد مرة واحدة (الجلسات القديمة ألغيت)
+
+---
+Task ID: 10
+Agent: main (Z.ai Code)
+Task: (1) إصلاح «صافي ايرادات المبيعات غير متاح» عند عرض قائمة المركز المالي وفق طريقة العرض ومقارنتها مع صافي المبيعات، (2) إضافة طريقة عرض «البنود ومساهمتها في صافي الربح»، (3) إعادة تسمية «مقارنتها مع صافي المبيعات» إلى «البنود ومساهمتها في صافي المبيعات»
+
+Work Log:
+- تتبع جذر المشكلة: طريقة العرض ③ «البنود ومساهمتها في صافي المبيعات» (renderBSRevenue) تعتمد على S.T.rev1/rev2 التي تُحسب في calc() من S.baseRow، وS.baseRow تُشتق في categorize() من S.base — لذا عند فتح تقرير محفوظ دون استعادة الحساب الأساس أو عدم اختياره تكون القيم صفراً فتظهر شاشة «غير متاح»
+- اكتشاف أن الجلسة السابقة (انقطعت) نفّذت معظم الأساس: حفظ base:S.base في التقرير، استعادة الحساب الأساس عبر fillBase() + إعادة تطبيق الاختيار المحفوظ قبل render()، إضافة الخيارين ③④ لقائمة bsViewSel، دالة renderBSRevenue مربوطة، ودالة renderBSProfit كُتبت لكنها لم تكن مربوطة بالموزّع
+- الإصلاح الأساسي لهذه الجلسة: إضافة فرع view==='profit' إلى موزّع renderBalanceSheet لربط renderBSProfit (كان اختيار ④ يعرض العرض القياسي خفيةً)
+- توليد ملفات اختبار جديدة tests/gen-bs-contribution-test-files.ts: ميزانا مراجعة بحساب أساس «صافي ايرادات المبيعات» (4100) بقيم محسوبة مسبقاً (rev 1,000,000/1,200,000، net 100,000/218,000) + قائمتا مركز مالي (قيم متطابقة التوازن)
+- تحقق متصفح كامل (Agent Browser) على النسخة HTML المستقلة:
+  * رفع 4 ملفات → الاختيار التلقائي للحساب الأساس «صافي ايرادات المبيعات» عمل ✓
+  * المطابقة → S.T صحيحة تماماً (rev1/rev2/net1/net2 مطابقة للقيم المحسوبة يدوياً) ✓
+  * طريقة العرض ③: صف مرجعي 100% + 14 بنداً بنسب صحيحة (النقدية 12.00%→12.50% = +0.50p.p) ✓
+  * طريقة العرض ④ (المربوطة حديثاً): صف صافي الربح 100% + نسب صحيحة (إجمالي الأصول 800%→412.84%) ✓
+  * الحفظ → إعادة تحميل الصفحة → فتح التقرير → rev/net مستعادة بالكامل والطريقتان ③④ تعرضان البيانات فوراً دون «غير متاح» ✓
+  * محاكاة عدم اختيار الحساب الأساس: شاشة إرشادية واضحة «صافي المبيعات غير متاح + كيفية التفعيل» ✓ (وطريقة ④ تعمل حتى بدونه لأنها تعتمد صافي الربح فقط — سلوك صحيح)
+  * العرضان ①② سليمان، البحث في الجدول يرشّح ضمن الطريقة ③، تصدير CSV وزر PDF دون أخطاء ✓
+- تحقق انحداري لتطبيق React: رفع الملفين → اختيار الأساس تلقائياً → مطابقة → صافي الإيرادات 1,200,000/1,000,000 وصافي الربح 218,000/100,000 في الجدول، التبويب باسم «قائمة الربح والخسارة والدخل الشامل الآخر» ✓
+- lint نظيف، dev.log بلا أخطاء، قاعدة البيانات بلا بيانات اختبار متبقية
+- تحديث CHANGELOG.md ببنود Fixed/Added/Changed الجديدة
+
+Stage Summary:
+- دورة كاملة تعمل الآن: رفع → مطابقة → عرض المركز المالي وفق الطرق الأربع (① IAS 1، ② كما في الإكسل، ③ البنود ومساهمتها في صافي المبيعات — المُعاد تسميتها، ④ البنود ومساهمتها في صافي الربح — الجديدة والمربوطة) مع استعادة صحيحة للحساب الأساس عند فتح التقارير المحفوظة، ما يقضي على رسالة «صافي ايرادات المبيعات غير متاح» في سيناريو المستخدم
+
+---
+Task ID: 11
+Agent: main (Z.ai Code)
+Task: تطوير وتحسين «تقرير الرسوم البياني» في تبويب الرسوم (تطبيق React) ليصبح تقريراً مالياً ديناميكياً بمحدد نوع تقرير (5 خيارات) ورسوم ومؤشرات وتنبيهات مشتقة من البيانات الحقيقية
+
+Work Log:
+- استكشاف: تبويب charts في page.tsx كان يعرض ChartsView (4 رسوم فقط لقائمة الدخل) دون بيانات المركز المالي أو النسب؛ حددت مصادر البيانات الفعلية: T (Totals) وcat (Categorized) وbsTotals1/2 (BalanceSheetTotals) وratioGroups (computeRatios) — كلها محسوبة فعلياً في page.tsx
+- طبقة البيانات (جديد src/lib/chart-data.ts): buildReportData({T, cat, L1, L2, bs1, bs2, ratioGroups}) تُنتج 4 مجموعات منفصلة عن العرض:
+  * pl: 5 بطاقات KPI (مع deltas) + اتجاه زمني (مصروفات مكدسة + إيراد/صافي) + movers (أوراق كل الفئات بما فيها الضريبة مع favorable/unfavorable) + تنبيهات (خسارة، تراجع هامش ≥5 ن.م، تغير غير اعتيادي ±25% وأثر ≥2% من الإيراد)
+  * bs: 4 KPI + هيكل أصول/تمويل (donut) + مقارنة مكونات + عناصر تفصيلية + تنبيهات (توازن المعادلة المحاسبية بتفسيرها، حقوق ملكية/رأس مال عامل سالب، رفع مالي >70%)
+  * fa: 4 KPI (تداول/سريعة من ratioGroups، هامش وROE) + اتجاهات الهوامش من T مباشرة (تعمل حتى دون مركز مالي) + مجموعات النسب مقسمة حسب وحدة القياس (مضاعفات/نسب/مبالغ/أيام) + استبعاد Defensive Interval المكرر + تنبيهات معايير قياسية (تداول<1، تغطية فوائد<1، D/E>2، CCC>90...)
+  * combined: ROA/ROE/دوران/مضاعف + تحليل دوپونت (3 مخططات مصغرة) + مؤشرات متقاطعة من القائمتين
+- طبقة العرض (إعادة بناء charts-view.tsx ~1100 سطر): محدد نوع التقرير (Select بـ5 خيارات) يبدّل الأقسام فوراً بحالة React دون reload؛ أنواع الرسوم: KPI Cards، Bar (رأسي/أفقي مجمّع)، Pie/Donut (tooltip بنسبة %)، Line (هوامش)، Area مكدس (اتجاه الأداء) عبر ComposedChart — كلها ChartContainer مع Tooltips/Legends عربية وfmtAmount/fmtRatio وXAxis reversed لاتجاه زمني RTL
+- معالجة الحالات: EmptyCard للأقسام غير المتاحة (بدون مركز مالي) و«لا توجد بنود تفصيلية» و«لا توجد تغيرات»، إخفاء السلاسل الصفرية تماماً، "—" للقيم المفقودة في KPI مع الحفاظ على الهوامش من قائمة الدخل
+- page.tsx: تمرير bs1/bs2 (مع منطق monthCumulative المطابق لتبويب التحليل) وratioGroups إلى ChartsView + تسمية التبويب «تقرير الرسوم البياني»
+- إصلاحان أثناء التحقق: (1) دقة pctDelta والهوامش r2→r4 لمنع تقريب 12.5% إلى 13.0%، (2) تقسيم مجموعات النسب حسب الوحدة بعد رصد خلط رأس المال العامل (مبلغ) مع المضاعفات في محور واحد — كان يجعل أعمدة النسب غير مرئية
+- تحقق متصفح كامل (Agent Browser) بملفات gen-test-files.ts (ميزان مراجعة + مركزان ماليان 2024/2025):
+  * pl: KPIs صحيحة يدوياً (1.2م +20%، مجمل 540ألف +35%، تشغيلي 285ألف +67.7%، صافي +90%، هامش 23.8% +8.8ن.م) ✓ تنبيه «لا تنبيهات» ✓ movers صحيحة (تمويل -25% مرغوب أخضر، تكلفة +10% غير مرغوب أحمر) ✓
+  * bs: KPIs (900ألف +12.5%، خصوم 500ألف -3.9%، حقوق 400ألف +42.9%، رأس عامل 300ألف +36.4%) ✓ توازن المعادلة ✓ الدونات والمقارنات ✓
+  * fa: تداول 2.00× +0.27، سريعة 1.33×، ROE 71% ✓ تنبيه «سيولة مريحة» ✓ رسم الهوامش ✓ مجموعات النسب بمحاور نظيفة بعد التقسيم ✓
+  * combined: ROA 32%، دوران 1.33× +0.08، مضاعف 2.25× -0.61 ✓ دوپونت متسق (0.2375×1.333×2.25=71.25%) ✓
+  * all: الأقسام الأربعة كلها بعناوينها (صفحة 10239px) ✓
+  * بدون مركز مالي: BS/combined تعرضان EmptyCard إرشادية وFA تعرض الهوامش مع "—" للنسب المفقودة وتنبيه إرشادي ✓
+  * موبايل 390px (KPIs عمودين، رسوم متجاوبة) ✓ وضع داكن عبر زر الثيم ✓
+- تحقق انحداري: تبويبا الجدول والتحليل المالي يعملان كما هما، SummaryCards سليمة، lint نظيف، dev.log بلا أخطاء، console المتصفح نظيف
+- تحديث CHANGELOG.md
+
+Stage Summary:
+- تقرير الرسوم البياني أصبح تقريراً مالياً ديناميكياً كامل الأركان: 5 أنواع تقارير تتبدل فوراً، بيانات 100% حقيقية من نتائج المطابقة (لا بيانات وهمية)، فصل كامل بين chart-data.ts (المنطق) وcharts-view.tsx (العرض)، تغطية كل مطلوبات المستخدم (KPIs، هوامش، أصول/خصوم/حقوق ملكية، سيولة/مديونية/ربحية/كفاءة، مقارنة فترتين، اتجاهات زمنية، أفضل/أسوأ عناصر، تنبيهات مرئية) مع حماية من المحاور المضللة (تقسيم بالوحدات، استبعاد النسبة المكررة، إخفاء الصفريات)
+
+---
+Task ID: 12
+Agent: main (Z.ai Code)
+Task: «حدث HTML واخراجه» — تحديث النسخة HTML المستقلة (قائمة-الربح-IFRS.html) لتقرير الرسوم البياني الديناميكي (مواكبة تقرير React من المهمة 11) مع إضافة الإخراج/التصدير (PDF/CSV/PNG)
+
+Work Log:
+- استكشاف: النسخة HTML (6955 سطراً قبل التعديل) كان بها تبويب رسوم قديم (6 رسوم قائمة الدخل فقط، دون KPIs/تنبيهات/مركز مالي/نسب)؛ حددت مصادر البيانات الفعلية: S.T (calc)، S.cat (categorize)، S.bsTotals1/2 (categorizeBs)، ومعادلات النسب داخل renderAnalysis — واكتشفت أن زر PDF القديم للرسوم كان معطلاً فعلياً (قواعد الطباعة تُظهر #analysisContainer فقط)
+- CSS (~90 سطراً): نظام cr-* كامل — بطاقات KPI بستة tones مع وضع داكن (html.dark وليس data-theme — اكتشاف وتصحيح 24 موضعاً)، شارات تغير (نسبة/نقاط مئوية/مضاعف)، شبكة تنبيهات بأربع خطورات، لوحة movers، بطاقات DuPont، رقائق المعايير، بطاقات فراغ — وقواعد طباعة جديدة body.print-charts تُظهر #chartsGrid وحده
+- HTML: استبدال شريط الأدوات القديم (نوع الرسم/النطاق/الفترة/الحد الأدنى/تطبيق/تحديث) بمحدد نوع التقرير crTypeSel (5 خيارات) + شارة «ديناميكي» + أزرار PDF/CSV/PNG
+- طبقة البيانات (منقولة من chart-data.ts بنفس الحدود والصيغ): crPctDelta/crR4 بمنازل 4، collectChartMovers عبر leafItems باتجاهات مدين/دائن، buildChartReportData → pl/bs/fa/combined، computeChartRatioGroups بنفس معادلات renderAnalysis مع تحسين: حساب CCC الفعلي (DIO+DSO−DPO) الذي كان يظهر «—» في تبويب التحليل، وتقسيم مجموعات النسب حسب الوحدة مع استبعاد Defensive Interval
+- طبقة العرض renderChartReport: 4 أقسام (pl/bs/fa/pl_bs) + «الكل» بعناوين أقسام؛ رسوم Chart.js: اتجاه الأداء (أعمدة مكدسة + خطا إيراد/صافي مع scales.x.reverse لـ RTL)، مقارنة المؤشرات، دونات المصروفات/الأصول/التمويل (tooltip بنسبة %)، ترتيب التغيرات Top15 ملون مرغوب/غير مرغوب، تفصيلات أفقية، هوامش Line، مجموعات النسب بارتفاعات ديناميكية، دوپونت مصغر، مؤشرات متقاطعة — إصلاح خطأين أثناء التطوير: مراجع T/cat غير المعرفة، وإغلاق var داخل حلقات (grp/d في callbacks) بعزلها في دوال ratioGroupCard/dupontCard
+- التصدير: exportChartReportCSV (مؤشرات/تنبيهات/movers/نسب/دوپونت/متقاطعة حسب النوع المختار، BOM + اقتباس CSV)، PDF عبر window.print مع body.print-charts + إعادة تسمية الملف، PNG عبر exportChartsAsPNG الموجودة (تعمل على #chartsGrid canvas)
+- الربط: render() وتبديل التبويب يستدعيان renderChartReport()، مستمع change للمحدد يعيد الرسم فوراً دون reload، حذف chartApplyBtn/chartsRefreshBtn القديمين
+- إصلاح جذرية مكتشفة أثناء التحقق: المؤشرات المتقاطعة (combined.cross) كانت تقرأ v2 من useBs1 بدل useBs2 فأظهرت قيم الفترتين متطابقة — صُححت (الأصول/حقوق/رأس العامل)
+- تحقق متصفح كامل (Agent Browser) بملفات gen-test-files.ts (فترة 2024 مقارنة + 2025 حالية + مركزا مالي):
+  * pl: KPIs صحيحة يدوياً (1,000,000 −16.7% · 400,000 −25.9% · 170,000 −40.4% · 150,000 −47.4% · هامش 15.0% −8.8 ن.م) ✓ تنبيه «تراجع الربحية التشغيلية 6.7 ن.م» ✓ movers ملونة ✓ دونات/ترتيب/تفصيلات ✓
+  * bs: 900,000 +12.5% · 500,000 −3.9% · 400,000 +42.9% · 300,000 +36.4% (مطابقة قيم المهمة 11 المرجعية) ✓ «المعادلة المحاسبية متوازنة» ✓ دونات ومقارنات ✓
+  * fa: تداول 1.73× · سريعة 1.13× · ROE 54% ✓ 7 مجموعات نسب بمحاور نظيفة + رقائق معايير ✓
+  * pl_bs: ROA 17% · ROE 38% · دوران 1.11× · مضاعف 2.25× ✓ دوپونت متسق (0.15×1.25×2.86≈53.6%≈ROE) ✓ المؤشرات المتقاطعة بعد الإصلاح: أصول 800→900ألف ✓
+  * all: 4 أقسام · 17 KPI · 22 رسماً ✓ تبديل الأنواع الخمسة متتالياً دون أي استثناء ✓
+  * بدون مركز مالي: bs «غير متاحة» إرشادية، fa تعرض الهوامش مع «—» وتنبيه إرشادي، pl_bs «غير متاح» ✓
+  * CSV: التقاط المحتوى وتحقق منه (BOM، أقسام كاملة، قيم خام للإكسل) ✓ PNG دون أخطاء ✓ قاعدة طباعة print-charts موجودة ✓
+  * وضع داكن (KPI tones/تنبيهات/محاور) ✓ موبايل 390px (KPI عمودين، رسوم بعرض كامل، RTL معكوس للمحور الزمني) ✓
+  * وضع monthCumulative يعمل (bs2=S.bsTotals1 مطابقةً لـ React) ✓
+  * انحدارية: جدول 25 صفاً ✓ تحليل مالي ✓ مركز مالي ✓ lint نظيف ✓ لا أخطاء console بعد الإصلاحات ✓
+- تحديث CHANGELOG.md (Added: النسخة HTML + التصدير)
+
+Stage Summary:
+- النسخة HTML المستقلة أصبحت مواكبة تماماً لتقرير الرسوم البياني الديناميكي في تطبيق React: 5 أنواع تقارير تتبدل فوراً دون reload، KPIs وتنبيهات ورسوم مشتقة حصراً من بيانات المطابقة الحقيقية (مع حساب CCC الفعلي لأول مرة)، وثلاث قنوات إخراج: PDF بطباعة معزولة نظيفة (كانت معطلة كلياً)، CSV شامل جديد، وPNG لكل رسم — بالإضافة لإصلاح خلل حقيقي في قيم المؤشرات المتقاطعة (v2 من الفترة الخطأ)
+
+---
+Task ID: 13 (Phase 0 — التأسيس)
+Agent: main (Z.ai Code)
+Task: المرحلة 0 من خطة التحويل إلى نظام متعدد المستخدمين: نسخة أساس + WAL + حماية الصفحات (proxy) — وفق موافقة المستخدم وتعديلاته العشرة (بدون أي تعديل في accounts.ts أو منطق المطابقة)
+
+Work Log:
+- تقرير تحليل كامل للمشروع قبل التنفيذ: النظام Web كليًا بالفعل (Next.js 16 + NextAuth + Prisma/SQLite)، متطلبات مفقودة: Audit Trail، دورة اعتماد، قفل تفاؤلي، Backup/Restore — وافق المستخدم على الخطة مع تعديلاته
+- Baseline: فحص integrity_check (ok) → نسخة قاعدة عبر VACUUM INTO (سليمة، integrity ok) → /home/z/backups/ifrs-db-baseline-phase0-20260919-184719.db + أرشيف كود كامل ifrs-src-baseline-phase0-*.tar.gz + وسم git phase0-baseline على e3ccf1d (شجرة نظيفة)
+- WAL: PRAGMA journal_mode=delete → wal بنجاح (لاحظ: wal_checkpoint(TRUNCATE) الفوري اصطدم بقفل Prisma المتصل — متوقع؛ فُحصت الاستمرارية من اتصال جديد = wal، وPrisma يقرأ/يكتب طبيعي بعدها). ملاحظة لمرحلة Backup: النسخ يجب أن يستخدم VACUUM INTO أو checkpoint قبل النسخ
+- حماية الصفحات: Next 16 يدعم middleware وproxy معًا (constants.js: MIDDLEWARE_FILENAME='middleware' + PROXY_FILENAME='proxy') — اعتمدت src/proxy.ts (الاصطلاح الجديد) مع getToken من next-auth/jwt: / تتطلب جلسة، /admin تتطلب role=admin، /login و /api غير معترضة. curl: / و/admin → 307 إلى /login للزائر
+- مستخدمو اختبار مؤقتان (tadmin/tuser) أُدخلوا مباشرة بـ bcrypt (صيغة DateTime في DB: epoch ms) ثم حُذفا بعد الاختبار — DB عادت لمستخدم واحد (admin)
+- تحقق متصفح كامل (Agent Browser): زائر → / و/admin يعادان لـ /login ✓؛ دخول tadmin → الصفحة الرئيسية تعمل عبر proxy (dev.log يُظهر "proxy.ts" في سطر GET) ✓؛ /admin تحمل لوحة التحكم (3 مستخدمين/2 مدراء) ✓؛ تسجيل خروج → /login ✓؛ دخول tuser (عادي) → الرئيسية تعمل ولا يرى رابط المستخدمين ✓؛ فتح /admin → إعادة توجيه تلقائية إلى / ✓؛ لا أخطاء console؛ /api/users و/api/reports بلا جلسة → 401 ✓
+- lint نظيف، dev.log سليم (خطأ JWT_SESSION_ERROR الوحيد قديم — سطر 12 قبل العمل، من مشكلة الكوكيز الموثقة في المهمة 9)
+- تحديث CHANGELOG.md (بنود المرحلة 0) — لا Prisma Migration (لا تغيير schema في هذه المرحلة)
+
+Stage Summary:
+- المرحلة 0 مكتملة ومُتحقق منها بالمتصفح: قاعدة SQLite بوضع WAL مستمر، حماية دخول على / وحماية admin-only على /admin عبر src/proxy.ts، نسخة أساس موسومة في git + نسخ DB/كود في /home/z/backups. صفر تغيير على محرك المطابقة والوظائف. بانتظار موافقة المستخدم على بدء المرحلة 1 (Audit Trail: نموذج AuditLog + تسجيل في كل API مُعدِّل + عارض في /admin)
+
+---
+Task ID: 14 (Phase 1 — Audit Trail)
+Agent: main (Z.ai Code)
+Task: المرحلة 1 — سجل تدقيق رقابي Append-Only وفق ضوابط المستخدم الاثني عشر (بدون أي تعديل في accounts.ts أو منطق المطابقة، وبدون بدء Optimistic Locking/Workflow/Backup/Polling)
+
+Work Log:
+- Prisma: نموذج AuditLog (userId nullable، username snapshot، action كود ثابت، entityType/entityId، description، beforeData/afterData/metadata JSON، ipAddress، createdAt) + 5 فهارس (createdAt/userId/action/entityType/entityId) + بلا FK عمدًا (يبقى السجل بعد حذف المستخدم + توافق PostgreSQL) — db push إضافي صرف دون أي فقد بيانات
+- src/lib/audit-actions.ts (نقي/آمن للعميل): 15 كود عملية (REPORT/GROUP/USER CRUD، USER_DISABLED/ENABLED، ROLE_CHANGED، PERMISSIONS_CHANGED، LOGIN_SUCCEEDED/FAILED) + تسميات عربية + أولوية اختيار الكود عند تعدد التغييرات — لا أكواد لوظائف لم تُبنَ (Workflow/Backup لاحقًا)
+- src/lib/audit.ts (خادم فقط): sanitize مركزي إلزامي (حجب مفاتيح password/secret/token/session/authorization/cookie/credential/apikey للقيم النصية والتركيبية، احترام الأعلام المنطقية مثل passwordChanged:true، اقتطاع نصوص >2000 حرف ومصفوفات >50 وJSON >120KB)، serializeAuditField، getClientIp (X-Forwarded-For/X-Real-IP)، writeAudit(tx اختياري للذرية)، writeAuditSafe (لأحداث المصادقة — لا تعطل الدخول أبدًا)، diffReportForAudit (diff حقول قياسية + إشارات تغير الكتل بأحجامها دون محتواها)، reportBlobSizes
+- ربط التسجيل بمعاملات ذرية: reports POST/PUT/DELETE (REPORT_CREATED/UPDATED/DELETED — PUT يسجل الحقول المتغيرة فقط ولا يسجل عند لا تغيير)، groups POST/PUT/DELETE (مع عدد التقارير المفكوكة)، users POST + [id] PUT/DELETE (اختيار الكود: PERMISSIONS_CHANGED > ROLE_CHANGED > USER_DISABLED/ENABLED > USER_UPDATED + passwordChanged في metadata دون أي سر)، setup POST (USER_CREATED نظامي بلا جلسة)، auth.ts authorize (LOGIN_SUCCEEDED/FAILED مع سبب الفشل وIP — writeAuditSafe)
+- قراءة: GET /api/audit (requireAdmin، فلاتر userId/action/entityType/entityId/q/from-to بحدود أيام UTC، pagination خادم كامل 20/50/100، count+find متوازيان) — GET /api/audit/export (نفس الفلاتر، CSV + BOM + اقتباس RFC4180 + حد 5000 + ترتيب تصاعدي + ISO-UTC) — لا وجود لأي PUT/DELETE للسجل إطلاقًا
+- واجهة: src/components/admin/audit-trail.tsx (فلاتر فورية للقوائم والتواريخ + تصفية للنصوص بـ draft/applied، جدول max-h مع scroll-thin، شارات ملونة حسب نوع العملية، وقت محلي + ISO-UTC معًا، حوار تفاصيل بمعلومات كاملة وJSON منسق dir=ltr، pagination، تصدير CSV) — دمجها بتبويبين في admin/page.tsx (المستخدمون | سجل التدقيق) مع تغيير العنوان إلى «لوحة الإدارة»
+- إصلاحان أثناء التطوير: (1) إعادة تشغيل dev server بعد db push لتحميل عميل Prisma الجديد (كانت auditLog undefined)، (2) خاصية username المستقلة في AuditInput لأحداث الدخول الفاشلة (كانت خاصية زائدة تُهمل — كشفها فحص tsc)
+- إصلاحان مكتشفان بالاختبار: (1) false positive في Sanitizer كان يحجب passwordChanged (علم منطقي) — حسّنت القاعدة: الحجب للقيم النصية/التركيبية فقط، (2) [خلل قديم مسبق كشفه السجل] PUT /api/users/[id] كان يعيد بناء الصلاحيات من الافتراضي عند غيابها في الطلب فيمسح التخصيصات عند تبديل التفعيل — أصلح بحفظ الصلاحيات المحفوظة + عدم وراثة صلاحيات المدير عند التخفيض إلى user
+- تحقق متصفح شامل (Agent Browser): دخول خاطئ → LOGIN_FAILED (username snapshot بعد الإصلاح، سبب bad_password، IP ::1) ✓ دخول ناجح → LOGIN_SUCCEEDED ✓ رفع 2 ملف + مطابقة + حفظ → REPORT_CREATED بـ blobSizes (260 حرف metadata) ✓ تعديل عبر PUT → REPORT_UPDATED قبل/بعد لـ name/label1/label2 + الكتل كحقول متغيرة دون محتواها ✓ دورة مجموعة كاملة (إنشاء/تعديل/حذف) ✓ إنشاء tuser3 من الواجهة → USER_DISABLED → PERMISSIONS_CHANGED (before/after للصلاحيات) → تفعيل → حذف ✓ تبويب السجل: 25 صفًا/صفحتين، فلتر LOGIN_FAILED=1 نتيجة، بحث الوصف، حوار التفاصيل كامل، pagination ✓
+- تحقق الحماية: المستخدم العادي → GET /api/audit و/export = 403 + /admin يُعاد للرئيسية بـ proxy ✓ زائر = 401 ✓
+- فحص التسريبات: مسح كل حقول 15 صفًا بحثًا عن كلمات مرور الاختبار الثلاث + $2a$ (bcrypt) + eyJ (JWT) = صفر تسريبات ✓ تصدير CSV: HTTP 200 + BOM (EF BB BF) + فلاتر مطبقة + 401 للزائر ✓
+- فحص tsc: ملفات المرحلة كلها نظيفة (الأخطاء الظاهرة كلها في بقايا chat/examples/skills القديمة) + lint نظيف + dev.log بلا أخطاء
+- تنظيف كامل: حذف صفوف السجل التجريبية والمستخدمين المؤقتين والتقرير والمجموعة التجريبية (users=1, reports=0, groups=0, audit=0) + integrity_check ok + حذف سكربت الاختبار
+
+Stage Summary:
+- سجل تدقيق رقابي كامل Append-Only يعمل: كل العمليات الحالية تُسجل بذرية (معاملة واحدة مع التعديل)، Sanitize مركزي قبل أي كتابة (صفر تسريبات مثبت بالمسح)، قراءة/تصدير للمدير فقط مع فلاتر وpagination، وواجهة تبويب عربية RTL كاملة — كشف السجل أثناء الاختبار خللًا قديمًا حقيقيًا في مسح الصلاحيات أُصلح أيضًا. بانتظار موافقة المستخدم على المرحلة 2 (Optimistic Locking لحقل version على Report + حوار التعارض 409)
+
+---
+Task ID: 15 (Phase 2 — Optimistic Locking)
+Agent: main (Z.ai Code)
+Task: المرحلة 2 — القفل التفاؤلي (Optimistic Locking) لحقل version على Report وفق المتطلبات الاثني عشر للمستخدم (بدون أي تعديل في accounts.ts أو محرك المطابقة، وبدون بدء Workflow/Backup/Polling)
+
+Work Log:
+- Schema: إضافة version Int @default(1) على Report + db push ناجح دون فقد بيانات (SQL مكافئ: ALTER TABLE "Report" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1 — متوافق مع PostgreSQL) + إعادة تشغيل dev server لتحميل عميل Prisma الجديد
+- src/lib/audit-actions.ts: كود جديد REPORT_UPDATE_CONFLICT + تسمية عربية «تعارض حفظ تقرير (نسخة أقدم)»
+- PUT /api/reports/[id] أُعيدت كتابته: version إلزامية (مفقودة → 400 VERSION_REQUIRED، 0/سالبة/نصية/عشرية → 400 VERSION_INVALID) — التحديث الذري عبر updateMany بشرط {id, version, userId} داخل $transaction مع writeAudit (UPDATE ... WHERE id=? AND version=? عبارة واحدة — لا يمكن لطلبين بنفس النسخة أن ينجحا) — النجاح: version {increment: 1} فقط + إعادة التقرير الكامل الجديد؛ الفشل (count=0): إعادة قراءة → 404 إن حُذف، أو 409 VERSION_CONFLICT structured (clientVersion/currentVersion/updatedAt/lastModifiedBy/lastModifiedAt من آخر REPORT_UPDATED في السجل) + تدقيق تعارض عبر writeAuditSafe بلا أي تعديل بيانات
+- توسيع مبرر: صلاحية الكتابة PUT امتدت للمالك OR عضو مجموعة مرتبطة (groupIds) — بدونه يستحيل تعارض نسخ بين مستخدمَين حقيقيَين (القارئ المرتبط لا يستطيع الكتابة)؛ DELETE بقي للمالك حصريًا
+- GET /api/reports (القائمة): إضافة version إلى select
+- page.tsx: حالة openReport (id/groupId/version/updatedAt/canUpdate) تُضبط عند الفتح وبعد كل حفظ ناجح؛ استخراج applyReportToSession من handleLoadReport + trackOpenReport؛ حوار الحفظ بوضعين «تحديث التقرير المفتوح (vN + آخر تعديل من الخادم)» / «حفظ كنسخة جديدة»؛ handleSave يرسل version في PUT ويحدّث openReport من الاستجابة فورًا؛ حوار تعارض 409 عربي (الرسالة المطلوبة حرفيًا + تفاصيل الخادم + خيارا «إبقاء تعديلاتي»/«تحميل أحدث نسخة») + نافذة تأكيد ثانية قبل الاستبدال + reloadLatestReport يطبق أحدث نسخة على الحالة دون reload؛ شارة نسخة vN ومؤشر «مفتوح» في قائمة التقارير؛ حماية groupId في وضع التحديث (من لا يدير المجموعات لا يرسله فلا يُفكك الربط)؛ تنظيف openReport عند حذف التقرير المفتوح
+- اختبار API فعلي (47 فحصًا، كلها نجحت) بمستخدمَين حقيقيين عبر NextAuth credentials: A ينشئ مجموعة وتقريرًا (v1) — كلاهما يفتح v1 — A يحفظ → v2 — B يحفظ بنسخته القديمة v1 → 409 VERSION_CONFLICT (currentVersion=2، lastModifiedBy=usera) — تعديلات A سليمة وversion لم تقفز — B يحمّل v2 ويحفظ → v3 — حفظان متتاليان (v4، v5) — الحالات الحدية (مفقودة/0/سالبة/نصية/عشرية → 400، غير موجود → 404، بلا جلسة → 401، حذف غير المالك → 404، لا تغيير إطلاقًا) — طلبان متزامنان بنفس النسخة → [200,409] بالضبط وversion=6 وبيانات الفائز مخزنة — التدقيق: REPORT_CREATED=1 وREPORT_UPDATED=5 (من النسخ 1-5 فقط، بلا صفوف لحفوص فاشلة) وREPORT_UPDATE_CONFLICT=2 بـ metadata مقتصدة — المدير يقرأ التعارضات عبر /api/audit والمستخدم العادي 403 — تنظيف كامل (users=1, reports=0, groups=0, audit=0) وintegrity ok
+- ملاحظة تقنية مكتشفة: جلسات NextAuth تختم الصلاحيات عند الدخول (JWT) — ربط B بالمجموعة تم قبل دخوله؛ (تحديث الجلسات الحية عند تغيير الصلاحيات خارج نطاق المرحلة)
+- تحقق متصفح E2E (Agent Browser) بمستخدم اختبار: رفع ملفين حقيقيين → مطابقة → حفظ POST → شارة v1 ومؤشر «مفتوح» → حفظ تحديث → v2 → جلسة خارجية مستقلة عدّلت التقرير إلى v3 → حفظ من المتصفح بنسخته القديمة v2 → 409 وحوار التعارض بالرسالة العربية المطلوبة وتفاصيل الخادم (صورة محفوظة) → «تحميل أحدث نسخة» → نافذة تأكيد الاستبدال → تأكيد → الحالة صارت v3 باسم الخادم الجديد وعلامة window.__noReloadMarker=42 بقيت (بلا إعادة تحميل صفحة) → حفظ نهائي ناجح v4 — موبايل 390px: حوار الحفظ 358px بلا تجاوز وبكل العناصر — لا أخطاء console
+- lint نظيف + dev.log بلا أخطاء + تنظيف كامل لبيانات الاختبار ومستخدمَيها وسكربتاتها + integrity_check ok
+
+Stage Summary:
+- القفل التفاؤلي مكتمل ومثبت بالاختبار الفعلي: version إلزامية في كل تحديث، فحص+تحديث ذري واحد على مستوى SQL داخل معاملة مع الأثر الرقابي، 409 VERSION_CONFLICT structured بلا Last Write Wins ولا Force Overwrite، حوار عربي مزدوج التأكيد يحمي تعديلات المستخدم ويحدّث الحالة دون reload، وتدقيق يفصل الحفوص الناجحة عن المتعارضة تمامًا. التوسعة الوحيدة خارج نص المرحلة: كتابة أعضاء المجموعات المرتبطة (ضرورة منهجية لاختبار A/B الإلزامي — موثقة في CHANGELOG). بانتظار موافقة المستخدم على المرحلة 3 (دورة الاعتماد والأدوار DRAFT→SUBMITTED→UNDER_REVIEW→APPROVED)
+
+---
+Task ID: 3-design (Phase 3 — Workflow & SoD)
+Agent: main (Z.ai Code)
+Task: المرحلة 3 — إعداد تصميم البيانات فقط (قبل أي تعديل Schema أو كود) وفق البند الرابع عشر من تعليمات المستخدم، وانتظار الموافقة قبل التنفيذ.
+
+Work Log:
+- التحقق من منتجات المراحل السابقة: git log (58f7f03 Phase 0، 7ce0236 Phase 1، 51b555a Phase 2) + قراءة prisma/schema.prisma (Report+version، AuditLog بلا FK) + src/lib/permissions.ts (view/add/edit/delete/groups/export/settings/manageUsers/groupIds) + src/lib/session.ts + src/app/api/reports/[id]/route.ts (PUT الذري + canWriteReport التعاوني) + audit-actions.ts (15 كودًا) + GET /api/users للمدير حصرًا
+- كتابة وثيقة التصميم الكاملة: docs/phase3-workflow-design.md (12 قسمًا) تغطي البنود الثمانية المطلوبة: حقول Report الجديدة (20 عمودًا status/periodEnd/cycle/prepared*/reviewed*/approved*/returned*/reopened* مع snapshots أسماء)، جدول WorkflowHistory append-only مستقل (قرار D-1)، تمثيل الإسناد بحقول Report بلا جدول منفصل، مصفوفة انتقالات الحالة الست (لا قفزات مباشرة، RESUME_EDIT من RETURNED/REOPENED إلى DRAFT، SUBMIT يتطلب مراجع معينًا)، مصفوفة الصلاحيات بمستوييها (مفتاحان جديدان assignWorkflow/reopenReport + الإسناد لكل تقرير)، قواعد SoD الثلاث بطبقتي تنفيذ (عند الإسناد وعند كل انتقال)، مصير الكتابة التعاونية للمجموعات (تُستبدل بقراءة+أهلية إسناد)، آلية REOPEN الذرية (أرشفة roleSnapshot أولًا ثم مسح حقول الاعتماد + cycle+1) دون فقد التاريخ
+- إضافة: أكواد AuditLog السبعة المطلوبة + شكل endpoints (POST workflow / PUT assignments / GET workflow-history / users?for=assignment) + أكواد أخطاء structured جديدة (INVALID_TRANSITION, NOT_ASSIGNED, SEGREGATION_VIOLATION, REASON_REQUIRED, WORKFLOW_LOCKED...) + تكامل القفل التفاؤلي (شرط status في where الذري للانتقالات وللـ PUT) + خطة backfill (المالك يصبح المعد للتقارير القائمة) + سيناريو اختبار إلزامي بثلاثة مستخدمين + 6 نقاط قرار (D-1..D-6) بتوصيات جاهزة
+
+Stage Summary:
+- التصميم مكتمل وموثق في docs/phase3-workflow-design.md — لم يُعدَّل أي ملف Schema أو كود (التزامًا بالبند الرابع عشر). بانتظار موافقة المستخدم على التصميم وحسم نقاط القرار D-1..D-6 قبل بدء التنفيذ. لن تبدأ المرحلة 4 (Backup/Restore) أو 5 (Polling) قبل إنجاز هذه المرحلة وموافقة المستخدم.
+
+---
+Task ID: 16 (Phase 3 — Workflow & Segregation of Duties)
+Agent: main (Z.ai Code)
+Task: المرحلة 3 — تنفيذ دورة الاعتماد وفصل المهام كاملة وفق التصميم المعتمد (docs/phase3-workflow-design.md) + التعديلات الاثني عشر الإلزامية من المستخدم (D-1..D-6 كلها وفق التوصية) وبدون أي تعديل في accounts.ts أو محرك المطابقة، وبدون بدء Backup/Restore أو Polling.
+
+Work Log:
+- نسخة احتياطية قبل التنفيذ: /home/z/backups/ifrs-db-pre-phase3-20260919-205916.db (VACUUM INTO + integrity ok)
+- Schema: 20 عمودًا على Report (status/periodEnd نص date-only/cycle + prepared·reviewed·approved·returned·reopened بمعرفات وsnapshots أسماء وأوقات وأسباب) + 4 فهارس + جدول WorkflowHistory append-only (cycle/action/from-to/actor snapshot/reason/comment/roleSnapshot JSON + 3 فهارس) — db push ناجح صفر فقد + backfill التقارير القائمة (المالك=المعد، preparedAt=null وفق تعديل رقم 1) — 0 صفوف قائمة (القاعدة نظيفة من المرحلة 2)
+- src/lib/workflow.ts (نقي مشترك): الحالات الست وتسمياتها وألوان شاراتها، EDITABLE_STATUSES، مصفوفة الانتقالات transitionTarget (لا قفز مباشر)، validateSoD الثلاثية + رسالة عربية، normalizePeriodEndStrict (يميز غير المرسل عن غير الصالح ويصحح YYYY/MM/DD)، computeMyActions (canView/Edit/Submit/StartReview/Return/Approve/Reopen/Resume/Assign/Delete + isParticipant)، أنواع WorkflowInfo/WorkflowHistoryRow/AssignmentCandidate
+- src/lib/audit-actions.ts: 7 أكواد جديدة (REPORT_SUBMITTED/REVIEW_STARTED/REPORT_RETURNED/REPORT_RESUBMITTED/REPORT_APPROVED/REPORT_REOPENED/ASSIGNMENT_CHANGED) بتسميات عربية؛ src/lib/permissions.ts: مفتاحا assignWorkflow/reopenReport (افتراضي false، المدير ضمنيًا بالدور) + مساعدا canAssignWorkflow/canReopenReport
+- src/lib/workflow-server.ts: buildRoleSnapshot، writeWorkflowHistory (يدمج metadata داخل roleSnapshot JSON)، canViewReportRow (مالك/مجموعة/مشارك/مدير)، buildWorkflowInfo (الحالة + المشاركون بأسمائهم مع fallback استعلام لأسماء returned/reopened + myActions للمستخدم الحالي)
+- POST /api/reports/[id]/workflow: نقطة واحدة للانتقالات الستة — version إلزامية، مصفوفة الحالات، فاعل الإجراء الوحيد، SoD دفاعي قبل التنفيذ، سبب إلزامي لـ RETURN/REOPEN، SUBMIT يتطلب مراجعًا ويثبت preparedAt ويشطف حقول الإرشاد (الأصل في التاريخ)، APPROVE يشترط reviewedAt، REOPEN بصلاحية reopenReport وأرشفة الحالة السابقة قبل مسح الاعتماد وcycle+1، RESUME_EDIT يوثق في WorkflowHistory فقط (D-2) — التحديث الذري WHERE id+version+status=fromStatus + صف تاريخ + AuditLog في معاملة واحدة، 409 VERSION_CONFLICT مع currentStatus، GET/PUT/DELETE على المسار = 405
+- PUT /api/reports/[id]/assignments: سماوية assignWorkflow، أهداف موجودة وactive، بوابات الحالة (المعد في DRAFT/RETURNED/REOPENED فقط؛ استبدال المراجع/المعتمد في SUBMITTED/UNDER_REVIEW دون تفريغ — D-4)، APPROVED ممنوع الإسناد كليًا، SoD على الثلاثية الناتجة، استبدال المراجع بعد بدء المراجعة يفرغ reviewedAt ويعيد SUBMITTED (تعديل رقم 7)، تغيير الإسناد يرفع version (D-6) ويسجل from/to بالأسماء والسبب في السجلين
+- GET /api/reports/[id]: كائن workflow محسوب خادميًا + رؤية المشاركين/المدير؛ PUT: بوابة المعد+edit+الحالة قبل كل شيء وشرطها داخل WHERE الذري مع رفض 403 WORKFLOW_LOCKED/NOT_ASSIGNED معالجة structured + periodEnd date-only + حماية حقول workflow من PUT؛ DELETE: مالك + DRAFT فقط (D-3)
+- POST /api/reports: المنشئ=معد تلقائيًا + صف CREATED في WorkflowHistory + periodEnd + استجابة تتضمن workflow؛ GET القائمة: رؤية المشاركين والمدير + حقول الشارات + فلتر status اختياري
+- GET /api/users?for=assignment: الحد الأدنى {id,username,displayName,active} لحيازي assignWorkflow (تعديل رقم 12)؛ GET /api/groups: المدير يرى كل المجموعات مع ownerName (حوكمة الإسناد/الإعادة)
+- src/components/accounts/workflow-panel.tsx: WorkflowPanel (شارة/دورة/فترة/مشاركون/تنبيهات الأسباب/أزرار من myActions حصرًا) + ReasonDialog (سبب إلزامي RETURN/REOPEN) + ConfirmActionDialog (SUBMIT يعرض اسم المراجع، APPROVE تحذير القفل) + AssignmentDialog (3 قوائم من المرشحين + SoD فوري + سبب) + WorkflowHistoryDialog (خط زمني مجمع بالدورات + أرشيف الاعتماد السابق في REOPENED)
+- src/app/page.tsx: حالة openWorkflow + trackOpenReport يقرأ workflow من الخادم (canUpdate من myActions) + handleWorkflowAction/handleAssign بمعالجة 409 عبر حوار التعارض القائم + اللوحة فوق الإعدادات عند فتح تقرير + حقل periodEnd (date) في حوار الحفظ + تنبيه القفل وإخفاء خيار التحديث عند القفل + شارات الحالة و«دوري» في ReportRow وزر الحذف للمسودة فقط + تنظيف openWorkflow عند الحذف
+- اختبار API شامل (105 فحصًا كلها ناجحة) بأربعة مستخدمين حقيقيين + r2 بديل + p2 عضو مجموعة: الدورة المزدوجة الكاملة مع بقاء تاريخ الدورة 1 بعد الثانية + الحالات السلبية العشر (اعتماد المعد، مراجع=معتمد، مدير بلا إسناد، تعديل SUBMITTED/APPROVED حتى من المدير، REOPEN/RETURN بلا سبب، نسخة قديمة 409، اعتمادان متزامنان [200,409]، استبدال المراجع بعد بدء المراجعة: reviewedAt يفرغ والحالة تعود SUBMITTED وr1 يفقد الوصول) + users?for=assignment + metadata مقتصدة (<2000 حرف) — أخطاء أصلحتها أثناء الاختبار: reviewReset غير معرف (اسم المتغير resetReview) وPOST لم يكن يرجع workflow وnormalizePeriodEnd كان يخلط غير المرسل بالغير صالح، وبناء snapshot الاعتماد يجب أن يكون من الحالة اللاحقة للانتقال حتى يحمل approvedAt (ما عدا REOPEN يأخذ السابقة)
+- ملاحظة مكتشفة: جلسة p2 لا ترى المجموعة الجديدة إلا بعد إعادة دخول (الصلاحيات تختم عند الدخول — معروف من المرحلة 2) والسكربت أرسل groupIds في غير موضعه ثم صحح إلى جذر الطلب
+- تحقق متصفح E2E: دخول admin → حوار الفتح يظهر شارات الحالة و«دوري» → فتح تقرير معتمد (دورة 2) → اللوحة كاملة (مشاركون/تواريخ/أزرار الإسناد والسجل وإعادة الفتح فقط) → REOPEN بلا سبب مرفوض بالرسالة → REOPEN بسبب ⇒ مُعاد فتحه/الدورة 3/v18/تنبيه السبب باسم المدير → سجل الدورات يعرض الدورتين كاملتين مع «الاعتماد السابق المؤرشف» → حوار الإسناد بثلاث قوائم → موبايل 390px عمود واحد بلا تجاوز → صفر أخطاء console
+- اكتشاف وإصلاح فجوة حوكمة أثناء E2E: حوار الفتح كان لا يظهر للمدير تقارير مجموعات الآخرين (GET /api/groups يرجع مجموعاته فقط) → المدير الآن يرى كل المجموعات مع اسم المالك وأزرار التعديل مخفية عن غير المالك
+- lint نظيف + dev.log بلا أخطاء + تنظيف كامل (workflowHistory=150, audit=279, reports=14, groups=9, users=45 محذوفة؛ النهائي users=1/reports=0/groups=0/audit=0/workflowHistory=0) + integrity_check ok + حذف سكربتات الاختبار
+
+Stage Summary:
+- المرحلة 3 مكتملة ومثبتة بالاختبار: دورة اعتماد DRAFT→SUBMITTED→UNDER_REVIEW→APPROVED مع RETURN/RESUBMIT وREOPEN لدورات مرقمة، فصل مهام بلا استثناء بطبقتين، إسناد لكل تقرير بصلاحيتين نظاميتين جديدتين، WorkflowHistory append-only يلخص كل دورة ويحفظ الاعتماد السابق قبل أي مسح، انتقالات وحفظ ذرية تحترم version، المدير لا يتجاوز القفل ولا SoD، الكتابة التعاونية للمجموعات أُلغيت لصالح الإسناد، وواجهة عربية كاملة تعرض ما يسمح به الخادم فقط. لا تعديل على accounts.ts أو خوارزمية المطابقة إطلاقًا. بانتظار موافقة المستخدم قبل بدء المرحلة 4 (Backup/Restore) — لن تبدأ دون موافقته.
+
+---
+Task ID: env-restore
+Agent: main (Z.ai Code)
+Task: إصلاح بيئة العمل بعد انقطاع الجلسة — استعادة مشروع IFRS إلى /home/z/my-project (المسار الذي يتوقعه النظام: dev.log وCaddy وworklog)
+
+Work Log:
+- اكتشاف أن مشروع IFRS (بمرحلته 3 المنفذة) نُقل إلى /tmp/my-project (PolarFS دائم) بلا node_modules، بينما كان /home/z/my-project يخدم تطبيق محادثة قديمًا مختلفًا على المنفذ 3000
+- إيقاف الخادم الخاطئ + حفظ نسخة من تطبيق المحادثة القديم في /home/z/backup-chatapp-glm-restore
+- rsync للمشروع من /tmp/my-project إلى /home/z/my-project (استثناء upload لأنه mount OSS وnode_modules) + bun install (857 حزمة) + prisma generate
+- إعادة تشغيل dev server على 3000 (nohup bun run dev → dev.log) — صفحة /login تُجيب 200 بعنوان عربي صحيح
+- التحقق من قاعدة البيانات: User=1 / Report=0 / Group=0 / WorkflowHistory=0 / AuditLog=0 — مطابقة تمامًا لحالة ما بعد تنظيف المرحلة 3
+- ملاحظة: تاريخ git القديم (58f7f03/7ce0236/51b555a) فُقد مع نقل مساحة العمل — أُنشئ مستودع git جديد بلقطة أمان للحالة الحالية
+
+Stage Summary:
+- البيئة مستعادة بالكامل: مشروع IFRS بمرحلته 3 المنفذة يعمل على المنفذ 3000 بقاعدة بيانات نظيفة، وworklog موحد في /home/z/my-project/worklog.md — جاهز لمتابعة المراحل من هنا
+
+---
+Task ID: 3.5-design
+Agent: main (Z.ai Code)
+Task: المرحلة 3.5 — لوحة متابعة المطابقات: تصميم فقط دون أي تنفيذ (بعد موافقة المستخدم على المرحلة 3 وطلبه مرحلة وسيطة قبل المرحلة 4)
+
+Work Log:
+- تأكيد حالة المرحلة 3 المنفذة (Task 16) وقراءة مصادر الحقيقة: prisma/schema.prisma (حقول workflow الـ20 + WorkflowHistory + الفهارس القائمة)، src/lib/workflow.ts (الحالات/الانتقالات/myActions/SoD)، src/lib/workflow-server.ts (canViewReportRow = قاعدة الرؤية)، src/lib/permissions.ts (مفتاحا assignWorkflow/reopenReport)، src/app/api/reports/route.ts (baseVisibility + غياب pagination في القائمة الحالية)، بنية ترويسة page.tsx (زر /admin)
+- كتابة وثيقة التصميم الكاملة docs/phase3.5-dashboard-design.md (16 قسمًا) تغطي بنود المستخدم الاثني عشر حرفيًا:
+  * dueDate على مستوى Report (نص date-only مثل periodEnd) مع مسار تطوير Group/سياسة إقفال يكتب في نفس العمود، وطريقان لضبطه: المعد عبر PUT (حالات قابلة للتعديل) + حائز assignWorkflow عبر PUT assignments (أي حالة عدا APPROVED) — بلا endpoint جديد
+  * تعريف «متأخر» الخادمي الصارم: dueDate≠null ∧ status≠APPROVED ∧ today>dueDate، بحد يومي (يوم الاستحقاق نفسه ليس متأخرًا)، و«اليوم» من الخادم بإزاحة أعمال قابلة للتهيئة (افتراضي UTC+3) ولا قبول بتوقيت العميل
+  * دالة deriveStage نقية (7 مراحل حصرية متبادلة من حقول Report وحدها بلا استعلامات تاريخ، مستغلة بقاء returned*/reopened* في المسودات البعدية) = تعريف خادمي واحد للبطاقات والفلاتر والصفوف (خاصية تكافؤ إلزامية بالاختبار)، مع فصل صريح بين حالة Workflow ومرحلة الأعمال، و«متأخرة» كعلم متراكب خارج التقسيم الحصري
+  * تحليل فجوة UNDER_REVIEW (المراجع والمعتمد كلاهما يملك إجراءً) وتحليل كامل لاعتماد PENDING_APPROVAL عبر COMPLETE_REVIEW: الأثر على آلة الحالات وWorkflowHistory وAuditLog (REVIEW_COMPLETED + صمامات) وmyActions والقفل والإسناد وSoD والتقارير الحالية (صفر ترحيل) والتقارير الزمنية المستقبلية — مع توصية بالتبني وقرار D-4/D-5 للمستخدم
+  * قواعد المسؤولية الحالية deriveOwnerRole لكل حالة + تعريف APPROVED = مقفول بلا مسؤولية إنجاز
+  * مصفوفة الرؤية لست شخصيات بإعادة استخدام baseVisibility حرفيًا + facets مبنية من التقارير المرئية فقط (منع تسريب الأسماء والمعرفات بلا 404)
+  * API قراءة فقط: GET /api/dashboard/summary + /reconciliations (ترقيم 20/50/100 + قائمة بيضاء للترتيب + 400 DASHBOARD_INVALID_PARAM) + /facets مع أشكال استجابة JSON كاملة وأمثلة
+  * Wireframe نصي RTL: مفتاح ترويسة «مساحة العمل | لوحة المتابعة» بلا route جديد، 9-10 بطاقات KPI قابلة للنقر، شريط فلاتر chips، جدول 16 عمودًا بالمطلوبة حرفيًا + إجراءات من myActions حصرًا، ترقيم خادمي
+  * فهارس مقترحة إضافية: periodEnd, dueDate, (groupId,status), updatedAt, cycle — كلها إضافية صرفة + ملاحظات الأداء (GROUP BY واحد للبطاقات، count+findMany متوازيان، بلا N+1)
+  * دلالات القيم المفقودة (لا اختلاق تواريخ): periodEnd/dueDate/preparedAt/reviewedAt/approvedAt null تظهر «—» وخيار «بدون فترة/استحقاق» و«المتأخرة» تستثنيها
+  * خطة تنفيذ واختبار: احتياطي VACUUM INTO → schema إضافية → (تعديل المرحلة 3 المكمّل إن اعتُمد) → dashboard.ts نقية → API → واجهة → مصفوفة اختبار إلزامية (تكافؤ البطاقات، حدود المتأخر، 6 شخصيات رؤية، فلاتر غير صالحة 400، التقارير القديمة، إثبات قراءة فقط بعدّ الصفوف قبل/بعد، سيناريو PENDING_APPROVAL الكامل) → تنظيف كامل
+  * 8 نقاط قرار D-1..D-8 بتوصيات جاهزة (موضع dueDate، من يضبطه، توقيت اليوم، تبني PENDING_APPROVAL، صماماته، دلالة «أعيد فتحها»، facets منفصلة، نطاق البطاقات)
+- لم يُعدَّل أي ملف Schema أو كود (الالتزام بـ«التصميم فقط») — الإنتاج الوحيد: وثيقة التصميم + هذا المدخل + لقطة git أمان
+
+Stage Summary:
+- تصميم المرحلة 3.5 مكتمل وموثق في docs/phase3.5-dashboard-design.md: لوحة قراءة فقط خادمية البطاقات والفلاتر والترقيم ضمن نطاق الرؤية الحالي، مع استحقاق dueDate قابل للتوسع، وتعريف «متأخر» صارم، واشتقاق مرحلة أعمال ومسؤولية حالية بدوال نقية، وتحليل معمق لفجوة UNDER_REVIEW وتوصية باعتماد PENDING_APPROVAL كتعديل مكمّل للمرحلة 3. بانتظار موافقة المستخدم وحسم D-1..D-8 قبل أي تنفيذ — ولن تبدأ المرحلة 4 (Backup/Restore) قبل إنجاز هذه المرحلة وموافقته.

@@ -1,0 +1,358 @@
+    40→    40→
+    41→    41→  const sectionData = (rows: MatchedRow[]): { r: MatchedRow; info: RowLeafInfo }[] => {
+    42→    42→    const info = leafInfo(rows);
+    43→    43→    return rows.map((r, i) => ({ r, info: info[i] }));
+    44→    44→  };
+    45→    45→
+    46→    46→  const rows: RenderRow[] = [];
+    47→    47→
+    48→    48→  // Revenue
+    49→    49→  rows.push({ kind: "section", label: "الإيرادات — Revenue" });
+    50→    50→  for (const { r, info } of sectionData(cat.sales)) rows.push({ kind: "data", r, info, isRevenue: true });
+    51→    51→  rows.push({ kind: "sub", label: "صافي الإيرادات (المبيعات − المردود)", v1: T.rev1, v2: T.rev2, isRevenue: true });
+    52→    52→
+    53→    53→  // Cost of sales
+    54→    54→  rows.push({ kind: "section", label: "تكلفة الإيرادات — Cost of Sales" });
+    55→    55→  for (const { r, info } of sectionData(cat.cost)) rows.push({ kind: "data", r, info, isRevenue: false });
+    56→    56→  rows.push({ kind: "sub", label: "صافي تكلفة الإيرادات", v1: T.cost1, v2: T.cost2, isRevenue: false });
+    57→    57→
+    58→    58→  // Gross profit
+    59→    59→  rows.push({ kind: "total", label: "مجمل الربح (الخسارة) — Gross Profit", v1: T.gross1, v2: T.gross2, isRevenue: true });
+    60→    60→
+    61→    61→  // Operating expenses (function of expense)
+    62→    62→  rows.push({ kind: "section", label: "مصاريف التشغيل — Operating Expenses" });
+    63→    63→
+    64→    64→  rows.push({ kind: "section", label: "مصاريف البيع والتوزيع" });
+    65→    65→  for (const { r, info } of sectionData(cat.sell)) rows.push({ kind: "data", r, info, isRevenue: false });
+    66→    66→  rows.push({ kind: "sub", label: "إجمالي البيع والتوزيع", v1: T.sell1, v2: T.sell2, isRevenue: false });
+    67→    67→
+    68→    68→  rows.push({ kind: "section", label: "المصاريف الإدارية والعمومية" });
+    69→    69→  for (const { r, info } of sectionData(cat.adm)) rows.push({ kind: "data", r, info, isRevenue: false });
+    70→    70→  rows.push({ kind: "sub", label: "إجمالي الإدارية والعمومية", v1: T.adm1, v2: T.adm2, isRevenue: false });
+    71→    71→
+    72→    72→  rows.push({ kind: "section", label: "مصاريف تشغيلية أخرى" });
+    73→    73→  for (const { r, info } of sectionData(cat.oth)) rows.push({ kind: "data", r, info, isRevenue: false });
+    74→    74→  rows.push({ kind: "sub", label: "إجمالي التشغيلية الأخرى", v1: T.oth1, v2: T.oth2, isRevenue: false });
+    75→    75→
+    76→    76→  rows.push({ kind: "sub", label: "إجمالي مصاريف التشغيل", v1: T.opex1, v2: T.opex2, isRevenue: false });
+    77→    77→  rows.push({ kind: "total", label: "الربح (الخسارة) من العمليات التشغيلية — Operating Profit", v1: T.oper1, v2: T.oper2, isRevenue: true });
+    78→    78→
+    79→    79→  // Other income
+    80→    80→  if (cat.othRev.length) {
+    81→    81→    rows.push({ kind: "section", label: "الدخل من مصادر أخرى — Other Income" });
+    82→    82→    for (const { r, info } of sectionData(cat.othRev)) rows.push({ kind: "data", r, info, isRevenue: true });
+    83→    83→    rows.push({ kind: "sub", label: "إجمالي الدخل من مصادر أخرى", v1: T.othRev1, v2: T.othRev2, isRevenue: true });
+    84→    84→  }
+    85→    85→
+    86→    86→  // Finance & tax
+    87→    87→  if (cat.fin.length) {
+    88→    88→    rows.push({ kind: "section", label: "تكاليف التمويل — Finance Costs" });
+    89→    89→    for (const { r, info } of sectionData(cat.fin)) rows.push({ kind: "data", r, info, isRevenue: false });
+    90→    90→    rows.push({ kind: "sub", label: "إجمالي تكاليف التمويل", v1: T.fin1, v2: T.fin2, isRevenue: false });
+    91→    91→  }
+    92→    92→  if (cat.fin.length || cat.tax.length) {
+    93→    93→    rows.push({ kind: "sub", label: "الربح (الخسارة) قبل الضريبة", v1: T.pbt1, v2: T.pbt2, isRevenue: true });
+    94→    94→  }
+    95→    95→  if (cat.tax.length) {
+    96→    96→    rows.push({ kind: "section", label: "ضريبة الدخل — Income Tax" });
+    97→    97→    for (const { r, info } of sectionData(cat.tax)) rows.push({ kind: "data", r, info, isRevenue: false });
+    98→    98→    rows.push({ kind: "sub", label: "إجمالي ضريبة الدخل", v1: T.tax1, v2: T.tax2, isRevenue: false });
+    99→    99→  }
+   100→   100→
+   101→   101→  // Net profit
+   102→   102→  rows.push({ kind: "total", label: "صافي الربح (الخسارة) للفترة — Net Profit", v1: T.net1, v2: T.net2, isRevenue: true });
+   103→   103→
+   104→   104→  // OCI
+   105→   105→  if (cat.oci.length) {
+   106→   106→    rows.push({ kind: "section", label: "الدخل الشامل الآخر — Other Comprehensive Income" });
+   107→   107→    for (const { r, info } of sectionData(cat.oci)) rows.push({ kind: "data", r, info, isRevenue: true });
+   108→   108→    rows.push({ kind: "sub", label: "إجمالي الدخل الشامل الآخر", v1: T.oci1, v2: T.oci2, isRevenue: true });
+   109→   109→    rows.push({ kind: "total", label: "إجمالي الدخل الشامل للفترة — Total Comprehensive Income", v1: T.comp1, v2: T.comp2, isRevenue: true });
+   110→   110→  }
+   111→   111→
+   112→   112→  // Reconciliation
+   113→   113→  if (netRow) {
+   114→   114→    const n1 = netRow.a1 ? Math.round((netRow.a1.d - netRow.a1.m) * 100) / 100 : null;
+   115→   115→    const n2 = netRow.a2 ? Math.round((netRow.a2.d - netRow.a2.m) * 100) / 100 : null;
+   116→   116→    const ok = (n1 != null && Math.abs(n1 - T.net1) < 0.05) && (n2 != null && Math.abs(n2 - T.net2) < 0.05);
+   117→   117→    rows.push({ kind: "memo", label: "التسوية: حساب صافي الدخل في دفتر الأستاذ", v1: n1, v2: n2, ok });
+   118→   118→  }
+   119→   119→
+   120→   120→  const pctOf = (v: number, base: number) => (base !== 0 ? v / base : null);
+   121→   121→
+   122→   122→  const statusClass = (st: MatchedRow["st"]): string => {
+   123→   123→    if (st === "مطابق") return "bg-emerald-50/60 dark:bg-emerald-950/20";
+   124→   124→    if (st === "في الملف الأول فقط") return "bg-amber-50/60 dark:bg-amber-950/20";
+   125→   125→    return "bg-orange-50/50 dark:bg-orange-950/20";
+   126→   126→  };
+   127→   127→
+   128→   128→  const changeStatusClass = (cs: ChangeStatus): string => {
+   129→   129→    if (cs === "مرغوب نمو" || cs === "مرغوب وفرة") return "text-emerald-600 dark:text-emerald-400";
+   130→   130→    if (cs === "غير مرغوب انخفاض" || cs === "غير مرغوب زيادة") return "text-rose-600 dark:text-rose-400";
+   131→   131→    return "text-slate-400";
+   132→   132→  };
+   133→   133→
+   134→   134→  return (
+   135→   135→    <div className="scroll-thin max-h-[65vh] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
+   136→   136→      <Table className="text-xs">
+   137→   137→        <TableHeader className="sticky top-0 z-10">
+   138→   138→          <TableRow className="border-slate-200 bg-slate-800 hover:bg-slate-800 dark:border-slate-700 dark:bg-slate-900">
+   139→   139→            <TableHead className="h-9 w-12 text-center text-slate-50">رقم</TableHead>
+   140→   140→            <TableHead className="h-9 text-slate-50">البند</TableHead>
+   141→   141→            {isMonthMode ? (
+   142→   142→              <>
+   143→   143→                <TableHead className="h-9 text-center text-slate-50">{col2Header}<br /><span className="font-normal opacity-80">{col2Sub}</span></TableHead>
+   144→   144→                <TableHead className="h-9 text-center text-slate-50">نسبة الشهر<br /><span className="font-normal opacity-80">من التراكمي</span></TableHead>
+   145→   145→                <TableHead className="h-9 text-center text-slate-50">نسبة البند<br /><span className="font-normal opacity-80">لمبيعات الشهر</span></TableHead>
+   146→   146→                <TableHead className="h-9 text-center text-slate-50">{col1Header}<br /><span className="font-normal opacity-80">{col1Sub}</span></TableHead>
+   147→   147→                <TableHead className="h-9 text-center text-slate-50">% من<br /><span className="font-normal opacity-80">الإيرادات</span></TableHead>
+   148→   148→                <TableHead className="h-9 text-center text-slate-50">المتوسط<br /><span className="font-normal opacity-80">للتراكمي</span></TableHead>
+   149→   149→                <TableHead className="h-9 text-center text-slate-50">نسبة الشهر<br /><span className="font-normal opacity-80">من المتوسط</span></TableHead>
+   150→   150→                <TableHead className="h-9 text-center text-slate-50">فرق الشهر<br /><span className="font-normal opacity-80">عن المتوسط</span></TableHead>
+   151→   151→                <TableHead className="h-9 text-center text-slate-50">نسبة الفرق<br /><span className="font-normal opacity-80">عن المتوسط</span></TableHead>
+   152→   152→                <TableHead className="h-9 text-center text-slate-50">حالة الشهر<br /><span className="font-normal opacity-80">مقابل المتوسط</span></TableHead>
+   153→   153→              </>
+   154→   154→            ) : (
+   155→   155→              <>
+   156→   156→                <TableHead className="h-9 text-center text-slate-50">{col2Header}<br /><span className="font-normal opacity-80">{col2Sub}</span></TableHead>
+   157→   157→                <TableHead className="h-9 text-center text-slate-50">% من<br /><span className="font-normal opacity-80">الإيرادات</span></TableHead>
+   158→   158→                <TableHead className="h-9 text-center text-slate-50">{col1Header}<br /><span className="font-normal opacity-80">{col1Sub}</span></TableHead>
+   159→   159→                <TableHead className="h-9 text-center text-slate-50">% من<br /><span className="font-normal opacity-80">الإيرادات</span></TableHead>
+   160→   160→                <TableHead className="h-9 text-center text-slate-50">التغير</TableHead>
+   161→   161→                <TableHead className="h-9 text-center text-slate-50">نسبة<br /><span className="font-normal opacity-80">التغير</span></TableHead>
+   162→   162→                <TableHead className="h-9 text-center text-slate-50">حالة<br /><span className="font-normal opacity-80">التغير</span></TableHead>
+   163→   163→              </>
+   164→   164→            )}
+   165→   165→            <TableHead className="h-9 text-center text-slate-50">الحالة</TableHead>
+   166→   166→          </TableRow>
+   167→   167→        </TableHeader>
+   168→   168→        <TableBody>
+   169→   169→          {rows.map((row, idx) => {
+   170→   170→            if (row.kind === "section") {
+   171→   171→              const isMain = row.label.includes("—");
+   172→   172→              return (
+   173→   173→                <TableRow
+   174→   174→                  key={`sec-${idx}`}
+   175→   175→                  className={cn(
+   176→   176→                    "border-slate-200 dark:border-slate-800",
+   177→   177→                    isMain ? "bg-slate-100 dark:bg-slate-900/60" : "bg-slate-50 dark:bg-slate-900/30"
+   178→   178→                  )}
+   179→   179→                >
+   180→   180→                  <TableCell colSpan={isMonthMode ? 13 : 10} className={cn("py-1.5", isMain ? "font-bold text-slate-800 dark:text-slate-100" : "font-semibold text-slate-600 dark:text-slate-300")}>
+   181→   181→                    {row.label}
+   182→   182→                  </TableCell>
+   183→   183→                </TableRow>
+   184→   184→              );
+   185→   185→            }
+   186→   186→
+   187→   187→            if (row.kind === "data") {
+   188→   188→              const { r, info, isRevenue } = row;
+   189→   189→              const a = r.a1 ?? r.a2!;
+   190→   190→              const v1 = rowAmount(r, "a1", isRevenue);
+   191→   191→              const v2 = rowAmount(r, "a2", isRevenue);
+   192→   192→              const isParent = (r.a1 && !info.leaf1) || (r.a2 && !info.leaf2);
+   193→   193→
+   194→   194→              if (isMonthMode) {
+   195→   195→                // Month/cumulative mode columns (13 total):
+   196→   196→                // رقم | البند | الشهر(v2) | نسبة الشهر من التراكمي(v2/v1) | نسبة البند لمبيعات الشهر(v2/b2) | التراكمي(v1) | % من الإيرادات(v1/b1) | المتوسط للتراكمي(v1/nm) | نسبة الشهر من المتوسط(v2/avg) | فرق الشهر عن المتوسط(v2-avg) | نسبة الفرق عن المتوسط((v2-avg)/avg) | حالة الشهر | الحالة
+   197→   197→                const monthRatio = computeMonthRatio(v2, v1);
+   198→   198→                const itemToMonthSales = b2 !== 0 && v2 != null ? v2 / b2 : null;
+   199→   199→                const s1 = b1 !== 0 && v1 != null ? v1 / b1 : null;
+   200→   200→                const avgCumulative = computeAvgCumulative(v1, numMonths);
+   201→   201→                const monthToAvg = computeMonthToAvgRatio(v2, avgCumulative);
+   202→   202→                const avgDiff = computeMonthAvgDiff(v2, avgCumulative);
+   203→   203→                const avgDiffPct = computeMonthAvgDiffPct(v2, avgCumulative);
+   204→   204→                const cs = computeMonthStatus(monthRatio, isRevenue, numMonths);
+   205→   205→                return (
+   206→   206→                  <TableRow
+   207→   207→                    key={`d-${idx}`}
+   208→   208→                    className={cn("border-slate-100 transition-colors dark:border-slate-800/60", statusClass(r.st), isParent && "font-bold")}
+   209→   209→                  >
+   210→   210→                    <TableCell className="text-center text-slate-500 dark:text-slate-400">{a.num ?? "—"}</TableCell>
+   211→   211→                    <TableCell className={cn("text-slate-800 dark:text-slate-100", isParent && "font-bold")}>{a.nm}</TableCell>
+   212→   212→                    <TableCell className={cn("tnum text-center", v2 != null && v2 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200", isParent && "font-bold")}>{fmtAmount(v2)}</TableCell>
+   213→   213→                    <TableCell className="tnum text-center font-semibold text-emerald-600 dark:text-emerald-400">{fmtPct(monthRatio)}</TableCell>
+   214→   214→                    <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(itemToMonthSales)}</TableCell>
+   215→   215→                    <TableCell className={cn("tnum text-center", v1 != null && v1 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200", isParent && "font-bold")}>{fmtAmount(v1)}</TableCell>
+   216→   216→                    <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s1)}</TableCell>
+   217→   217→                    <TableCell className="tnum text-center text-slate-600 dark:text-slate-300">{fmtAmount(avgCumulative)}</TableCell>
+   218→   218→                    <TableCell className={cn("tnum text-center font-semibold", monthToAvg != null && monthToAvg > 1 ? "text-emerald-600 dark:text-emerald-400" : monthToAvg != null && monthToAvg < 1 ? "text-rose-600 dark:text-rose-400" : "text-slate-400")}>{fmtPct(monthToAvg)}</TableCell>
+   219→   219→                    <TableCell className={cn("tnum text-center font-medium", avgDiff != null && avgDiff < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtAmount(avgDiff)}</TableCell>
+   220→   220→                    <TableCell className={cn("tnum text-center font-medium", avgDiffPct != null && avgDiffPct < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtPct(avgDiffPct)}</TableCell>
+   221→   221→                    <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   222→   222→                    <TableCell className="text-center text-slate-500 dark:text-slate-400">{r.st}</TableCell>
+   223→   223→                  </TableRow>
+   224→   224→                );
+   225→   225→              }
+   226→   226→
+   227→   227→              // Period comparison mode (original)
+   228→   228→              const s1 = b2 !== 0 && v2 != null ? v2 / b2 : null;
+   229→   229→              const s2 = b1 !== 0 && v1 != null ? v1 / b1 : null;
+   230→   230→              const chg = v1 != null && v2 != null ? Math.round((v2 - v1) * 100) / 100 : null;
+   231→   231→              const cp = computeChangePct(chg, v1);
+   232→   232→              const cs = computeChangeStatus(chg, isRevenue);
+   233→   233→              return (
+   234→   234→                <TableRow
+   235→   235→                  key={`d-${idx}`}
+   236→   236→                  className={cn("border-slate-100 transition-colors dark:border-slate-800/60", statusClass(r.st), isParent && "font-bold")}
+   237→   237→                >
+   238→   238→                  <TableCell className="text-center text-slate-500 dark:text-slate-400">{a.num ?? "—"}</TableCell>
+   239→   239→                  <TableCell className={cn("text-slate-800 dark:text-slate-100", isParent && "font-bold")}>{a.nm}</TableCell>
+   240→   240→                  <TableCell className={cn("tnum text-center", v2 != null && v2 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200", isParent && "font-bold")}>{fmtAmount(v2)}</TableCell>
+   241→   241→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s1)}</TableCell>
+   242→   242→                  <TableCell className={cn("tnum text-center", v1 != null && v1 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200", isParent && "font-bold")}>{fmtAmount(v1)}</TableCell>
+   243→   243→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s2)}</TableCell>
+   244→   244→                  <TableCell className={cn("tnum text-center font-medium", chg != null && chg < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-600 dark:text-slate-300")}>{fmtAmount(chg)}</TableCell>
+   245→   245→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(cp)}</TableCell>
+   246→   246→                  <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   247→   247→                  <TableCell className="text-center text-slate-500 dark:text-slate-400">{r.st}</TableCell>
+   248→   248→                </TableRow>
+   249→   249→              );
+   250→   250→            }
+   251→   251→
+   252→   252→            if (row.kind === "memo") {
+   253→   253→              if (isMonthMode) {
+   254→   254→                const monthRatio = computeMonthRatio(row.v2, row.v1);
+   255→   255→                const itemToMonthSales = b2 !== 0 && row.v2 != null ? row.v2 / b2 : null;
+   256→   256→                const s1 = b1 !== 0 && row.v1 != null ? row.v1 / b1 : null;
+   257→   257→                const avgCumulative = computeAvgCumulative(row.v1, numMonths);
+   258→   258→                const monthToAvg = computeMonthToAvgRatio(row.v2, avgCumulative);
+   259→   259→                const avgDiff = computeMonthAvgDiff(row.v2, avgCumulative);
+   260→   260→                const avgDiffPct = computeMonthAvgDiffPct(row.v2, avgCumulative);
+   261→   261→                const cs = computeMonthStatus(monthRatio, true, numMonths);
+   262→   262→                return (
+   263→   263→                  <TableRow key={`memo-${idx}`} className="border-slate-200 bg-amber-50 dark:border-slate-800 dark:bg-amber-950/20">
+   264→   264→                    <TableCell className="text-center text-slate-400">—</TableCell>
+   265→   265→                    <TableCell className="font-bold text-slate-700 dark:text-slate-200">{row.label}</TableCell>
+   266→   266→                    <TableCell className="tnum text-center font-bold text-slate-700 dark:text-slate-200">{fmtAmount(row.v2)}</TableCell>
+   267→   267→                    <TableCell className="tnum text-center font-bold text-emerald-600 dark:text-emerald-400">{fmtPct(monthRatio)}</TableCell>
+   268→   268→                    <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(itemToMonthSales)}</TableCell>
+   269→   269→                    <TableCell className="tnum text-center font-bold text-slate-700 dark:text-slate-200">{fmtAmount(row.v1)}</TableCell>
+   270→   270→                    <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s1)}</TableCell>
+   271→   271→                    <TableCell className="tnum text-center font-bold text-slate-600 dark:text-slate-300">{fmtAmount(avgCumulative)}</TableCell>
+   272→   272→                    <TableCell className="tnum text-center font-bold text-slate-600 dark:text-slate-300">{fmtPct(monthToAvg)}</TableCell>
+   273→   273→                    <TableCell className={cn("tnum text-center font-bold", avgDiff != null && avgDiff < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtAmount(avgDiff)}</TableCell>
+   274→   274→                    <TableCell className={cn("tnum text-center font-bold", avgDiffPct != null && avgDiffPct < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtPct(avgDiffPct)}</TableCell>
+   275→   275→                    <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   276→   276→                    <TableCell className={cn("text-center font-bold", row.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{row.ok ? "مطابق ✓" : "⚠ فرق"}</TableCell>
+   277→   277→                  </TableRow>
+   278→   278→                );
+   279→   279→              }
+   280→   280→              const chg = row.v1 != null && row.v2 != null ? Math.round((row.v2 - row.v1) * 100) / 100 : null;
+   281→   281→              const cp = computeChangePct(chg, row.v1);
+   282→   282→              const cs = computeChangeStatus(chg, true);
+   283→   283→              return (
+   284→   284→                <TableRow key={`memo-${idx}`} className="border-slate-200 bg-amber-50 dark:border-slate-800 dark:bg-amber-950/20">
+   285→   285→                  <TableCell className="text-center text-slate-400">—</TableCell>
+   286→   286→                  <TableCell className="font-bold text-slate-700 dark:text-slate-200">{row.label}</TableCell>
+   287→   287→                  <TableCell className="tnum text-center font-bold text-slate-700 dark:text-slate-200">{fmtAmount(row.v2)}</TableCell>
+   288→   288→                  <TableCell className="text-center text-slate-400">—</TableCell>
+   289→   289→                  <TableCell className="tnum text-center font-bold text-slate-700 dark:text-slate-200">{fmtAmount(row.v1)}</TableCell>
+   290→   290→                  <TableCell className="text-center text-slate-400">—</TableCell>
+   291→   291→                  <TableCell className="tnum text-center font-bold text-slate-600 dark:text-slate-300">{fmtAmount(chg)}</TableCell>
+   292→   292→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(cp)}</TableCell>
+   293→   293→                  <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   294→   294→                  <TableCell className={cn("text-center font-bold", row.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{row.ok ? "مطابق ✓" : "⚠ فرق"}</TableCell>
+   295→   295→                </TableRow>
+   296→   296→              );
+   297→   297→            }
+   298→   298→
+   299→   299→            // sub or total
+   300→   300→            const isTotal = row.kind === "total";
+   301→   301→            const { v1, v2, label, isRevenue } = row;
+   302→   302→
+   303→   303→            if (isMonthMode) {
+   304→   304→              const monthRatio = computeMonthRatio(v2, v1);
+   305→   305→              const itemToMonthSales = b2 !== 0 && v2 != null ? v2 / b2 : null;
+   306→   306→              const s1 = pctOf(v1, b1);
+   307→   307→              const avgCumulative = computeAvgCumulative(v1, numMonths);
+   308→   308→              const monthToAvg = computeMonthToAvgRatio(v2, avgCumulative);
+   309→   309→              const avgDiff = computeMonthAvgDiff(v2, avgCumulative);
+   310→   310→              const avgDiffPct = computeMonthAvgDiffPct(v2, avgCumulative);
+   311→   311→              const cs = computeMonthStatus(monthRatio, isRevenue, numMonths);
+   312→   312→              const positive = v2 >= 0;
+   313→   313→              return (
+   314→   314→                <TableRow
+   315→   315→                  key={`${row.kind}-${idx}`}
+   316→   316→                  className={cn(
+   317→   317→                    "border-slate-200 dark:border-slate-800",
+   318→   318→                    isTotal
+   319→   319→                      ? positive ? "bg-emerald-50 dark:bg-emerald-950/30" : "bg-rose-50 dark:bg-rose-950/30"
+   320→   320→                      : "bg-slate-50 dark:bg-slate-900/40"
+   321→   321→                  )}
+   322→   322→                >
+   323→   323→                  <TableCell className="text-center text-slate-400">—</TableCell>
+   324→   324→                  <TableCell className={cn("text-slate-800 dark:text-slate-100", isTotal ? "text-sm font-extrabold" : "font-bold")}>{label}</TableCell>
+   325→   325→                  <TableCell className={cn("tnum text-center", isTotal ? "text-sm font-extrabold" : "font-bold", v2 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200")}>{fmtAmount(v2)}</TableCell>
+   326→   326→                  <TableCell className="tnum text-center font-bold text-emerald-600 dark:text-emerald-400">{fmtPct(monthRatio)}</TableCell>
+   327→   327→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(itemToMonthSales)}</TableCell>
+   328→   328→                  <TableCell className={cn("tnum text-center", isTotal ? "font-extrabold" : "font-bold", v1 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200")}>{fmtAmount(v1)}</TableCell>
+   329→   329→                  <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s1)}</TableCell>
+   330→   330→                  <TableCell className="tnum text-center font-bold text-slate-600 dark:text-slate-300">{fmtAmount(avgCumulative)}</TableCell>
+   331→   331→                  <TableCell className={cn("tnum text-center font-bold", monthToAvg != null && monthToAvg > 1 ? "text-emerald-600 dark:text-emerald-400" : monthToAvg != null && monthToAvg < 1 ? "text-rose-600 dark:text-rose-400" : "text-slate-400")}>{fmtPct(monthToAvg)}</TableCell>
+   332→   332→                  <TableCell className={cn("tnum text-center font-bold", avgDiff != null && avgDiff < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtAmount(avgDiff)}</TableCell>
+   333→   333→                  <TableCell className={cn("tnum text-center font-bold", avgDiffPct != null && avgDiffPct < 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>{fmtPct(avgDiffPct)}</TableCell>
+   334→   334→                  <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   335→   335→                  <TableCell className="text-center text-slate-400">—</TableCell>
+   336→   336→                </TableRow>
+   337→   337→              );
+   338→   338→            }
+   339→   339→
+   340→   340→            // Period comparison mode (original)
+   341→   341→            const s1 = pctOf(v1, b1);
+   342→   342→            const s2 = pctOf(v2, b2);
+   343→   343→            const chg = Math.round((v2 - v1) * 100) / 100;
+   344→   344→            const cp = computeChangePct(chg, v1);
+   345→   345→            const cs = computeChangeStatus(chg, isRevenue);
+   346→   346→            const positive = v2 >= 0;
+   347→   347→            return (
+   348→   348→              <TableRow
+   349→   349→                key={`${row.kind}-${idx}`}
+   350→   350→                className={cn(
+   351→   351→                  "border-slate-200 dark:border-slate-800",
+   352→   352→                  isTotal
+   353→   353→                    ? positive ? "bg-emerald-50 dark:bg-emerald-950/30" : "bg-rose-50 dark:bg-rose-950/30"
+   354→   354→                    : "bg-slate-50 dark:bg-slate-900/40"
+   355→   355→                )}
+   356→   356→              >
+   357→   357→                <TableCell className="text-center text-slate-400">—</TableCell>
+   358→   358→                <TableCell className={cn("text-slate-800 dark:text-slate-100", isTotal ? "text-sm font-extrabold" : "font-bold")}>{label}</TableCell>
+   359→   359→                <TableCell className={cn("tnum text-center", isTotal ? "text-sm font-extrabold" : "font-bold", v2 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200")}>{fmtAmount(v2)}</TableCell>
+   360→   360→                <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s2)}</TableCell>
+   361→   361→                <TableCell className={cn("tnum text-center", isTotal ? "font-extrabold" : "font-bold", v1 < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-700 dark:text-slate-200")}>{fmtAmount(v1)}</TableCell>
+   362→   362→                <TableCell className="tnum text-center text-slate-500 dark:text-slate-400">{fmtPct(s1)}</TableCell>
+   363→   363→                <TableCell className={cn("tnum text-center font-bold", chg < 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-600 dark:text-slate-300")}>{fmtAmount(chg)}</TableCell>
+   364→   364→                <TableCell className="tnum text-center font-bold text-slate-600 dark:text-slate-300">{fmtPct(cp)}</TableCell>
+   365→   365→                <TableCell className={cn("text-center font-semibold", changeStatusClass(cs))}>{cs}</TableCell>
+   366→   366→                <TableCell className="text-center text-slate-400">—</TableCell>
+   367→   367→              </TableRow>
+   368→   368→            );
+   369→   369→          })}
+   370→   370→          {/* Footer note */}
+   371→   371→          <TableRow className="border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/40">
+   372→   372→            <TableCell colSpan={isMonthMode ? 13 : 10} className="py-2 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+   373→   373→              {isMonthMode ? (
+   374→   374→                <>
+   375→   375→                  قائمة الربح أو الخسارة{cat.oci.length ? " والدخل الشامل الآخر" : ""} وفق <b>IAS 1</b> —
+   376→   376→                  مقارنة الشهر الحالي مع التراكمي ({numMonths} أشهر) · <b>نسبة الشهر من التراكمي</b> = قيمة الشهر ÷ القيمة التراكمية ·
+   377→   377→                  <b> نسبة البند لمبيعات الشهر</b> = قيمة الشهر ÷ صافي مبيعات الشهر · <b>المتوسط للتراكمي</b> = التراكمي ÷ {numMonths} ·
+   378→   378→                  <b> نسبة الشهر من المتوسط</b> = الشهر ÷ المتوسط (&gt;100% = فوق المتوسط) ·
+   379→   379→                  <b> فرق الشهر عن المتوسط</b> = الشهر − المتوسط · <b>نسبة الفرق عن المتوسط</b> = (الشهر − المتوسط) ÷ المتوسط ·
+   380→   380→                  <b>حالة الشهر</b>: مرغوب نمو (أخضر) = الشهر أعلى من المتوسط ({(100 / numMonths).toFixed(1)}%) · غير مرغوب انخفاض (أحمر) = العكس · الإجماليات من الأوراق فقط.
+   381→   381→                </>
+   382→   382→              ) : (
+   383→   383→                <>
+   384→   384→                  قائمة الربح أو الخسارة{cat.oci.length ? " والدخل الشامل الآخر" : ""} وفق <b>IAS 1</b> (طريقة الوظيفة) —
+   385→   385→                  تُعرض الفترة الحالية ثم الفترة المقارنة · الخصومات (المردود) تُعرض سالبة بين قوسين ·
+   386→   386→                  النسب من صافي إيرادات كل فترة · الإجماليات من الحسابات الفرعية (الأوراق) فقط ·
+   387→   387→                  <b> حالة التغير</b>: مرغوب نمو (أخضر) = زيادة الإيراد أو وفرة في المصروف · غير مرغوب (أحمر) = انخفاض الإيراد أو زيادة المصروف.
+   388→   388→                </>
+   389→   389→              )}
+   390→   390→            </TableCell>
+   391→   391→          </TableRow>
+   392→   392→        </TableBody>
+   393→   393→      </Table>
+   394→   394→    </div>
+   395→   395→  );
+   396→   396→}
+   397→   397→

@@ -1,0 +1,714 @@
+     1→/**
+     2→ * تقرير الرسوم البياني — طبقة تجهيز البيانات (Data Layer)
+     3→ *
+     4→ * تحوّل مخرجات المطابقة (قائمة الدخل T + التصنيفات cat + المركز المالي bs1/bs2
+     5→ * + النسب ratioGroups) إلى مجموعات بيانات جاهزة للعرض — بدون أي منطق واجهة.
+     6→ *
+     7→ * المبادئ:
+     8→ *  - كل قيمة مشتقة من بيانات المطابقة الحقيقية — لا بيانات وهمية إطلاقاً.
+     9→ *  - القيم المئوية (unit === "percent" و الهوامش) تُخزَّن كأعداد عشرية
+    10→ *    (0.15 = 15%) وتحوّلها طبقة العرض عند الرسم.
+    11→ *  - القيم المفقودة تُعاد null ولا تُخمَّن أبداً.
+    12→ *
+    13→ * الاتجاهات (Sign conventions — متوافقة مع accounts.ts):
+    14→ *  - قائمة الدخل: الإيرادات دائن-موجبة، المصروفات مدين-موجبة.
+    15→ *  - المركز المالي: الأصول مدين-موجبة، الخصوم وحقوق الملكية دائن-موجبة.
+    16→ */
+    17→
+    18→import {
+    19→  type BalanceSheetTotals,
+    20→  type Categorized,
+    21→  type MatchedRow,
+    22→  type RatioGroup,
+    23→  type Totals,
+    24→  computeChangePct,
+    25→  leafInfo,
+    26→  rowAmount,
+    27→} from "@/lib/accounts";
+    28→
+    29→/* ══════════════════════════════════════════════════════════════════════════
+    30→ * الأنواع العامة
+    31→ * ══════════════════════════════════════════════════════════════════════════ */
+    32→
+    33→export type ReportType = "pl" | "bs" | "fa" | "pl_bs" | "all";
+    34→
+    35→export type KpiFormat = "amount" | "ratio" | "percent";
+    36→export type KpiTone = "emerald" | "rose" | "amber" | "teal" | "sky" | "violet";
+    37→
+    38→export interface KpiCardData {
+    39→  /** مفتاح أيقونة يُفسَّر في طبقة العرض. */
+    40→  icon: string;
+    41→  label: string;
+    42→  value: number | null;
+    43→  format: KpiFormat;
+    44→  /** نسبة التغير (كسر) أو فرق النقاط المئوية (كسر) حسب deltaKind. */
+    45→  delta: number | null;
+    46→  deltaKind: "pct" | "pp" | "none";
+    47→  /** هل التغير الموجب مرغوب؟ */
+    48→  positiveIsGood: boolean;
+    49→  tone: KpiTone;
+    50→}
+    51→
+    52→export type AlertSeverity = "danger" | "warning" | "info" | "success";
+    53→
+    54→export interface ChartAlert {
+    55→  severity: AlertSeverity;
+    56→  title: string;
+    57→  detail: string;
+    58→}
+    59→
+    60→export interface MoverItem {
+    61→  num: string | null;
+    62→  name: string;
+    63→  v1: number;
+    64→  v2: number;
+    65→  chg: number;
+    66→  /** نسبة التغير ككسر (0.25 = 25%) — null عندما يكون أساس المقارنة صفراً. */
+    67→  cp: number | null;
+    68→  favorable: boolean | null;
+    69→}
+    70→
+    71→export interface MarginPoint {
+    72→  name: string;
+    73→  /** كسر (0.2 = 20%). */
+    74→  v1: number | null;
+    75→  v2: number | null;
+    76→}
+    77→
+    78→export interface PeriodSeriesPoint {
+    79→  period: string;
+    80→  revenue: number;
+    81→  cost: number;
+    82→  sell: number;
+    83→  adm: number;
+    84→  other: number;
+    85→  finance: number;
+    86→  tax: number;
+    87→  net: number;
+    88→}
+    89→
+    90→/* ══════════════════════════════════════════════════════════════════════════
+    91→ * مجموعات بيانات كل نوع تقرير
+    92→ * ══════════════════════════════════════════════════════════════════════════ */
+    93→
+    94→export interface PLDataset {
+    95→  kpis: KpiCardData[];
+    96→  /** اتجاه الأداء عبر الفترتين (مصروفات مكدسة + إيراد وصافي ربح). */
+    97→  trend: PeriodSeriesPoint[];
+    98→  /** البنود الأكثر تغيراً — أفضل/أسوأ. */
+    99→  movers: MoverItem[];
+   100→  alerts: ChartAlert[];
+   101→}
+   102→
+   103→export interface BSDataset {
+   104→  /** هل تتوفر بيانات مركز مالي؟ */
+   105→  available: boolean;
+   106→  kpis: KpiCardData[];
+   107→  /** هيكل الأصول (الفترة الحالية). */
+   108→  assetStructure: { name: string; value: number }[];
+   109→  /** هيكل التمويل: خصوم متداولة/غير متداولة/حقوق ملكية (الفترة الحالية). */
+   110→  financingStructure: { name: string; value: number }[];
+   111→  /** مقارنة المكونات الرئيسية بين الفترتين. */
+   112→  comparison: { metric: string; v1: number | null; v2: number | null }[];
+   113→  /** العناصر التفصيلية (مخزون، نقدية…) بين الفترتين. */
+   114→  details: { metric: string; v1: number | null; v2: number | null }[];
+   115→  alerts: ChartAlert[];
+   116→}
+   117→
+   118→export interface FADataset {
+   119→  kpis: KpiCardData[];
+   120→  /** اتجاهات الهوامش عبر الفترتين (مشتقة من قائمة الدخل مباشرة). */
+   121→  margins: MarginPoint[];
+   122→  /** مجموعات النسب كما حُسبت في computeRatios — بعد استبعاد النسب المكررة. */
+   123→  groups: {
+   124→    title: string;
+   125→    titleEn: string;
+   126→    unit: "ratio" | "percent" | "amount" | "days";
+   127→    items: { name: string; nameEn: string; v1: number | null; v2: number | null; benchmark: string | null }[];
+   128→  }[];
+   129→  alerts: ChartAlert[];
+   130→}
+   131→
+   132→export interface CombinedDataset {
+   133→  available: boolean;
+   134→  kpis: KpiCardData[];
+   135→  /** تحليل دوپونت: الهامش (%) × الدوران (×) × المضاعف (×). */
+   136→  dupont: { name: string; nameEn: string; v1: number | null; v2: number | null; format: "percent" | "ratio" }[];
+   137→  /** مؤشرات متقاطعة من القائمتين. */
+   138→  cross: { metric: string; v1: number | null; v2: number | null }[];
+   139→}
+   140→
+   141→export interface ReportData {
+   142→  pl: PLDataset;
+   143→  bs: BSDataset;
+   144→  fa: FADataset;
+   145→  combined: CombinedDataset;
+   146→}
+   147→
+   148→/* ══════════════════════════════════════════════════════════════════════════
+   149→ * حدود التنبيهات (معايير تحليل مالي قياسية — موثقة)
+   150→ * ══════════════════════════════════════════════════════════════════════════ */
+   151→
+   152→/** حد «التغير غير الاعتيادي» في نسبة التغير للبنود. */
+   153→const UNUSUAL_CP = 0.25; // ±25%
+   154→/** الحد الأدنى لأثر التغير المطلق: 2% من إيرادات الفترة الحالية. */
+   155→const UNUSUAL_ABS_SHARE = 0.02;
+   156→/** حد التنبيه عند تغير الهامش (بالنقاط المئوية). */
+   157→const MARGIN_PP_ALERT = 0.05; // 5 ن.م
+   158→/** حد التوازن المحاسبي المسموح به (فروق التقريب). */
+   159→const EQUATION_TOL_RATE = 0.005; // 0.5% من إجمالي الأصول
+   160→const EQUATION_TOL_ABS = 1;
+   161→
+   162→const r2 = (n: number): number => Math.round(n * 100) / 100;
+   163→
+   164→/** نسبة تغير آمنة: null عند غياب الأساس أو كونه صفراً (دقة 4 منازل لتجنب تشويه النسب). */
+   165→const r4 = (n: number): number => Math.round(n * 10000) / 10000;
+   166→function pctDelta(v1: number, v2: number): number | null {
+   167→  if (v1 === 0) return null;
+   168→  return r4((v2 - v1) / Math.abs(v1));
+   169→}
+   170→
+   171→/* ══════════════════════════════════════════════════════════════════════════
+   172→ * بنود التغير: جمع أوراق شجرة الحسابات من كل فئات قائمة الدخل
+   173→ * ══════════════════════════════════════════════════════════════════════════ */
+   174→
+   175→function collectMovers(cat: Categorized): MoverItem[] {
+   176→  const defs: { rows: MatchedRow[]; isRevenue: boolean }[] = [
+   177→    { rows: cat.sales, isRevenue: true },
+   178→    { rows: cat.cost, isRevenue: false },
+   179→    { rows: cat.sell, isRevenue: false },
+   180→    { rows: cat.adm, isRevenue: false },
+   181→    { rows: cat.oth, isRevenue: false },
+   182→    { rows: cat.fin, isRevenue: false },
+   183→    { rows: cat.tax, isRevenue: false },
+   184→    { rows: cat.othRev, isRevenue: true },
+   185→  ];
+   186→  const out: MoverItem[] = [];
+   187→  for (const { rows, isRevenue } of defs) {
+   188→    const info = leafInfo(rows);
+   189→    for (let i = 0; i < rows.length; i++) {
+   190→      const { leaf1, leaf2 } = info[i];
+   191→      if (!leaf1 && !leaf2) continue;
+   192→      const r = rows[i];
+   193→      const v1 = rowAmount(r, "a1", isRevenue);
+   194→      const v2 = rowAmount(r, "a2", isRevenue);
+   195→      if (v1 == null || v2 == null) continue;
+   196→      const chg = r2(v2 - v1);
+   197→      const cp = computeChangePct(chg, v1);
+   198→      const a = r.a1 ?? r.a2!;
+   199→      out.push({
+   200→        num: a.num,
+   201→        name: a.nm,
+   202→        v1,
+   203→        v2,
+   204→        chg,
+   205→        cp,
+   206→        favorable: chg === 0 ? null : isRevenue ? chg > 0 : chg < 0,
+   207→      });
+   208→    }
+   209→  }
+   210→  return out;
+   211→}
+   212→
+   213→/* ══════════════════════════════════════════════════════════════════════════
+   214→ * قائمة الربح والخسارة
+   215→ * ══════════════════════════════════════════════════════════════════════════ */
+   216→
+   217→function buildPL(T: Totals, cat: Categorized, L1: string): PLDataset {
+   218→  const netMargin1 = T.rev1 !== 0 ? r4(T.net1 / T.rev1) : null;
+   219→  const netMargin2 = T.rev2 !== 0 ? r4(T.net2 / T.rev2) : null;
+   220→  const grossMargin1 = T.rev1 !== 0 ? r4(T.gross1 / T.rev1) : null;
+   221→  const grossMargin2 = T.rev2 !== 0 ? r4(T.gross2 / T.rev2) : null;
+   222→  const operMargin1 = T.rev1 !== 0 ? r4(T.oper1 / T.rev1) : null;
+   223→  const operMargin2 = T.rev2 !== 0 ? r4(T.oper2 / T.rev2) : null;
+   224→
+   225→  const kpis: KpiCardData[] = [
+   226→    {
+   227→      icon: "revenue", label: "الإيرادات", value: T.rev2, format: "amount",
+   228→      delta: pctDelta(T.rev1, T.rev2), deltaKind: "pct", positiveIsGood: true, tone: "teal",
+   229→    },
+   230→    {
+   231→      icon: "gross", label: "مجمل الربح", value: T.gross2, format: "amount",
+   232→      delta: pctDelta(T.gross1, T.gross2), deltaKind: "pct", positiveIsGood: true,
+   233→      tone: T.gross2 >= 0 ? "emerald" : "rose",
+   234→    },
+   235→    {
+   236→      icon: "operating", label: "الربح التشغيلي", value: T.oper2, format: "amount",
+   237→      delta: pctDelta(T.oper1, T.oper2), deltaKind: "pct", positiveIsGood: true,
+   238→      tone: T.oper2 >= 0 ? "emerald" : "rose",
+   239→    },
+   240→    {
+   241→      icon: "net", label: "صافي الربح", value: T.net2, format: "amount",
+   242→      delta: pctDelta(T.net1, T.net2), deltaKind: "pct", positiveIsGood: true,
+   243→      tone: T.net2 >= 0 ? "emerald" : "rose",
+   244→    },
+   245→    {
+   246→      icon: "margin", label: "هامش صافي الربح", value: netMargin2, format: "percent",
+   247→      delta: netMargin1 != null && netMargin2 != null ? r4(netMargin2 - netMargin1) : null,
+   248→      deltaKind: "pp", positiveIsGood: true,
+   249→      tone: netMargin2 != null && netMargin2 < 0 ? "rose" : "emerald",
+   250→    },
+   251→  ];
+   252→
+   253→  /** اتجاه الأداء عبر الفترتين: [المقارنة، الحالية] — العرض يستبدل العلامة. */
+   254→  const CURRENT_PLACEHOLDER = "__CURRENT__";
+   255→  const trend: PeriodSeriesPoint[] = [
+   256→    {
+   257→      period: L1,
+   258→      revenue: T.rev1, cost: T.cost1, sell: T.sell1, adm: T.adm1,
+   259→      other: T.oth1, finance: T.fin1, tax: T.tax1, net: T.net1,
+   260→    },
+   261→    {
+   262→      period: CURRENT_PLACEHOLDER,
+   263→      revenue: T.rev2, cost: T.cost2, sell: T.sell2, adm: T.adm2,
+   264→      other: T.oth2, finance: T.fin2, tax: T.tax2, net: T.net2,
+   265→    },
+   266→  ];
+   267→
+   268→  const movers = collectMovers(cat);
+   269→
+   270→  /* ── التنبيهات ── */
+   271→  const alerts: ChartAlert[] = [];
+   272→  const revenueRef = Math.max(Math.abs(T.rev2), Math.abs(T.rev1), 1);
+   273→
+   274→  if (netMargin2 != null && netMargin2 < 0) {
+   275→    alerts.push({
+   276→      severity: "danger",
+   277→      title: "صافي ربح سلبي",
+   278→      detail: "خسارة في الفترة الحالية — يلزم مراجعة هيكل الإيرادات والمصروفات",
+   279→    });
+   280→  }
+   281→  if (grossMargin1 != null && grossMargin2 != null && grossMargin1 - grossMargin2 >= MARGIN_PP_ALERT) {
+   282→    alerts.push({
+   283→      severity: "warning",
+   284→      title: "تراجع هامش مجمل الربح",
+   285→      detail: `انخفض الهامش بمقدار ${((grossMargin1 - grossMargin2) * 100).toFixed(1)} نقطة مئوية — غالباً بسبب ارتفاع تكلفة الإيرادات أسرع من الإيرادات`,
+   286→    });
+   287→  }
+   288→  if (operMargin1 != null && operMargin2 != null && operMargin1 - operMargin2 >= MARGIN_PP_ALERT) {
+   289→    alerts.push({
+   290→      severity: "warning",
+   291→      title: "تراجع الربحية التشغيلية",
+   292→      detail: `انخفض هامش الربح التشغيلي بمقدار ${((operMargin1 - operMargin2) * 100).toFixed(1)} نقطة مئوية — راجع المصروفات التشغيلية`,
+   293→    });
+   294→  }
+   295→  for (const m of movers) {
+   296→    if (m.cp == null) continue;
+   297→    if (Math.abs(m.cp) >= UNUSUAL_CP && Math.abs(m.chg) >= revenueRef * UNUSUAL_ABS_SHARE) {
+   298→      const dir = m.chg > 0 ? "ارتفاع" : "انخفاض";
+   299→      alerts.push({
+   300→        severity: m.favorable === false ? "warning" : "info",
+   301→        title: `${dir} غير اعتيادي: ${m.name}`,
+   302→        detail: `${dir} بنسبة ${(Math.abs(m.cp) * 100).toFixed(1)}% بمقدار ${Math.abs(m.chg).toLocaleString("en-US")}${m.favorable === false ? " — يستحق المراجعة" : " — اتجاه إيجابي"}`,
+   303→      });
+   304→    }
+   305→  }
+   306→  if (alerts.length === 0 && T.net2 > 0 && netMargin1 != null && netMargin2 != null && netMargin2 >= netMargin1) {
+   307→    alerts.push({
+   308→      severity: "success",
+   309→      title: "لا تنبيهات — أداء مستقر",
+   310→      detail: "لا توجد تغيرات غير اعتيادية، وهامش صافي الربح محسّن أو مستقر",
+   311→    });
+   312→  }
+   313→
+   314→  return { kpis, trend, movers, alerts };
+   315→}
+   316→
+   317→/* ══════════════════════════════════════════════════════════════════════════
+   318→ * قائمة المركز المالي
+   319→ * ══════════════════════════════════════════════════════════════════════════ */
+   320→
+   321→function buildBS(
+   322→  bs1: BalanceSheetTotals | null,
+   323→  bs2: BalanceSheetTotals | null,
+   324→  T: Totals
+   325→): BSDataset {
+   326→  const cur = bs2 ?? bs1;
+   327→  const prev = bs1 ?? bs2;
+   328→
+   329→  if (!cur) {
+   330→    return {
+   331→      available: false, kpis: [], assetStructure: [], financingStructure: [],
+   332→      comparison: [], details: [],
+   333→      alerts: [{
+   334→        severity: "info",
+   335→        title: "قائمة المركز المالي غير متاحة",
+   336→        detail: "ارفع ملف قائمة المركز المالي (فترة أو فترتين) ثم أعد المطابقة لعرض هذا القسم",
+   337→      }],
+   338→    };
+   339→  }
+   340→
+   341→  const wc2 = r2(cur.currentAssets - cur.currentLiabilities);
+   342→  const wc1 = prev ? r2(prev.currentAssets - prev.currentLiabilities) : null;
+   343→
+   344→  const kpis: KpiCardData[] = [
+   345→    {
+   346→      icon: "assets", label: "إجمالي الأصول", value: cur.totalAssets, format: "amount",
+   347→      delta: prev ? pctDelta(prev.totalAssets, cur.totalAssets) : null,
+   348→      deltaKind: "pct", positiveIsGood: true, tone: "teal",
+   349→    },
+   350→    {
+   351→      icon: "liabilities", label: "إجمالي الخصوم", value: cur.totalLiabilities, format: "amount",
+   352→      delta: prev ? pctDelta(prev.totalLiabilities, cur.totalLiabilities) : null,
+   353→      deltaKind: "pct", positiveIsGood: false, tone: "amber",
+   354→    },
+   355→    {
+   356→      icon: "equity", label: "حقوق الملكية", value: cur.equity, format: "amount",
+   357→      delta: prev ? pctDelta(prev.equity, cur.equity) : null,
+   358→      deltaKind: "pct", positiveIsGood: true,
+   359→      tone: cur.equity >= 0 ? "emerald" : "rose",
+   360→    },
+   361→    {
+   362→      icon: "wc", label: "رأس المال العامل", value: wc2, format: "amount",
+   363→      delta: wc1 != null ? pctDelta(wc1, wc2) : null,
+   364→      deltaKind: "pct", positiveIsGood: true,
+   365→      tone: wc2 >= 0 ? "sky" : "rose",
+   366→    },
+   367→  ];
+   368→
+   369→  const assetStructure = [
+   370→    { name: "أصول متداولة", value: r2(cur.currentAssets) },
+   371→    { name: "أصول غير متداولة", value: r2(cur.nonCurrentAssets) },
+   372→  ].filter((d) => Math.abs(d.value) > 0);
+   373→
+   374→  const financingStructure = [
+   375→    { name: "خصوم متداولة", value: r2(cur.currentLiabilities) },
+   376→    { name: "خصوم غير متداولة", value: r2(cur.nonCurrentLiabilities) },
+   377→    { name: "حقوق الملكية", value: r2(cur.equity) },
+   378→  ].filter((d) => Math.abs(d.value) > 0);
+   379→
+   380→  const comparison = [
+   381→    { metric: "إجمالي الأصول", v1: prev?.totalAssets ?? null, v2: cur.totalAssets },
+   382→    { metric: "أصول متداولة", v1: prev?.currentAssets ?? null, v2: cur.currentAssets },
+   383→    { metric: "أصول غير متداولة", v1: prev?.nonCurrentAssets ?? null, v2: cur.nonCurrentAssets },
+   384→    { metric: "إجمالي الخصوم", v1: prev?.totalLiabilities ?? null, v2: cur.totalLiabilities },
+   385→    { metric: "خصوم متداولة", v1: prev?.currentLiabilities ?? null, v2: cur.currentLiabilities },
+   386→    { metric: "حقوق الملكية", v1: prev?.equity ?? null, v2: cur.equity },
+   387→  ].filter((d) => (d.v1 ?? 0) !== 0 || d.v2 !== 0);
+   388→
+   389→  const details = [
+   390→    { metric: "المخزون", v1: prev?.inventory ?? null, v2: cur.inventory },
+   391→    { metric: "النقدية", v1: prev?.cash ?? null, v2: cur.cash },
+   392→    { metric: "المدينون", v1: prev?.receivables ?? null, v2: cur.receivables },
+   393→    { metric: "الأصول الثابتة", v1: prev?.fixedAssets ?? null, v2: cur.fixedAssets },
+   394→    { metric: "الدائنون", v1: prev?.payables ?? null, v2: cur.payables },
+   395→    { metric: "قروض قصيرة", v1: prev?.shortTermDebt ?? null, v2: cur.shortTermDebt },
+   396→    { metric: "قروض طويلة", v1: prev?.longTermDebt ?? null, v2: cur.longTermDebt },
+   397→  ].filter((d) => (d.v1 ?? 0) !== 0 || d.v2 !== 0);
+   398→
+   399→  /* ── التنبيهات ── */
+   400→  const alerts: ChartAlert[] = [];
+   401→
+   402→  if (cur.equity < 0) {
+   403→    alerts.push({
+   404→      severity: "danger",
+   405→      title: "حقوق ملكية سالبة",
+   406→      detail: "الخصوم تتجاوز الأصول — وضع مالي حرج يستوجب تدخلاً فورياً",
+   407→    });
+   408→  }
+   409→  if (wc2 < 0) {
+   410→    alerts.push({
+   411→      severity: "danger",
+   412→      title: "رأس مال عامل سلبي",
+   413→      detail: "الخصوم المتداولة تتجاوز الأصول المتداولة — ضغط على السيولة قصيرة الأجل",
+   414→    });
+   415→  }
+   416→
+   417→  const eqDiff = r2(cur.totalAssets - (cur.totalLiabilities + cur.equity));
+   418→  const tol = Math.max(EQUATION_TOL_ABS, Math.abs(cur.totalAssets) * EQUATION_TOL_RATE);
+   419→  if (Math.abs(eqDiff) > tol) {
+   420→    alerts.push({
+   421→      severity: "warning",
+   422→      title: "عدم توازن المعادلة المحاسبية",
+   423→      detail: `الأصول − (الخصوم + حقوق الملكية) = ${eqDiff.toLocaleString("en-US")} — قد يعود لعدم احتساب نتيجة الفترة ضمن حقوق الملكية أو لخصوم/أصول غير مصنفة`,
+   424→    });
+   425→  } else {
+   426→    alerts.push({
+   427→      severity: "success",
+   428→      title: "المعادلة المحاسبية متوازنة",
+   429→      detail: "إجمالي الأصول يساوي إجمالي الخصوم وحقوق الملكية ضمن حدود التقريب",
+   430→    });
+   431→  }
+   432→
+   433→  const debtRatio = cur.totalAssets !== 0 ? r2(cur.totalLiabilities / cur.totalAssets) : null;
+   434→  if (debtRatio != null && debtRatio > 0.7) {
+   435→    alerts.push({
+   436→      severity: "warning",
+   437→      title: "رفع مالي مرتفع",
+   438→      detail: `الخصوم تمول ${(debtRatio * 100).toFixed(1)}% من الأصول (أعلى من 70%) — يزيد مخاطر المديونية`,
+   439→    });
+   440→  }
+   441→
+   442→  // ربط تلقائي: لو لم تُحتسب نتيجة الفترة في حقوق الملكية نوضح ذلك بدل إرباك المستخدم
+   443→  if (Math.abs(eqDiff) > tol && T.net2 !== 0) {
+   444→    alerts.push({
+   445→      severity: "info",
+   446→      title: "ملاحظة محاسبية",
+   447→      detail: "صافي ربح الفترة يظهر في ميزان المراجعة لكنه قد لا يكون مقفلاً على حساب الأرباح المبقاة في المركز المالي",
+   448→    });
+   449→  }
+   450→
+   451→  return { available: true, kpis, assetStructure, financingStructure, comparison, details, alerts };
+   452→}
+   453→
+   454→/* ══════════════════════════════════════════════════════════════════════════
+   455→ * التحليل المالي
+   456→ * ══════════════════════════════════════════════════════════════════════════ */
+   457→
+   458→/** البحث في مجموعات النسب بالاسم الإنجليزي. */
+   459→function findRatio(ratioGroups: RatioGroup[], nameEn: string): { v1: number | null; v2: number | null } | null {
+   460→  for (const g of ratioGroups) {
+   461→    const r = g.ratios.find((x) => x.nameEn === nameEn);
+   462→    if (r) return { v1: r.v1, v2: r.v2 };
+   463→  }
+   464→  return null;
+   465→}
+   466→
+   467→function buildFA(
+   468→  T: Totals,
+   469→  ratioGroups: RatioGroup[],
+   470→  bsAvailable: boolean
+   471→): FADataset {
+   472→  const netMargin1 = T.rev1 !== 0 ? r4(T.net1 / T.rev1) : null;
+   473→  const netMargin2 = T.rev2 !== 0 ? r4(T.net2 / T.rev2) : null;
+   474→  const grossMargin1 = T.rev1 !== 0 ? r4(T.gross1 / T.rev1) : null;
+   475→  const grossMargin2 = T.rev2 !== 0 ? r4(T.gross2 / T.rev2) : null;
+   476→  const operMargin1 = T.rev1 !== 0 ? r4(T.oper1 / T.rev1) : null;
+   477→  const operMargin2 = T.rev2 !== 0 ? r4(T.oper2 / T.rev2) : null;
+   478→
+   479→  const current = findRatio(ratioGroups, "Current Ratio");
+   480→  const quick = findRatio(ratioGroups, "Quick Ratio");
+   481→  const roe = findRatio(ratioGroups, "Return on Equity");
+   482→
+   483→  const kpis: KpiCardData[] = [
+   484→    {
+   485→      icon: "ratio", label: "نسبة التداول", value: current?.v2 ?? null, format: "ratio",
+   486→      delta: current && current.v1 != null && current.v2 != null ? r4(current.v2 - current.v1) : null,
+   487→      deltaKind: "none", positiveIsGood: true,
+   488→      tone: (current?.v2 ?? 0) < 1 ? "rose" : "sky",
+   489→    },
+   490→    {
+   491→      icon: "quick", label: "النسبة السريعة", value: quick?.v2 ?? null, format: "ratio",
+   492→      delta: quick && quick.v1 != null && quick.v2 != null ? r4(quick.v2 - quick.v1) : null,
+   493→      deltaKind: "none", positiveIsGood: true,
+   494→      tone: (quick?.v2 ?? 0) < 0.5 ? "amber" : "sky",
+   495→    },
+   496→    {
+   497→      icon: "margin", label: "هامش صافي الربح", value: netMargin2, format: "percent",
+   498→      delta: netMargin1 != null && netMargin2 != null ? r4(netMargin2 - netMargin1) : null,
+   499→      deltaKind: "pp", positiveIsGood: true,
+   500→      tone: netMargin2 != null && netMargin2 < 0 ? "rose" : "emerald",
+   501→    },
+   502→    {
+   503→      icon: "roe", label: "العائد على حقوق الملكية", value: roe?.v2 ?? null, format: "percent",
+   504→      delta: roe && roe.v1 != null && roe.v2 != null ? r4(roe.v2 - roe.v1) : null,
+   505→      deltaKind: "pp", positiveIsGood: true,
+   506→      tone: roe?.v2 != null && roe.v2 < 0 ? "rose" : "emerald",
+   507→    },
+   508→  ];
+   509→
+   510→  const margins: MarginPoint[] = [
+   511→    { name: "هامش مجمل الربح", v1: grossMargin1, v2: grossMargin2 },
+   512→    { name: "هامش الربح التشغيلي", v1: operMargin1, v2: operMargin2 },
+   513→    { name: "هامش صافي الربح", v1: netMargin1, v2: netMargin2 },
+   514→  ];
+   515→
+   516→  /* مجموعات النسب كما هي — مع استبعاد «Defensive Interval» لأن قيمها
+   517→     مكررة من «نسبة النقدية» في computeRatios (تجنب بيانات مضللة).
+   518→     وتُقسَّم كل مجموعة إلى أقسام حسب وحدة القياس حتى لا تختلط
+   519→     المضاعفات مع النسب المئوية أو المبالغ في محور واحد. */
+   520→  const UNIT_LABEL: Record<string, string> = {
+   521→    ratio: "مضاعفات",
+   522→    percent: "نسب مئوية",
+   523→    amount: "مبالغ",
+   524→    days: "أيام",
+   525→  };
+   526→  type RatioItem = RatioGroup["ratios"][number];
+   527→  const groups: FADataset["groups"] = [];
+   528→  for (const g of ratioGroups) {
+   529→    const filtered: RatioItem[] = g.ratios
+   530→      .filter((r) => r.nameEn !== "Defensive Interval")
+   531→      .filter((r) => r.v1 != null || r.v2 != null);
+   532→    const byUnit = new Map<string, RatioItem[]>();
+   533→    for (const r of filtered) {
+   534→      const arr = byUnit.get(r.unit) ?? [];
+   535→      arr.push(r);
+   536→      byUnit.set(r.unit, arr);
+   537→    }
+   538→    for (const [unit, items] of byUnit) {
+   539→      const primaryUnit = g.ratios[0]?.unit ?? "ratio";
+   540→      groups.push({
+   541→        title: unit === primaryUnit ? g.title : `${g.title} — ${UNIT_LABEL[unit] ?? unit}`,
+   542→        titleEn: `${g.titleEn} [${unit}]`,
+   543→        unit: unit as "ratio" | "percent" | "amount" | "days",
+   544→        items: items.map((r) => ({ name: r.name, nameEn: r.nameEn, v1: r.v1, v2: r.v2, benchmark: r.benchmark ?? null })),
+   545→      });
+   546→    }
+   547→  }
+   548→
+   549→  /* ── التنبيهات (معايير قياسية موثقة) ── */
+   550→  const alerts: ChartAlert[] = [];
+   551→
+   552→  if (current?.v2 != null && current.v2 < 1) {
+   553→    alerts.push({
+   554→      severity: "danger",
+   555→      title: "نسبة تداول أقل من 1×",
+   556→      detail: "الأصول المتداولة لا تغطي الخصوم المتداولة — خطر سيولة قصير الأجل",
+   557→    });
+   558→  } else if (current?.v2 != null && current.v2 >= 1.5 && current.v2 <= 2.5) {
+   559→    alerts.push({
+   560→      severity: "success",
+   561→      title: "سيولة مريحة",
+   562→      detail: `نسبة التداول ${current.v2.toFixed(2)}× ضمن النطاق الصحي (1.5–2.5×)`,
+   563→    });
+   564→  }
+   565→  if (quick?.v2 != null && quick.v2 < 0.5 && (current?.v2 ?? 0) >= 1) {
+   566→    alerts.push({
+   567→      severity: "warning",
+   568→      title: "اعتماد كبير على المخزون في السيولة",
+   569→      detail: `النسبة السريعة ${quick.v2.toFixed(2)}× — دون المخزون يتراجع الغطاء إلى نصفه تقريباً`,
+   570→    });
+   571→  }
+   572→  const finRef = Math.max(Math.abs(T.fin1), Math.abs(T.fin2));
+   573→  const ic = findRatio(ratioGroups, "Interest Coverage");
+   574→  if (finRef > 0 && ic?.v2 != null && ic.v2 < 1) {
+   575→    alerts.push({
+   576→      severity: "danger",
+   577→      title: "تغطية فوائد غير كافية",
+   578→      detail: "الربح التشغيلي لا يغطي تكاليف التمويل — خطر في خدمة الدين",
+   579→    });
+   580→  }
+   581→  const de = findRatio(ratioGroups, "Debt-to-Equity");
+   582→  if (de?.v2 != null && de.v2 > 2) {
+   583→    alerts.push({
+   584→      severity: "warning",
+   585→      title: "مديونية مرتفعة مقابل حقوق الملكية",
+   586→      detail: `الدين إلى حقوق الملكية ${de.v2.toFixed(2)}× (أعلى من 2×)`,
+   587→    });
+   588→  }
+   589→  const ccc = findRatio(ratioGroups, "Cash Conversion Cycle");
+   590→  if (ccc?.v2 != null && ccc.v2 > 90) {
+   591→    alerts.push({
+   592→      severity: "info",
+   593→      title: "دورة تحويل نقدي طويلة",
+   594→      detail: `${ccc.v2.toFixed(0)} يوماً بين صرف النقد وتحصيله (أعلى من 90 يوماً) — فرصة لتحسين إدارة رأس المال العامل`,
+   595→    });
+   596→  }
+   597→  if (roe?.v2 != null && roe.v2 < 0) {
+   598→    alerts.push({
+   599→      severity: "danger",
+   600→      title: "عائد سالب على حقوق الملكية",
+   601→      detail: "خسارة الفترة تلتهم حقوق المساهمين",
+   602→    });
+   603→  }
+   604→  if (!bsAvailable) {
+   605→    alerts.push({
+   606→      severity: "info",
+   607→      title: "النسب المرتبطة بالمركز المالي غير متاحة",
+   608→      detail: "ارفع ملف قائمة المركز المالي لعرض نسب السيولة والمديونية والكفاءة — الهوامش متاحة من قائمة الدخل",
+   609→    });
+   610→  }
+   611→  if (alerts.length === 0) {
+   612→    alerts.push({
+   613→      severity: "success",
+   614→      title: "لا تنبيهات تحليلية",
+   615→      detail: "جميع النسب المتاحة ضمن مستويات مقبولة",
+   616→    });
+   617→  }
+   618→
+   619→  return { kpis, margins, groups, alerts };
+   620→}
+   621→
+   622→/* ══════════════════════════════════════════════════════════════════════════
+   623→ * التحليل المتكامل (قائمة الدخل + المركز المالي)
+   624→ * ══════════════════════════════════════════════════════════════════════════ */
+   625→
+   626→function buildCombined(
+   627→  T: Totals,
+   628→  bs1: BalanceSheetTotals | null,
+   629→  bs2: BalanceSheetTotals | null,
+   630→  ratioGroups: RatioGroup[]
+   631→): CombinedDataset {
+   632→  const bs = bs2 ?? bs1;
+   633→  if (!bs) {
+   634→    return {
+   635→      available: false, kpis: [], dupont: [], cross: [],
+   636→    };
+   637→  }
+   638→
+   639→  const roa = findRatio(ratioGroups, "Return on Assets");
+   640→  const roe = findRatio(ratioGroups, "Return on Equity");
+   641→  const at = findRatio(ratioGroups, "Asset Turnover");
+   642→  const em = findRatio(ratioGroups, "Equity Multiplier");
+   643→  const nm = findRatio(ratioGroups, "Net Margin");
+   644→
+   645→  const kpis: KpiCardData[] = [
+   646→    {
+   647→      icon: "roa", label: "العائد على الأصول", value: roa?.v2 ?? null, format: "percent",
+   648→      delta: roa && roa.v1 != null && roa.v2 != null ? r4(roa.v2 - roa.v1) : null,
+   649→      deltaKind: "pp", positiveIsGood: true,
+   650→      tone: roa?.v2 != null && roa.v2 < 0 ? "rose" : "emerald",
+   651→    },
+   652→    {
+   653→      icon: "roe", label: "العائد على حقوق الملكية", value: roe?.v2 ?? null, format: "percent",
+   654→      delta: roe && roe.v1 != null && roe.v2 != null ? r4(roe.v2 - roe.v1) : null,
+   655→      deltaKind: "pp", positiveIsGood: true,
+   656→      tone: roe?.v2 != null && roe.v2 < 0 ? "rose" : "emerald",
+   657→    },
+   658→    {
+   659→      icon: "turnover", label: "معدل دوران الأصول", value: at?.v2 ?? null, format: "ratio",
+   660→      delta: at && at.v1 != null && at.v2 != null ? r4(at.v2 - at.v1) : null,
+   661→      deltaKind: "none", positiveIsGood: true, tone: "sky",
+   662→    },
+   663→    {
+   664→      icon: "leverage", label: "مضاعف حقوق الملكية", value: em?.v2 ?? null, format: "ratio",
+   665→      delta: em && em.v1 != null && em.v2 != null ? r4(em.v2 - em.v1) : null,
+   666→      deltaKind: "none", positiveIsGood: false, tone: "violet",
+   667→    },
+   668→  ];
+   669→
+   670→  const dupont = [
+   671→    { name: "هامش صافي الربح", nameEn: "Net Margin", v1: nm?.v1 ?? null, v2: nm?.v2 ?? null, format: "percent" as const },
+   672→    { name: "معدل دوران الأصول", nameEn: "Asset Turnover", v1: at?.v1 ?? null, v2: at?.v2 ?? null, format: "ratio" as const },
+   673→    { name: "مضاعف حقوق الملكية", nameEn: "Equity Multiplier", v1: em?.v1 ?? null, v2: em?.v2 ?? null, format: "ratio" as const },
+   674→  ];
+   675→
+   676→  const cross = [
+   677→    { metric: "الإيرادات", v1: T.rev1, v2: T.rev2 },
+   678→    { metric: "إجمالي الأصول", v1: bs1?.totalAssets ?? bs.totalAssets, v2: bs.totalAssets },
+   679→    { metric: "صافي الربح", v1: T.net1, v2: T.net2 },
+   680→    { metric: "حقوق الملكية", v1: bs1?.equity ?? bs.equity, v2: bs.equity },
+   681→    {
+   682→      metric: "رأس المال العامل",
+   683→      v1: bs1 ? r2(bs1.currentAssets - bs1.currentLiabilities) : r2(bs.currentAssets - bs.currentLiabilities),
+   684→      v2: r2(bs.currentAssets - bs.currentLiabilities),
+   685→    },
+   686→  ].filter((d) => d.v1 !== 0 || d.v2 !== 0);
+   687→
+   688→  return { available: true, kpis, dupont, cross };
+   689→}
+   690→
+   691→/* ══════════════════════════════════════════════════════════════════════════
+   692→ * المُجمِّع الرئيسي
+   693→ * ══════════════════════════════════════════════════════════════════════════ */
+   694→
+   695→export function buildReportData(args: {
+   696→  T: Totals;
+   697→  cat: Categorized;
+   698→  L1: string;
+   699→  L2: string;
+   700→  bs1: BalanceSheetTotals | null;
+   701→  bs2: BalanceSheetTotals | null;
+   702→  ratioGroups: RatioGroup[];
+   703→}): ReportData {
+   704→  const { T, cat, L1, bs1, bs2, ratioGroups } = args;
+   705→  const bsAvailable = !!(bs1 || bs2);
+   706→
+   707→  return {
+   708→    pl: buildPL(T, cat, L1),
+   709→    bs: buildBS(bs1, bs2, T),
+   710→    fa: buildFA(T, ratioGroups, bsAvailable),
+   711→    combined: buildCombined(T, bs1, bs2, ratioGroups),
+   712→  };
+   713→}
+   714→

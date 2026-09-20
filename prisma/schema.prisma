@@ -1,0 +1,183 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users & Authentication ──
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  displayName  String   @default("")
+  role         String   @default("user") // "admin" | "user"
+  // Permissions stored as JSON string
+  permissions  String   @default("{}")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  groups       Group[]
+  reports      Report[]
+}
+
+// ── Report Groups / Company Workspaces ──
+model Group {
+  id          String   @id @default(cuid())
+  name        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  reports     Report[]
+}
+
+// ── Saved comparison reports (full sessions) ──
+model Report {
+  id          String   @id @default(cuid())
+  name        String
+  label1      String   @default("")
+  label2      String   @default("")
+  compareMode String   @default("period")
+  numMonths   Int      @default(12)
+
+  // IS settings (JSON)
+  isSettings  String   @default("{}")
+
+  // BS settings (JSON)
+  bsSettings  String   @default("{}")
+
+  // IS file 1 data (JSON — accounts array)
+  isFile1Data String   @default("[]")
+  // IS file 2 data (JSON)
+  isFile2Data String   @default("[]")
+  // IS file 1 headers (JSON)
+  isFile1Headers String @default("[]")
+  // IS file 2 headers (JSON)
+  isFile2Headers String @default("[]")
+  // IS file 1 column mapping (JSON)
+  isFile1Cols String   @default("{}")
+  // IS file 2 column mapping (JSON)
+  isFile2Cols String   @default("{}")
+
+  // BS file data (JSON — accounts array)
+  bsFileData  String   @default("[]")
+  // BS file headers (JSON)
+  bsFileHeaders String @default("[]")
+  // BS file column mapping (JSON)
+  bsFileCols  String   @default("{}")
+
+  // BS file 2 data (JSON — for period mode with 2 BS files)
+  bsFile2Data  String   @default("[]")
+  bsFile2Headers String @default("[]")
+  bsFile2Cols  String   @default("{}")
+
+  // Group association (nullable — reports without a group are "ungrouped")
+  groupId     String?
+  group       Group?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  // Optimistic locking: يزيد 1 مع كل تحديث ناجح (PUT). العميل يرسل النسخة التي
+  // فتحها، ويرفض الخادم التحديث بـ 409 VERSION_CONFLICT إذا تغيرت في الخادم.
+  version     Int      @default(1)
+
+  // ── Workflow & Governance (المرحلة 3) — تمثل دورة الاعتماد الحالية فقط ──
+  // السجل التاريخي الكامل للدورات في WorkflowHistory (append-only).
+  // بلا FK علاقات مع User عمدًا (نفس مبرر AuditLog): حذف المستخدم لا يمس الأدوار
+  // الرقابية، والأسماء محفوظة كـ snapshot في حقول *ByName.
+  status          String    @default("DRAFT")   // DRAFT | SUBMITTED | UNDER_REVIEW | RETURNED | APPROVED | REOPENED
+  periodEnd       String?                       // نهاية الفترة المالية — نص date-only "YYYY-MM-DD" (بلا انزياح timezone)
+  cycle           Int       @default(1)         // رقم دورة الاعتماد الحالية (يزيد 1 مع كل REOPEN فقط)
+
+  preparedById    String?                       // المعدّ (يُثبت عند الإنشاء/الإسناد)
+  preparedByName  String    @default("")        // snapshot للاسم
+  preparedAt      DateTime?                     // يُثبت عند أول SUBMIT (اكتمال الإعداد) — لا عند الإنشاء
+
+  reviewedById    String?                       // المراجع (معيّن قبل SUBMIT)
+  reviewedByName  String    @default("")
+  reviewedAt      DateTime?                     // تاريخ بدء المراجعة (يُثبت عند START_REVIEW)
+
+  approvedById    String?                       // المعتمد
+  approvedByName  String    @default("")
+  approvedAt      DateTime?                     // يُثبت عند APPROVE ويُمسح عند REOPEN (بعد أرشفته في WorkflowHistory)
+
+  returnedById    String?                       // من أرجع التقرير
+  returnedByName  String    @default("")
+  returnedAt      DateTime?
+  returnReason    String    @default("")        // إلزامي عند RETURN — يُمسح عند إعادة الإرسال (الأصل في التاريخ)
+
+  reopenedById    String?                       // من أعاد الفتح
+  reopenedByName  String    @default("")
+  reopenedAt      DateTime?
+  reopenReason    String    @default("")        // إلزامي عند REOPEN — يُمسح عند إعادة الإرسال (الأصل في التاريخ)
+
+  // User who created the report
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+  @@index([preparedById])
+  @@index([reviewedById])
+  @@index([approvedById])
+}
+
+// ── Workflow History (append-only) ──
+// المرجع التاريخي الكامل لدورات اعتماد كل تقرير — لا توجد أي API تعديل/حذف له.
+// كل انتقال workflow يكتب صفًا هنا في نفس المعاملة مع تحديث التقرير وAuditLog.
+// بلا FK مع User (نفس مبرر AuditLog) + username snapshot.
+model WorkflowHistory {
+  id             String   @id @default(cuid())
+  reportId       String
+  cycle          Int                  // رقم الدورة التي وقع فيها الحدث
+  action         String               // CREATED | SUBMITTED | RESUBMITTED | REVIEW_STARTED | RETURNED | APPROVED | REOPENED | RESUMED_EDIT | ASSIGNMENT_CHANGED
+  fromStatus     String   @default("") // "" لأحداث الإنشاء/الإسناد الأول
+  toStatus       String   @default("")
+  actorId        String?              // من نفّذ الحدث (null للنظامي)
+  actorUsername  String   @default("") // snapshot
+  reason         String   @default("") // إلزامي لـ RETURNED/REOPENED
+  comment        String   @default("") // اختياري لأي حدث
+  // JSON صغير: snapshot أدوار التقرير لحظة الحدث (preparedBy/reviewedBy/approvedBy
+  // بالمعرفات والأسماء والأوقات) — يكفي لإعادة بناء الدورة كاملة حتى لو تغيرت حقول Report
+  roleSnapshot   String   @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([reportId, createdAt])
+  @@index([reportId, cycle])
+  @@index([action])
+}
+
+// ── Audit Trail (append-only) ──
+// سجل رقابي غير قابل للتعديل أو الحذف عبر أي API (المدير لديه View/Export فقط).
+// لا توجد علاقة FK مع User عمدًا: يجب أن يبقى السجل قائمًا حتى بعد حذف المستخدم،
+// و username محفوظ كـ snapshot لحظة العملية. كما أن غياب العلاقة يبقي المخطط
+// متوافقًا مباشرة مع PostgreSQL مستقبلًا.
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?  // من نفّذ العملية (null للأحداث النظامية/المجهولة)
+  username    String   @default("") // snapshot وقت العملية
+  action      String   // كود ثابت من src/lib/audit-actions.ts
+  entityType  String   // "Report" | "Group" | "User" | "Auth"
+  entityId    String?  // معرّف الكيان المستهدف
+  description String   @default("")
+  beforeData  String   @default("{}") // JSON: الحقول المتغيرة قبل التعديل فقط (بعد Sanitize)
+  afterData   String   @default("{}") // JSON: الحقول المتغيرة بعد التعديل فقط (بعد Sanitize)
+  metadata    String   @default("{}") // JSON: سياق إضافي (أحجام، أسباب، حقول متغيرة...)
+  ipAddress   String?  // best-effort عبر X-Forwarded-For من البوابة
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([entityId])
+}
