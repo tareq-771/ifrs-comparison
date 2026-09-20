@@ -28,6 +28,7 @@ import { FileDropzone, type FileStatus } from "@/components/accounts/file-dropzo
 import { SummaryCards } from "@/components/accounts/summary-cards";
 import { ResultsTable } from "@/components/accounts/results-table";
 import { WorkflowPanel } from "@/components/accounts/workflow-panel";
+import { ReconciliationsDashboard } from "@/components/dashboard/reconciliations-dashboard";
 import { WORKFLOW_STATUS_LABELS, WORKFLOW_STATUS_BADGE_CLASS, type WorkflowInfo } from "@/lib/workflow";
 import { ChartResultsTable } from "@/components/accounts/chart-results-table";
 import { ChartsView } from "@/components/accounts/charts-view";
@@ -119,6 +120,9 @@ export default function Home() {
   const currentUserId = (session?.user as any)?.id as string | undefined;
   // المرحلة 3.5 — حوكمة الاستحقاق (المدير يمتلكها ضمنيًا بالدور)
   const canAssignWorkflowFlag = (session?.user as any)?.role === "admin" || perms.assignWorkflow === true;
+
+  // المرحلة 3.5 — مفتاح العرض: مساحة العمل | لوحة المتابعة (بلا route جديد — بلا فقد لجلسة العمل)
+  const [mainView, setMainView] = React.useState<"workspace" | "dashboard">("workspace");
 
   const [raw1, setRaw1] = React.useState<FileData | null>(null);
   const [raw2, setRaw2] = React.useState<FileData | null>(null);
@@ -891,6 +895,33 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* المرحلة 3.5 — مفتاح العرض: مساحة العمل | لوحة المتابعة */}
+            <div className="flex overflow-hidden rounded-lg border border-slate-300 dark:border-slate-700" role="tablist" aria-label="عرض التطبيق">
+              <button
+                type="button" role="tab" aria-selected={mainView === "workspace"}
+                onClick={() => setMainView("workspace")}
+                className={cn(
+                  "min-h-[36px] px-3 text-xs font-bold transition-colors",
+                  mainView === "workspace"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                )}
+              >
+                مساحة العمل
+              </button>
+              <button
+                type="button" role="tab" aria-selected={mainView === "dashboard"}
+                onClick={() => setMainView("dashboard")}
+                className={cn(
+                  "min-h-[36px] px-3 text-xs font-bold transition-colors",
+                  mainView === "dashboard"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                )}
+              >
+                لوحة المتابعة
+              </button>
+            </div>
             {/* Admin link */}
             {canManageUsers && (
               <Button variant="outline" size="sm" asChild className="gap-1.5 border-emerald-300 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-950/50">
@@ -1261,6 +1292,18 @@ export default function Home() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
+        {/* المرحلة 3.5 — لوحة المتابعة: عرض داخل نفس الصفحة (بلا route جديد)؛
+            حالة مساحة العمل (التقرير المفتوح) تبقى محفوظة عند العودة */}
+        {mainView === "dashboard" && (
+          <ReconciliationsDashboard
+            onOpenReport={(id) => {
+              setMainView("workspace");
+              void handleLoadReport(id);
+            }}
+          />
+        )}
+
+        {mainView === "workspace" && (<>
         {/* Intro */}
         <motion.section initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="mb-6">
           <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-900/50 dark:bg-emerald-950/20">
@@ -1668,6 +1711,7 @@ export default function Home() {
             </div>
           </div>
         )}
+        </>)}
       </main>
 
       {/* Sticky footer */}

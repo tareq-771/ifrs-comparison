@@ -304,3 +304,28 @@ Work Log:
 
 Stage Summary:
 - تصميم المرحلة 3.5 مكتمل وموثق في docs/phase3.5-dashboard-design.md: لوحة قراءة فقط خادمية البطاقات والفلاتر والترقيم ضمن نطاق الرؤية الحالي، مع استحقاق dueDate قابل للتوسع، وتعريف «متأخر» صارم، واشتقاق مرحلة أعمال ومسؤولية حالية بدوال نقية، وتحليل معمق لفجوة UNDER_REVIEW وتوصية باعتماد PENDING_APPROVAL كتعديل مكمّل للمرحلة 3. بانتظار موافقة المستخدم وحسم D-1..D-8 قبل أي تنفيذ — ولن تبدأ المرحلة 4 (Backup/Restore) قبل إنجاز هذه المرحلة وموافقته.
+
+---
+Task ID: 3.5A
+Agent: main (Z.ai Code)
+Task: تنفيذ المرحلة 3.5A — إضافة حالة PENDING_APPROVAL وانتقال COMPLETE_REVIEW + فصل reviewStartedAt/reviewedAt + dueDate وحوكمة الرقابية (وفق قرار المستخدم D-1 حتى D-9)
+
+Work Log:
+- نسخة احتياطية قبل التغيير: backups/pre-3.5A-2026-09-20T04-07-58.db (VACUUM INTO + integrity ok) — لم يُحذف أي نسخة قائمة ولم يُعاد كتابة تاريخ Git
+- Schema: Report.dueDate (نص date-only)، Report.reviewStartedAt، فهارس (periodEnd, dueDate, updatedAt, cycle, groupId+status) — db push بلا فقد
+- ترحيل الدلالة (قرار D-5): scripts/migrate-reviewed-at-3.5a.ts — نقل reviewedAt القديم (بدلالة البدء) إلى reviewStartedAt ثم تصفير reviewedAt (صفر صفوف — القاعدة نظيفة، موثق ومكرر التشغيل)
+- src/lib/workflow.ts: +PENDING_APPROVAL (شارة rose، تسمية «بانتظار الاعتماد»)، +WORKFLOW_ACTION.COMPLETE_REVIEW، +WORKFLOW_HISTORY_ACTION.REVIEW_COMPLETED، مصفوفة الانتقالات: APPROVE لم يعد يعمل إلا من PENDING_APPROVAL، RETURN من UNDER_REVIEW (مراجع) أو PENDING_APPROVAL (معتمد بسبب إلزامي)، +deriveOwnerRole القاعدة الخادمية الواحدة (DRAFT/RETURNED/REOPENED→المعد، SUBMITTED/UNDER_REVIEW→المراجع، PENDING_APPROVAL→المعتمد، APPROVED→لا أحد)، +normalizeDueDateStrict، computeMyActions: +canCompleteReview، canApprove => PENDING_APPROVAL حصرًا، canReturn للحالتين
+- src/lib/business-time.ts: إزاحة توقيت الأعمال المركزية BUSINESS_TZ_OFFSET_MINUTES (افتراضي 180، غير مثبتة بالكود) + businessToday + calendarDaysBetween (أيام تقويمية)
+- src/lib/audit-actions.ts: +REVIEW_COMPLETED، +DUE_DATE_CHANGED
+- workflow route: START_REVIEW يثبت reviewStartedAt؛ COMPLETE_REVIEW (مراجع فقط) يثبت reviewedAt=التوقيع وينتقل PENDING_APPROVAL؛ SUBMIT/REOPEN يمسحان أدلة المراجعة (بعد الأرشفة في REOPEN)؛ RETURN يتحقق من الفاعل حسب الحالة + metadata returnedFromPendingApproval؛ APPROVE metadata.pendingSince=reviewedAt
+- assignments route: استبدال المراجع في PENDING_APPROVAL يبطل التوقيع ويعيد SUBMITTED؛ PENDING_APPROVAL أُضيف لبوابة «استبدال فقط لا تفريغ»؛ resetReview يمسح reviewStartedAt أيضًا
+- POST /api/reports: dueDate عند الإنشاء لحائز assignWorkflow فقط (DUE_DATE_FORBIDDEN/DUE_DATE_INVALID)
+- PATCH /api/reports/[id]/due-date (جديد): الحوكمة — assignWorkflow + الرؤية أولًا (404 لغير المرئي) + كل الحالات عدا APPROVED + قفل تفاؤلي version + تدقيق DUE_DATE_CHANGED (oldDueDate,newDueDate,changedBy,cycle) بلا صف WorkflowHistory
+- UI: workflow-panel زر «إتمام المراجعة (توقيع المراجع)» + شارة الاستحقاق + حوار حوكمة الاستحقاق + بطاقة المراجع تعرض البدء والإتمام؛ page.tsx handleDueDate + عنوان COMPLETE_REVIEW + حقل الاستحقاق عند إنشاء نسخة جديدة (للحوكمة فقط)
+- اختبارات 3.5A الإلزامية: scripts/verify-3.5a.ts (HTTP حقيقي + 6 مستخدمين) — 64/64 PASS (الدورة الكاملة، الإرجاع من PENDING_APPROVAL، القفل على المعد والمعتمد، رفض APPROVE من UNDER_REVIEW، رفض COMPLETE_REVIEW لغير المراجع، تعارض النسخ في COMPLETE_REVIEW/APPROVE/due-date، حوكمة الاستحقاق بالصلاحية وبدونها، SoD regression، بطلان التوقيع عند استبدال المراجع، REOPEN يمسح الأدلة مع الأرشفة، تسلسل السجل) ثم تنظيف كامل: users=1 reports=0 groups=0 audit=0 workflowHistory=0 + integrity ok
+- Commit: 07f7873 (append-only فوق 821156e — بلا أي إعادة كتابة تاريخ)
+
+Stage Summary:
+- 3.5A مكتملة ومجازة بالاختبار: آلة الحالات أصبحت DRAFT→SUBMITTED→UNDER_REVIEW→PENDING_APPROVAL→APPROVED مع توقيع مراجع مستقل، والاستحقاق حقل رقابي محوكَم بالتدقيق الكامل
+- ملاحظة معمارية: الحوكمة غير الإدارية (assignWorkflow) تعمل ضمن نطاق رؤية المستخدم فقط (404 لغير المرئي) — نفس قواعد الإسناد في المرحلة 3
+- فهارس الجديدة ستُدقّق بـ EXPLAIN QUERY PLAN على بيانات اختبار معقولة في 3.5B وقد تُقلّص
