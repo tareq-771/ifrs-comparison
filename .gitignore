@@ -52,3 +52,10 @@ prompt
 server.log
 # Skills directory
 /skills/tool-results/
+
+# Phase 4A — حالة تشغيلية ونسخ احتياطية (للأمام فقط — لا حذف تاريخ ولا إزالة تتبع)
+/var/
+/backups/
+*.db.tmp
+*.tmp-*.zip
+drill-*.json

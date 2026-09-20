@@ -30,6 +30,14 @@ export const AUDIT_ACTIONS = {
   PERMISSIONS_CHANGED: "PERMISSIONS_CHANGED",
   LOGIN_SUCCEEDED: "LOGIN_SUCCEEDED",
   LOGIN_FAILED: "LOGIN_FAILED",
+  // Phase 4A — النسخ الاحتياطي (أكواد إنشاء/تحقق/رفع/تنزيل/Drill)
+  // أكواد RESTORE_* تُضاف في 4B عند وجود الوظيفة فعليًا
+  BACKUP_CREATED: "BACKUP_CREATED",
+  BACKUP_FAILED: "BACKUP_FAILED",
+  BACKUP_VALIDATED: "BACKUP_VALIDATED",
+  BACKUP_UPLOADED: "BACKUP_UPLOADED",
+  BACKUP_DOWNLOADED: "BACKUP_DOWNLOADED",
+  BACKUP_DRILLED: "BACKUP_DRILLED",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -60,6 +68,13 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   PERMISSIONS_CHANGED: "تغيير الصلاحيات",
   LOGIN_SUCCEEDED: "تسجيل دخول ناجح",
   LOGIN_FAILED: "محاولة دخول فاشلة",
+  // Phase 4A
+  BACKUP_CREATED: "إنشاء نسخة احتياطية",
+  BACKUP_FAILED: "فشل عملية نسخ/تحقق",
+  BACKUP_VALIDATED: "التحقق من نسخة احتياطية",
+  BACKUP_UPLOADED: "رفع نسخة احتياطية للتحقق",
+  BACKUP_DOWNLOADED: "تنزيل نسخة احتياطية",
+  BACKUP_DRILLED: "تشغيل Restore Drill (قاعدة مؤقتة معزولة)",
 };
 
 export const AUDIT_ENTITY_TYPES = {
@@ -67,6 +82,7 @@ export const AUDIT_ENTITY_TYPES = {
   Group: "Group",
   User: "User",
   Auth: "Auth",
+  Backup: "Backup", // Phase 4A — الكيان = backupId
 } as const;
 
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[keyof typeof AUDIT_ENTITY_TYPES];

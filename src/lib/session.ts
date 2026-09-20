@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { parsePermissions, type Permissions } from "@/lib/permissions";
+import { canManageBackups, parsePermissions, type Permissions } from "@/lib/permissions";
 
 export interface SessionUser {
   id: string;
@@ -30,10 +30,23 @@ export async function requireAuth(): Promise<SessionUser> {
 }
 
 export async function requirePermission(
-  key: "manageUsers" | "groups" | "settings" | "delete" | "add" | "edit"
+  key: "manageUsers" | "groups" | "settings" | "delete" | "add" | "edit" | "manageBackups"
 ): Promise<SessionUser> {
   const user = await requireAuth();
   if (!user.permissions[key]) throw new Error("Forbidden");
+  return user;
+}
+
+/**
+ * Phase 4A — بوابة صلاحية إدارة النسخ الاحتياطي.
+ * المدير ضمنيًا بالدور؛ غيره بمفتاح manageBackups الصريح حصرًا
+ * (settings لا تمنحه — D-5). كل مسارات /api/backups تمر من هنا.
+ */
+export async function requireManageBackups(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManageBackups(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
   return user;
 }
 

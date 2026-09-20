@@ -6,6 +6,7 @@ import { useSession, signOut } from "next-auth/react";
 import { motion } from "framer-motion";
 import {
   ChevronRight,
+  DatabaseBackup,
   Eye,
   EyeOff,
   KeyRound,
@@ -50,10 +51,12 @@ import { useToast } from "@/hooks/use-toast";
 import { ModeToggle } from "@/components/mode-toggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AuditTrailTab } from "@/components/admin/audit-trail";
+import { BackupManagerTab } from "@/components/admin/backup-manager";
 import {
   parsePermissions,
   DEFAULT_USER_PERMISSIONS,
   ADMIN_PERMISSIONS,
+  canManageBackups,
   type Permissions,
 } from "@/lib/permissions";
 
@@ -89,6 +92,7 @@ const PERMISSION_KEYS: { key: Exclude<keyof Permissions, "groupIds">; label: str
   { key: "export", label: "تصدير", desc: "تنزيل ملفات Excel" },
   { key: "settings", label: "الإعدادات", desc: "تعديل البادئات" },
   { key: "manageUsers", label: "إدارة المستخدمين", desc: "الوصول لهذه الصفحة" },
+  { key: "manageBackups", label: "النسخ الاحتياطي", desc: "إنشاء/تحقق/Drill/تنزيل النسخ (Phase 4A)" },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -129,6 +133,8 @@ export default function AdminPage() {
   }, [session]);
 
   const currentUserId = (session?.user as any)?.id as string | undefined;
+  const currentUserRole = ((session?.user as any)?.role as string) || "user";
+  const showBackupsTab = canManageBackups(perms, currentUserRole);
 
   React.useEffect(() => {
     if (status === "loading") return;
@@ -397,7 +403,7 @@ export default function AdminPage() {
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
         <Tabs defaultValue="users" className="w-full">
-          <TabsList className="mb-4 grid w-full grid-cols-2 sm:w-fit">
+          <TabsList className={cn("mb-4 grid w-full", showBackupsTab ? "grid-cols-3" : "grid-cols-2", "sm:w-fit")}>
             <TabsTrigger value="users" className="gap-1.5">
               <UsersIcon className="size-3.5" />
               المستخدمون
@@ -406,6 +412,12 @@ export default function AdminPage() {
               <ScrollText className="size-3.5" />
               سجل التدقيق
             </TabsTrigger>
+            {showBackupsTab && (
+              <TabsTrigger value="backups" className="gap-1.5">
+                <DatabaseBackup className="size-3.5" />
+                النسخ الاحتياطي
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="users" className="mt-0 space-y-6">
@@ -636,6 +648,12 @@ export default function AdminPage() {
           <TabsContent value="audit" className="mt-0">
             <AuditTrailTab />
           </TabsContent>
+
+          {showBackupsTab && (
+            <TabsContent value="backups" className="mt-0">
+              <BackupManagerTab />
+            </TabsContent>
+          )}
         </Tabs>
       </main>
 

@@ -22,6 +22,19 @@ export interface Permissions {
    */
   reopenReport?: boolean;
   /**
+   * Phase 4A: إدارة النسخ الاحتياطي — عرض القائمة/الإنشاء/التنزيل/الرفع للتحقق/
+   * Restore Drill/قراءة سجل الاسترجاع التشغيلي.
+   * صريحًا (قرار D-5): امتلاك settings لا يمنح هذا المفتاح ولا أي شيء منه.
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور (نمط assignWorkflow).
+   */
+  manageBackups?: boolean;
+  /**
+   * Phase 4B (محجوز — لا تشير إليه أي API في 4A): تنفيذ الاستعادة الفعلية
+   * (استبدال قاعدة التشغيل). يُعرّف المفتاح الآن لضمان فصل الصلاحيتين منذ البداية،
+   * ولا تمنح لمجرد امتلاك settings — ويبقى بلا أي تأثير حتى 4B.
+   */
+  restoreDatabase?: boolean;
+  /**
    * Optional list of group IDs the user is allowed to see in the main page.
    *
    * Semantics:
@@ -48,6 +61,8 @@ export const DEFAULT_USER_PERMISSIONS: Permissions = {
   manageUsers: false,
   assignWorkflow: false,
   reopenReport: false,
+  manageBackups: false,
+  restoreDatabase: false,
   groupIds: [],
 };
 
@@ -62,6 +77,8 @@ export const ADMIN_PERMISSIONS: Permissions = {
   manageUsers: true,
   assignWorkflow: true,
   reopenReport: true,
+  manageBackups: true,
+  restoreDatabase: true, // محجوز 4B — لا API يستخدمه في 4A
   // Admins see all groups they own (no linkage restriction)
   groupIds: [],
 };
@@ -123,4 +140,20 @@ export function canAssignWorkflow(perms: Permissions, role: string): boolean {
  */
 export function canReopenReport(perms: Permissions, role: string): boolean {
   return role === "admin" || perms.reopenReport === true;
+}
+
+/**
+ * Phase 4A — إدارة النسخ الاحتياطي: المدير ضمنيًا بالدور، وغيره بمفتاح صريح فقط.
+ * settings وحدها لا تمنح شيئًا (D-5 حرفيًا).
+ */
+export function canManageBackups(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.manageBackups === true;
+}
+
+/**
+ * Phase 4B (محجوز) — تنفيذ الاستعادة الفعلية. لا يستدعيها أي مسار في 4A؛
+ * وجودها هنا يثبت الفصل عن manageBackups وعن settings منذ البداية.
+ */
+export function canRestoreDatabase(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.restoreDatabase === true;
 }
