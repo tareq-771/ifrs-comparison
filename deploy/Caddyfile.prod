@@ -1,0 +1,43 @@
+# Phase 5A — قالب Caddyfile الإنتاجي (artifact داخل Git فقط).
+#
+# القرار R4 المعتمد: HTTPS داخلي عبر tls internal.
+# القرار R5 المعتمد: hostname ثابت للمستخدمين — يُحدد الاسم النهائي في 5B
+# بعد فحص DNS/LAN الفعلي، ثم يُستبدل <HOSTNAME> أدناه.
+# <LAN_SUBNET> تُوثَّق عند 5B قبل تطبيق أي جدار.
+#
+# نموذج الثقة: Caddy هو المحيل الوحيد؛ التطبيق على loopback حصرًا
+# (HOSTNAME=127.0.0.1) والمنفذ 3000 محجوب عن LAN (جدار + ربط).
+
+{
+    admin off
+}
+
+https://<HOSTNAME> {
+    tls internal
+
+    encode gzip
+
+    # حدود الجسم: الرفع الافتراضي للتطبيق 200MB (BACKUP_MAX_UPLOAD_MB) + هامش
+    request_body {
+        max_size 256MB
+    }
+
+    reverse_proxy 127.0.0.1:3000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        # بث NDJSON (الدردشة) بلا تخزين مؤقت
+        flush_interval -1
+        transport http {
+            dial_timeout 5s
+            read_timeout 30m
+            write_timeout 30m
+        }
+    }
+
+    timeouts {
+        read_body   30m
+        write       30m
+        idle        10m
+    }
+}

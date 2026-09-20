@@ -1,0 +1,56 @@
+# Phase 5A — قالب وحدة systemd الإنتاجية (artifact داخل Git فقط — لا يُثبَّت من هنا).
+#
+# التثبيت الفعلي يحدث في 5B على الخادم الحقيقي بعد: إنشاء المستخدم ifrsapp،
+# المجلدات الدائمة (وثيقة التصميم §3)، وملف الأسرار /etc/ifrs-comparison/ifrs.env.
+#
+# القرار R3 المعتمد: الإنتاج بـ Node.js (وليس bun) — standalone server.js.
+# القرار المعماري: releases + symlink current ⇒ تبديل الكود ذري وrollback فوري.
+
+[Unit]
+Description=IFRS Comparison Tool (Next.js production standalone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ifrsapp
+Group=ifrsapp
+WorkingDirectory=/srv/ifrs-comparison/current
+EnvironmentFile=/etc/ifrs-comparison/ifrs.env
+# preflight نظامي: أسرار/مسارات/مساحة — يفشل قبل تشغيل التطبيق (fail-closed)
+ExecStartPre=/srv/ifrs-comparison/bin/preflight.sh
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5s
+# لا حلقة إقلاع تمحو الدليل: 5 محاولات ثم توقف — الدليل في journald الدائم
+StartLimitBurst=5
+StartLimitIntervalSec=120
+TimeoutStopSec=60
+KillSignal=SIGTERM
+LimitNOFILE=65535
+
+# ── Hardening بلا كسر SQLite/النسخ/الاستعادة ──
+# المبادلة الذرية للقاعدة = rename داخل /var/lib/ifrs-comparison/db ⇒ مسموحة
+# بموجب ReadWritePaths. Pre-Restore Backup يكتب في /var/backups/ifrs-comparison.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ifrs-comparison /var/backups/ifrs-comparison /var/log/ifrs-comparison
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# MemoryDenyWriteExecute يُترك OFF عمدًا — V8 JIT يحتاج W+X وإلا انهار.
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

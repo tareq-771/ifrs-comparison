@@ -43,6 +43,10 @@ const EXEMPT: Array<[string, string]> = [
   ["/api/backups/recovery-log", "GET"],
   // فحص حيوية بلا DB
   ["/api", "GET"],
+  // Phase 5A — health endpoint محدود المعلومات: بلا حارس leases عمدًا —
+  // يجب أن يستجيب أثناء full-block/RECOVERY_REQUIRED نفسه (عقده: 200/503 حسب
+  // الحالة، بلا بيانات تطبيقية) — مثل /api/system/status
+  ["/api/health", "GET"],
 ];
 
 // معالجات بفعل كتابي لكنها قراءة بنيويًا (بلا أي كتابة DB) — guardRead

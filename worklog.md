@@ -510,3 +510,45 @@ Work Log:
 Stage Summary:
 - **بوابة 4B.3 اجتازت بالكامل**: manageBackups ≠ restoreDatabase مثبت عبر HTTP حقيقي (45/45) — المدير بلا المفتاح يُرد 403 قبل أي كشف عن المحرك، حامل المفتاح وحده يصل للحد الأدنى من الworkflow، والسجل الخارجي مقروء لإدارة النسخ مع بقاء التنفيذ للمخوّل حصرًا — الجردان يفشلان مستقبلًا عند أي خرق — دورة حياة الصلاحية (منح/بقاء/سحب/جلسة جديدة) 17/17 مع Audit Trail مركّز — الإنتاج بقيت بياناته كما هي والمحرك معطل
 - **توقف كامل: لا Deployment / لا Server Hardening — بانتظار مراجعة المستخدم**
+
+---
+Task ID: 5-DESIGN (Phase 5 — Deployment & Server Hardening: design only)
+Agent: main (Z.ai Code)
+Task: إعداد وثيقة تصميم Phase 5 بعد إغلاق 4B.3 والاعتماد — دراسة البيئة الحالية فعليًا (قراءة فقط) ثم Current Environment Assessment + المعمارية + المسارات الدائمة + systemd + Caddy/LAN/TLS + جدار + أسرار + نسخ off-device + startup/recovery + runbook + مصفوفة اختبار + مخاطر + تقسيم 5A/5B/5C — بلا أي تنفيذ
+
+Work Log:
+- جرد بيئة قراءة فقط: Debian 13 في حاوية Kata (overlayfs 9.9G/7.8G free) · PID1=tini ⇒ لا systemd · لا ufw/iptables/nft · مستخدم z غير root · bun 1.3.14/node 24.21.0 · التشغيل الحالي next dev -p 3000 (وضع تطوير) مربوط 0.0.0.0 · Caddy منصة على :81 بXTransformPort · .env=50B (DATABASE_URL فقط، صلاحيات 0755) · var/ معاد إنشاؤه بعد مسح 4B.3 · 3.9GiB RAM/2 vCPU · upload=tmpfs+ossfs
+- تأكيد الخطافات المعمارية الجاهزة: backup-config.ts يقرأ VAR_DIR/BACKUP_DIR/DATABASE_URL بمسارات مطلقة ⇒ الانتقال الدائم = env فقط؛ NEXT_DIST_DIR للبناء المعزول
+- فجوات اكتُشفت للتصميم: لا fail-closed لـ NEXTAUTH_SECRET عند الإقلاع (NextAuth dev يشتق سرًّا بصمت) · لا busy_timeout/PRAGMA صريح في db.ts · log:['query'] حتى إنتاجًا
+- كتابة docs/phase5-design.md بكل المخرجات المطلوبة الـ13: تقييم البيئة، المعمارية (Browser→Caddy:443→loopback:3000→standalone)، المسارات (/srv/ifrs-comparison/current + /var/lib/ifrs-comparison + /var/backups/ifrs-comparison + /etc/ifrs-comparison/ifrs.env 0640 root:ifrsapp)، وحدة systemd كاملة مع Hardening لا يكسر المبادلة الذرية (ReadWritePaths حصرا)، preflight، Caddy (tls internal + trusted loopback + 256MB + مهلات 30m + flush_interval)، nftables بتطبيق مؤقت مؤمَّن، أسرار (توليد مرة واحدة + نسخة مشفرة + مظروف ورقي + fail-closed 5A)، off-device (SFTP/NAS/USB) مع RPO≤24h/RTO≤30m مقسمة زمنيًا، startup/recovery (RECOVERY_REQUIRED ⇒ health 503 بلا حلقة إعادة تشغيل)، runbook (backup→validate→drill→build→switch→healths→regression→rollback كود ≠ rollback بيانات)، سياسة المحرك: توصية RESTORE_ENGINE_ENABLED=1 دائمًا إنتاجيًا، مصفوفة اختبار 16 بندًا، مخاطر R1-R10، تقسيم 5A (داخل المستودع قابل بالـSandbox)/5B (على الخادم الحقيقي)/5C (متانة وتدريبات)
+- التزام وثيقة التصميم فقط (git add docs/phase5-design.md حصرًا) — لا مس لأي شيء آخر
+
+Stage Summary:
+- **Phase 5 = تصميم معتمد للمراجعة فقط، صفر تنفيذ** — الوثيقة: docs/phase5-design.md
+- الحسم المعماري الأهم: فصل الكود (/srv releases+current symlink) عن البيانات (/var/lib) عن النسخ (/var/backups) عن الأسرار (/etc) — deployment بنيويًا لا يستطيع حذف أي بيانات
+- استعداد التنفيذ: 5A كامل قابل للاختبار في Sandbox الحالي (fail-closed + health + مصنوعات deploy + إثبات standalone بـ NEXT_DIST_DIR=.next-prod) — 5B/5C تتطلب الخادم الحقيقي (R1) وتوثيق subnet (R2)
+- **توقف كامل: بانتظار موافقة المستخدم على التصميم قبل أي خطوة تنفيذ**
+
+---
+Task ID: 5A (Phase 5A — Production Runtime Readiness)
+Agent: main (Z.ai Code)
+Task: تنفيذ Phase 5A المعتمدة داخل المستودع حصرًا: fail-closed config + /api/health + preflight/startup recovery + restricted recovery mode + db.ts إنتاجي + إثبات build/Node standalone على 127.0.0.1:3000 + persistent-path simulation + اختبارات السر/الجلسة + A→B→A + regression كامل + قوالب deploy داخل Git — ثم التقرير والتوقف قبل 5B
+
+Work Log:
+- production-config.ts: تحقق fail-closed إنتاجي (NEXTAUTH_SECRET ≥32/بدون placeholder، DATABASE_URL ملف موجود مطلق، VAR_DIR/BACKUP_DIR موجودان خارج شجرة النشر، RESTORE_ENGINE_ENABLED صريح 0/1، NEXTAUTH_URL) — بلا أي قيم سرية
+- instrumentation.ts: preflight إنتاجي (config→exit، ترويسة SQLite، integrity_check، canonical schema مقابل bffa026102bc، epoch، حالة الصيانة) + boot-status singleton — استيرادات ديناميكية لنظافة حزمة Edge (أعيد البناء وأعيد الإثبات)
+- /api/health: healthy 200 / maintenance 200 / recovery_required 503 / unhealthy 503 — بيانات محدودة (بلا epoch قيمة/مسارات/عملية)
+- db.ts: WAL + busy_timeout=5000 + foreign_keys=ON لكل عميل + تسجيل الإنتاج error/warn فقط — reconnect والاستعادة الذرية غير مماسة
+- auth.ts: السر صريح من بيئة العملية حصرًا (لا fallback مكتوب)
+- بناء standalone (NEXT_DIST_DIR=.next-prod) EXIT=0 واكتشاف موثق: tracing نسخ .env وdb/ داخل المخرج ⇒ تنظيف إلزامي + قاعدة المنع تمنعه تشغيليًا
+- إثبات حي: node server.js على 127.0.0.1:3000 حصرًا، preflight OK (schema ok bffa026102bc)، login فعلي، نسخة VALIDATED، drill RESTORE_VERIFIED، recovery-log
+- أسرار (دورات إيقاف/تشغيل): مفقود⇒FATAL exit1، ضعيف⇒FATAL exit1، نفس السر⇒epoch 1→1 والجلسة القديمة 200 (لا تدوير صامت)، تغييره⇒قديمة 401 وجديدة 200
+- RECOVERY_REQUIRED: بذور SWAPPING مقطوعة⇒CRASH RECOVERY⇒restricted mode حي: health 503، كتابة 503 RECOVERY_REQUIRED، قراءة 503 locked، process حي PID واحد PPID=1 وسطر Ready واحد (لا حلقة) — تطبيع المشغّل⇒healthy
+- A→B→A: B بناء حقيقي v1.0.1-p5a (package.json أعيد)، تبديل symlink، جلسة وبيانات باقية، كتابة تحت B، عودة A: كلا المؤشرين باقيان، حذف B وشجرة البناء⇒sha256 البيانات متطابقة (db+epoch+recovery log)
+- regression: lint 0، tsc صفر أخطاء بملفات 5A، دخول+CRUD+workflow كامل بفصل مهام ثلاثي حتى APPROVED ثم تنظيف شرعي (REOPEN→RESUME_EDIT→حذف)، dashboard 200، Backup→Validate→Drill RESTORE_VERIFIED، write-guard 59 (health معفى بعذر موثق)، restore-permission PASS، integrity ok fk0 users1 groups0 reports0، متصفح E2E بلا أخطاء console
+- dev أعيد بـ NEXTAUTH_SECRET كمتغير عملية فقط (.env لم يُمس) — علة workers الجلسة نفسها الموثقة في 4B.3
+- القوالب في deploy/: service (Node+hardening ReadWritePaths)، Caddyfile.prod (tls internal+hostname)، ifrs.env.example بلا أسرار، preflight.sh، nftables.conf، runbook-deploy/rollback، README — لا تثبيت على أي نظام
+
+Stage Summary:
+- **بوابة 5A اجتازت**: fail-closed مثبت بدورات إقلاع حقيقية (مفقود/ضعيف⇒موت، صالح⇒عمل، تدوير⇒إبطال جلسات بلا صمت)، health contract رباعي، RECOVERY_REQUIRED restricted mode بلا حلقة إقلاع، الفصل البنيوي مثبت بالمحاكاة (حذف releases/بناء ⇒ sha256 بيانات متطابقة)، Code rollback ≠ DB rollback مثبت بمؤشرات بيانات، artifact Node standalone يعمل على 127.0.0.1:3000 بpreflight كامل
+- **توقف كامل: قبل 5B — بانتظار موافقة المستخدم**

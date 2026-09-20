@@ -22,6 +22,10 @@ function authReqIp(req: unknown): string | null {
 }
 
 export const authOptions: NextAuthOptions = {
+  // Phase 5A — السر صريح من بيئة العملية حصرًا: في الإنتاج يضمن preflight
+  // الـfail-closed وجوده قبل الإقلاع (production-config.ts)؛ في dev يبقى
+  // undefined ⇒ سلوك dev السابق كما هو. لا fallback عشوائي مكتوب هنا أبدًا.
+  secret: process.env.NEXTAUTH_SECRET,
   providers: [
     CredentialsProvider({
       name: "credentials",

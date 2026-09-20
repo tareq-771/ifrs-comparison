@@ -60,3 +60,7 @@ server.log
 *.tmp-*.zip
 drill-*.json
 /.next-iso/
+
+# Phase 5A — production artifact build (isolated distDir) + release simulation scaffold
+/.next-prod/
+/.p5a/
