@@ -329,3 +329,38 @@ Stage Summary:
 - 3.5A مكتملة ومجازة بالاختبار: آلة الحالات أصبحت DRAFT→SUBMITTED→UNDER_REVIEW→PENDING_APPROVAL→APPROVED مع توقيع مراجع مستقل، والاستحقاق حقل رقابي محوكَم بالتدقيق الكامل
 - ملاحظة معمارية: الحوكمة غير الإدارية (assignWorkflow) تعمل ضمن نطاق رؤية المستخدم فقط (404 لغير المرئي) — نفس قواعد الإسناد في المرحلة 3
 - فهارس الجديدة ستُدقّق بـ EXPLAIN QUERY PLAN على بيانات اختبار معقولة في 3.5B وقد تُقلّص
+
+---
+Task ID: 3.5B
+Agent: main (Z.ai Code)
+Task: تنفيذ المرحلة 3.5B — لوحة متابعة المطابقات (قراءة فقط): APIs + KPIs + فلاتر + جدول RTL (بعد نجاح 3.5A كاملًا)
+
+Work Log:
+- src/lib/reconciliation.ts (نقية مشتركة): deriveStage بسبع مراحل حصرية + stageToWhere (ترجمة حرفية مطابقة)، deriveOwner فوق deriveOwnerRole (القاعدة الواحدة)، computeOverdue/buildOverdueWhere (dueDate≠null ∧ status≠APPROVED ∧ today>dueDate — أيام تقويمية، الحد: يوم الاستحقاق ليس متأخرًا)، تعريفات البطاقات وقائمة بيضاء للترتيب، نوع DashboardRow
+- src/lib/dashboard-server.ts: buildDashboardVisibility (نفس predicate حشو GET /api/reports) يُعاد استخدامه في الثلاثة endpoints حرفيًا؛ تحقق صارم للباراميترات (400 DASHBOARD_INVALID_PARAM)؛ بحث الاسم برموز % _ حرفيًا عبر مسار SQL مع ESCAPE (Prisma contains لا يهرب LIKE في SQLite)
+- APIs (GET فقط — الكتابة 405): /api/dashboard/summary (بطاقات من نفس الرؤية والدوال النقية — فلاتر النطاق فقط قرار D-8)، /api/dashboard/reconciliations (count+findMany بنفس WHERE بالتوازي + pagination {20,50,100} + sort whitelist + myActions لكل صف من computeMyActions)، /api/dashboard/facets (periods/groups/users ضمن الرؤية — لا تسريب أسماء خارجها)
+- UI: مفتاح الترويسة «مساحة العمل | لوحة المتابعة» (بلا route جديد — حالة مساحة العمل محفوظة)؛ kpi-cards (نقر = فلتر خادمي ثابت؛ «متأخرة» و«أعيد فتحها» علمان متراكبان خارج التقسيم)؛ filters-bar (chips + مسح الكل + ownerMe)؛ reconciliations-table (18 عمودًا incl. المسؤول الحالي/الاستحقاق/أيام التأخير + شارة د² + تظليل المتأخر؛ إجراءات الصفوف تستدعي endpoint الانتقالات الحالي بـ myActions الخادمية؛ «الإسناد» يفتح التقرير — انحراف موثق عن القسم 7)؛ ترقيم/ترتيب خادمي بالكامل
+- الفهارس (قرار الفحص): EQP على 2500 صف + ANALYZE — updatedAt (الترتيب الافتراضي)، dueDate (المتأخر)، status (OR المراحل)، groupId+status، cycle>1، periodEnd (covering لـ DISTINCT facets) — كلها مستخدمة فعلًا بلا تكرار، لم يُحذف شيء
+- اختبارات 3.5B الإلزامية: scripts/verify-3.5b.ts — 87/87 PASS (تكافؤ بطاقة↔فلتر↔صفوف لكل مرحلة، مجموع الحصري = الإجمالي 27، مصفوفة المتأخر أمس/اليوم/غد/null × معتمد/غير معتمد مع daysOverdue 1 و2، ownerRole/ownerMe، الرؤية لستة أدوار incl. عضو مجموعة قراءة فقط وoutsider أصفار، facets بلا تسريب + فلتر غير مرئي 200 فارغ لا 404، ترقيم 20+7 وصفحة خارج النطاق، ترتيب بالاسم/الدورة، فلاتر مركبة، 10 باراميترات غير صالحة ⇒ 400، بحث % _ حرفي، فلاتر النطاق على البطاقات، إثبات قراءة فقط: لا تغيير في Report/WorkflowHistory/AuditLog/versions بعد جلسة كاملة + كل أفعال الكتابة 405)
+- تحقق متصفح E2E (agent-browser): لوحة المستخدم المدير تعرض البطاقات بأعداد مطابقة، نقر بطاقة «بانتظار الاعتماد» ⇒ فلتر + صف واحد، مسح الكل، جدول 20 صفًا، فتح تقرير من اللوحة ⇒ مساحة العمل بلوحة دورة الاعتماد، تجاوب موبايل (بطاقتان/صف)، تذييل مثبت يُدفع طبيعيًا مع المحتوى الطويل، لا أخطاء console
+- تنظيف كامل بعد الاختبار: users=1 reports=0 groups=0 audit=0 workflowHistory=0 + integrity ok
+- Commit: append-only بعد 3.5A (لا إعادة كتابة تاريخ)، النسخ الاحتياطية قائمة
+
+Stage Summary:
+- Phase 3.5 (A+B) مكتملة: آلة الحالات مع PENDING_APPROVAL + حوكمة dueDate + لوحة متابعة قراءة-فقط بمصدر رؤية واشتقاق واحد لا تتباين أرقامه مع صفوفه أبدًا
+- الفرق الموثق الوحيد عن التصميم: زر «تغيير الإسناد» في صف اللوحة يفتح التقرير في مساحة العمل (حوار الإسناد الكامل هناك) بدل تكرار الحوار — الإجراءات الأخرى كاملة
+- JWT يخبز الصلاحيات وقت الدخول: تغيير groupIds يتطلب إعادة دخول (اكتُشف أثناء الاختبار — سلوك NextAuth المعتمد)
+
+---
+Task ID: 4-design (Phase 4 — Backup, Restore & Operational Recovery)
+Agent: main (Z.ai Code)
+Task: المرحلة 4 — تصميم فقط دون أي تنفيذ (بعد موافقة المستخدم على Phase 3.5A/3.5B المنفذتين والمختبرتين)
+
+Work Log:
+- تأكيد حالة المشروع: المراحل 0/1/2/3/3.5A/3.5B منجزة (64/64 و87/87 PASS، commits 821156e→07f7873→ede4838، append-only)
+- جرد فعلي شامل لتحديد نطاق النسخ (لا افتراض): db/custom.db (1.4MB، WAL، 5 جداول، integrity ok) — صفر استدعاءات fs.write في src كاملة وصفر معالجات multipart ⇒ كل بيانات المستخدمين والمرفوعات JSON داخل DB حصرًا — .env يحوي DATABASE_URL فقط (لا NEXTAUTH_SECRET مثبت!) — BUSINESS_TZ_OFFSET_MINUTES الإعداد المركزي الوحيد — لا مجلد prisma/migrations إطلاقًا (db push فقط) — backups/pre-3.5A داخل المشروع بينما نسخة pre-phase3 في /home/z/backups فُقدت نهائيًا مع نقل البيئة (دليل واقعي لمسألة off-device DR)
+- كتابة وثيقة التصميم الكاملة docs/phase4-backup-restore-design.md (24 قسمًا) تغطي بنود المستخدم العشرين حرفيًا: جرد ما يُنسخ/لا يُنسخ بالأدلة، VACUUM INTO مقابل Backup API (القرار: VACUUM INTO — النمط المجرَّب، بلا تصادم checkpoint مع Prisma)، المعمارية والمسارات (خارج public، 0600، أسماء خادمية، معرفات مغلاقة ضد traversal)، صيغة Manifest الكاملة (schemaFingerprint + counts + dataRange + configFingerprint)، أكواد AuditLog الستة الجديدة + السجل التشغيلي الخارجي JSONL var/recovery/recovery-log.jsonl الذي يحل مشكلة «AuditLog يعود للماضي عند استعادة قاعدة أقدم»، نموذج الصلاحيات (مفتاحان manageBackups + restoreDatabase — لا اشتقاق ضمني من settings)، خط التحقق الثماني على staging حصرًا، تسلسل الاستعادة العشري (Upload→Validate→Preview→Confirm→Pre-Restore→Maintenance→Restore→Integrity→Restart/Reconnect→Completion) برسم ASCII، Maintenance Mode (علم ملفي + assertWritable في كل endpoints الكتابة + عداد in-flight + 503 + شريط استطلاع)، التحقق البعدي بالقراءة Prisma الفعلية + Rollback التلقائي للـ pre-restore، إبطال الجلسات بتدوير NEXTAUTH_SECRET عند مرحلة Restart (تحليل خطر JWT المخبوز الذي يمر عبر Edge بلا DB)، Retention بلا أي حذف تلقائي (عرض فقط)، التنزيل ZIP + الرفع بلا ثقة بالاسم وبحد 200MB، جدول تهديدات/تخفيف عشري + نقاش التشفير at rest (توصية التأجيل)، خطة Prisma migrations baseline كاملة (diff→init على نسخة مؤقتة→resolve --applied→فحص drift) بمخاطرها المعلنة قبل التنفيذ، DR خارج الجهاز بالدليل الواقعي للمشروع نفسه، RPO 24h/RTO 30 دقيقة كتوصيات قابلة للتغيير، خطة اختبارات 4 محاور (نسخ أثناء كتابة متزامنة، مصفوفة ملفات فاسدة/غريبة، استعادة ذهبية + rollback + صيانة + جلسات + بقاء JSONL، migrations)، 10 نقاط قرار D-1..D-10 بتوصيات جاهزة، وتقسيم تنفيذي مقترح 4A (أساس النسخ)/4B (الاستعادة)
+- لم يُعدَّل أي ملف Schema أو Prisma أو API أو UI أو accounts.ts أو Workflow أو Dashboard — الإنتاج الوحيد: وثيقة التصميم + هذا المدخل + commit انتقائي append-only للوثيقة والمدخل فقط
+
+Stage Summary:
+- تصميم Phase 4 مكتمل وموثق: نطاق النسخ أثبت فحصًا أنه قاعدة البيانات كاملة بلا أي حالة خارجية عدا الإعدادات، النسخ بـ VACUUM INTO المجرَّب، كل استعادة خلف خط تحقق ثماني + pre-restore إلزامي + صيانة + Rollback، وأدلة الاسترجاع في سجل خارجي لا يمحوه الاستبدال — بانتظار موافقة المستخدم على الوثيقة وحسم D-1..D-10 قبل أي كود، ولن يبدأ أي تنفيذ (4A أو 4B) قبل ذلك
