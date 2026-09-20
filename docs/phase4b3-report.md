@@ -160,7 +160,7 @@ bunx tsc --noEmit                                    # صفر أخطاء في م
 
 ## 11) الالتزام
 
-Commit: **(يُدوَّن بعد الالتزام — انظر سطر Git أدناه في سجل العمل)**
+Commit: **`92dfccf`** — "Phase 4B.3: final recovery security gate …" (على رأس `b48fadd` — append-only)
 
 ## 12) التوقف
 
