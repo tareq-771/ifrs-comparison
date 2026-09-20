@@ -122,10 +122,14 @@ export function appVersion(): string {
 export interface KnownSchema {
   id: string;
   label: string;
-  /** بصمة sqlite_master (باستثناء _prisma_migrations وsqlite_%). null = يحتسب من قاعدة التشغيل. */
+  /**
+   * منذ 4A.1: البصمة القاعدية الدلالية (canonical، بادئة csha256:) — الحاكمة.
+   * (قبل 4A.1 كانت بصمة sqlite_master الفيزيائية — لا توجد إصدارات مسجلة قديمة).
+   * null = يحتسب من قاعدة التشغيل عند أول استدعاء (إلا إن وُجد pin أدناه).
+   */
   fingerprint: string | null;
   kind: "current" | "older";
-  /** تسلسل migrations من هذا الإصدار إلى الحالي (فارغ في 4A). */
+  /** تسلسل migrations من هذا الإصدار إلى الحالي (فارغ في 4A/4A.1). */
   migrations: string[];
 }
 
@@ -133,32 +137,59 @@ const KNOWN_SCHEMAS: KnownSchema[] = [
   {
     id: "v4-phase3.5B",
     label: "المخطط الحالي — Phase 3.5B (5 جداول + فهارس)",
-    fingerprint: null, // يُحتسب من قاعدة التشغيل عند أول استدعاء
+    fingerprint: null, // يُثبّت أدناه بعد إثبات canonical(fresh)==canonical(production)
     kind: "current",
-    migrations: [], // الـ baseline يُعتمد في 4B — لا ترحيلات مسجلة في 4A
+    migrations: [], // الـ baseline عُولج في 4A.1 عبر resolve --applied (لا ترحيلات دلالية أحدث)
   },
 ];
 
-let cachedCurrentFingerprint: string | null = null;
+/**
+ * 4A.1 — التثبيت الدلالي: بعد إثبات التطابق ثلاثي (production↔schema.prisma↔fresh)
+ * يُثبّت هنا الـ canonical fingerprint المتوقع لمخطط v4-phase3.5B. إذا خالفت
+ * قاعدة التشغيل الحية هذا الثابت ⇒ فشل مغلق (SCHEMA_UNKNOWN) لكل تحقق/Drill —
+ * أي انحراف مخطط غير معلن يُوقف خط النسخ فورًا بدل المرور بصمت.
+ * أي migration شرعية مستقبلًا (4B+) تعني تحديث هذا الثابت في نفس الـ commit.
+ */
+export const PINNED_CURRENT_CANONICAL_FINGERPRINT: string | null =
+  "csha256:bffa026102bcb2419b68af50654ce806c22dc08e069dd3a1203b184db4b4af3f";
 
-export function setCurrentSchemaFingerprint(fp: string): void {
-  // يُستدعى قبل كل عملية تحقق/Drill/إنشاء — يعيد الاكتساب من قاعدة التشغيل
-  // الحية حتى لا تصبح البصمة قديمة بعد أي تغيير مخطط معتمد.
-  cachedCurrentFingerprint = fp;
+interface SchemaIdentity {
+  canonical: string;
+  physical: string;
 }
 
-export function getCurrentSchemaFingerprint(): string | null {
-  return cachedCurrentFingerprint;
+let cachedCurrentIdentity: SchemaIdentity | null = null;
+
+export function setCurrentSchemaIdentity(identity: SchemaIdentity): void {
+  // يُستدعى قبل كل عملية تحقق/Drill/إنشاء — يعيد الاكتساب من قاعدة التشغيل
+  // الحية حتى لا تصبح الهوية قديمة بعد أي تغيير مخطط معتمد.
+  cachedCurrentIdentity = identity;
+}
+
+export function getCurrentSchemaIdentity(): SchemaIdentity | null {
+  return cachedCurrentIdentity;
+}
+
+/** الهوية الحاكمة الحالية: الثابت المثبّت إن وجد وإلا المحتسب من قاعدة التشغيل. */
+export function getCurrentCanonicalSchemaFingerprint(): string | null {
+  return PINNED_CURRENT_CANONICAL_FINGERPRINT ?? cachedCurrentIdentity?.canonical ?? null;
+}
+
+/** البصمة الفيزيائية الحالية (تشخيصية حصرًا). */
+export function getCurrentPhysicalSchemaFingerprint(): string | null {
+  return cachedCurrentIdentity?.physical ?? null;
 }
 
 /**
- * تصنيف بصمة مخطط نسخة ما.
- * في 4A: إما مطابق للحالي أو «غير معروف» (يشمل الأحدث — الرفض في الحالتين).
+ * تصنيف بصمة مخطط نسخة ما — منذ 4A.1 على البصمة القاعدية الدلالية (canonical)
+ * لا الفيزيائية: النسخة المبنية من migrations بترتيب أعمدة مختلف تُقبل،
+ * وأي فرق دلالي (عمود/فهرس/FK/نوع/افتراض) يُرفض.
+ * في 4A.1: إما مطابق للحالي أو «غير معروف» (يشمل الأحدث — الرفض في الحالتين).
  */
 export type SchemaClass = "current" | "older-known" | "unknown";
 
 export function classifySchemaFingerprint(fp: string): { schemaClass: SchemaClass; known?: KnownSchema } {
-  const current = getCurrentSchemaFingerprint();
+  const current = getCurrentCanonicalSchemaFingerprint();
   if (current && fp === current) {
     return { schemaClass: "current", known: KNOWN_SCHEMAS.find((k) => k.kind === "current") };
   }

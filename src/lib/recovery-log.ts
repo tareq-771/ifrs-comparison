@@ -88,6 +88,40 @@ export async function appendRecoveryEvent(input: {
   }
 }
 
+/**
+ * 4A.1 — عدّاد قراءة فقط: كم عملية Drill بدأت سابقًا لنسخة معينة (طبقًا للأحداث).
+ * الغرض: إعطاء كل تشغيل Drill «رقم تشغيل» (drillRun.sequence) في details كي لا
+ * يبدو تشغيلان مستقلان لنفس backupId كحدثين مكررين للعملية نفسها —
+ * operationId يبقى هو المميز الأساسي لكل تشغيل، وbackupId يتكرر طبيعيًا.
+ * قراءة حصرًا — لا تلمس الملف كتابةً (append-only بنيويًا).
+ */
+export async function countRecoveryEvents(
+  event: RecoveryEvent,
+  backupId?: string
+): Promise<number> {
+  try {
+    const file = recoveryLogFilePath();
+    await stat(file);
+    const raw = await readFile(file, "utf8");
+    const lines = raw.split("\n");
+    let count = 0;
+    for (const line of lines) {
+      if (line.trim().length === 0) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj?.event !== event) continue;
+        if (backupId !== undefined && obj?.backupId !== backupId) continue;
+        count++;
+      } catch {
+        /* سطر تالف — يُتخطى */
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
 /** قراءة آخر N حدثًا (العرض فقط — لا تعديل). الأسطر التالفة تُتخطى وتُعد. */
 export async function readRecoveryEvents(limit = 50): Promise<{
   events: RecoveryRecord[];

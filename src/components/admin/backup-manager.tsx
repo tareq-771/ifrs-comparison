@@ -52,6 +52,8 @@ interface ListEntry {
   appVersion: string;
   schemaVersion: string;
   schemaFingerprintShort: string;
+  manifestFormat: 2 | 3 | 0;
+  canonicalFingerprintShort: string;
   level: Level;
   invalidReason: string | null;
   sizeBytes: number;
@@ -98,13 +100,15 @@ interface ManifestView {
   createdBy: { id: string | null; username: string };
   appVersion: string;
   schemaVersion: string;
+  formatVersion: number;
   schemaFingerprint: string;
+  canonicalSchemaFingerprint?: string;
   database: { filename: string; sha256: string; bytes: number; pageSize: number; integrityCheck: string; journalModeAtBackup: string };
   counts: { users: number; groups: number; reports: number; workflowHistory: number; auditLog: number };
   periodRange: { minPeriodEnd: string | null; maxPeriodEnd: string | null };
   dataRange: { oldestCreatedAt: string | null; newestUpdatedAt: string | null };
   environment: { businessTzOffsetMinutes: number; configFingerprint: string };
-  verification: { level: string; validatedAt: string | null; drillAt: string | null; drillOperationId?: string | null };
+  verification: { level: string; validatedAt: string | null; drillAt: string | null; drillOperationId?: string | null; drillRuns?: number };
   uploadInfo?: { originalNameSanitized: string; uploadedAt: string; uploadedByUsername: string };
   authenticity: { note: string; manifestHmac: null };
 }
@@ -425,6 +429,22 @@ export function BackupManagerTab() {
                       <div className="text-[10px] text-slate-400">
                         {e.source === "local" ? "رسمية" : "مرفوعة (staging)"} · {e.backupType} · v{e.appVersion}
                       </div>
+                      {e.manifestFormat !== 0 && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          {e.manifestFormat === 2 ? (
+                            <span className="rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-[9px] font-sans font-semibold text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300" title="Manifest إرث v2 — يُستخرج الـ canonical من database.db وقت التحقق">
+                              Legacy v2
+                            </span>
+                          ) : (
+                            <span className="rounded border border-emerald-300 bg-emerald-50 px-1 py-0.5 text-[9px] font-sans font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                              Manifest v3
+                            </span>
+                          )}
+                          {e.canonicalFingerprintShort && (
+                            <span className="font-mono text-[9px] text-slate-400" dir="ltr">c:{e.canonicalFingerprintShort}</span>
+                          )}
+                        </div>
+                      )}
                       {e.invalidReason && <div className="mt-1 text-[10px] text-rose-600 dark:text-rose-400">{e.invalidReason}</div>}
                     </TableCell>
                     <TableCell className="hidden sm:table-cell text-xs">
@@ -602,7 +622,9 @@ export function BackupManagerTab() {
             <DialogTitle className="flex items-center gap-2">
               <FileJson className="size-4 text-emerald-600" /> تفاصيل الـ Manifest
             </DialogTitle>
-            <DialogDescription>حقول Manifest v2 — لا أسرار ولا هاشات كلمات مرور ولا مسارات داخلية.</DialogDescription>
+            <DialogDescription>
+              حقول الـ Manifest (v3 الحالي أو v2 إرث) — لا أسرار ولا هاشات كلمات مرور ولا مسارات داخلية.
+            </DialogDescription>
           </DialogHeader>
           {detailsLoading || !details ? (
             <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-500">
@@ -617,7 +639,15 @@ export function BackupManagerTab() {
                 <Kv k="createdBy (وصفية)" v={details.createdBy?.username || "—"} />
                 <Kv k="appVersion" v={details.appVersion} />
                 <Kv k="schemaVersion" v={details.schemaVersion} />
+                <Kv
+                  k="formatVersion"
+                  v={details.formatVersion === 3 ? "3 (canonical مضمّن)" : "2 (إرث — legacy)"}
+                />
                 <Kv k="verification.level" v={details.verification?.level ?? ""} />
+                <Kv
+                  k="verification.drillRuns"
+                  v={typeof details.verification?.drillRuns === "number" ? `${details.verification.drillRuns} تشغيل ناجح` : "—"}
+                />
                 <Kv k="integrityCheck" v={details.database?.integrityCheck ?? ""} />
                 <Kv k="database.bytes" v={fmtBytes(details.database?.bytes ?? 0)} />
                 <Kv k="journalModeAtBackup" v={details.database?.journalModeAtBackup ?? ""} />
@@ -637,12 +667,28 @@ export function BackupManagerTab() {
                   <Kv k="رفع أصلي (عرض)" v={details.uploadInfo.originalNameSanitized} />
                 )}
               </div>
+              {details.canonicalSchemaFingerprint && (
+                <div>
+                  <div className="mb-1 font-semibold text-slate-700 dark:text-slate-200">
+                    البصمة القاعدية الدلالية canonicalSchemaFingerprint (الحاكمة — 4A.1)
+                  </div>
+                  <div className="break-all rounded-md bg-slate-100 p-2 font-mono text-[10px] text-slate-700 dark:bg-slate-800 dark:text-slate-300" dir="ltr">
+                    {details.canonicalSchemaFingerprint}
+                  </div>
+                </div>
+              )}
               <div>
                 <div className="mb-1 font-semibold text-slate-700 dark:text-slate-200">SHA-256 لقاعدة البيانات (للتحقق الخارجي اليدوي)</div>
                 <div className="break-all rounded-md bg-slate-100 p-2 font-mono text-[10px] text-slate-700 dark:bg-slate-800 dark:text-slate-300" dir="ltr">
                   {details.database?.sha256}
                 </div>
               </div>
+              {details.formatVersion === 2 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  Manifest إرث (legacy v2، سابق 4A.1): بلا بصمة canonical مضمّنة — تُستخرج من database.db
+                  نفسها عند كل تحقق ويُعاد تصنيفه كما هو دون أي ترقية صامتة.
+                </div>
+              )}
               <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
                 {details.authenticity?.note}
               </div>

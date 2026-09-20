@@ -37,21 +37,25 @@ import {
   resolveBackupDir,
   resolveStagingDir,
   sanitizeDisplayName,
-  setCurrentSchemaFingerprint,
+  setCurrentSchemaIdentity,
 } from "@/lib/backup-config";
 import {
   buildManifest,
   collectCounts,
   collectDataRange,
   collectPeriodRange,
-  computeSchemaFingerprint,
   CURRENT_SCHEMA_LABEL,
+  manifestClassOf,
   parseManifest,
-  type BackupManifestV2,
+  type AnyBackupManifest,
   type VerificationLevel,
 } from "@/lib/backup-manifest";
+import {
+  canonicalSchemaFingerprint as computeCanonicalFingerprint,
+  physicalSchemaFingerprint as computePhysicalFingerprint,
+} from "@/lib/schema-fingerprint";
 import { inspectZipBuffer, readZipEntry, type ZipInspectFail } from "@/lib/zip-secure";
-import { appendRecoveryEvent } from "@/lib/recovery-log";
+import { appendRecoveryEvent, countRecoveryEvents } from "@/lib/recovery-log";
 import { writeAuditSafe } from "@/lib/audit";
 import { AUDIT_ACTIONS, AUDIT_ENTITY_TYPES } from "@/lib/audit-actions";
 
@@ -122,14 +126,19 @@ async function withOpLock<T>(fn: () => Promise<T>): Promise<T> {
 
 let lastCreateAt = 0;
 
-async function refreshCurrentSchemaFingerprint(): Promise<string> {
-  const fp = await computeSchemaFingerprint(liveDb);
-  setCurrentSchemaFingerprint(fp);
-  return fp;
+/**
+ * هوية المخطط الحية (4A.1): البصمة القاعدية الدلالية الحاكمة + الفيزيائية التشخيصية
+ * تُحتسبان من قاعدة التشغيل قبل كل عملية تحقق/Drill/إنشاء.
+ */
+async function refreshCurrentSchemaIdentity(): Promise<{ canonical: string; physical: string }> {
+  const canonical = await computeCanonicalFingerprint(liveDb);
+  const physical = await computePhysicalFingerprint(liveDb);
+  setCurrentSchemaIdentity({ canonical, physical });
+  return { canonical, physical };
 }
 
 function shortFp(fp: string): string {
-  return fp.replace("sha256:", "").slice(0, 12);
+  return fp.replace(/^(c)?sha256:/, "").slice(0, 12);
 }
 
 function assertSafeId(id: string): string {
@@ -158,7 +167,16 @@ export interface ValidationReport {
   level: VerificationLevel;
   checks: CheckResult[];
   warnings: string[];
-  schemaFingerprint?: string;
+  /** البصمة الفيزيائية المستخرجة من database.db نفسها (تشخيصية). */
+  physicalSchemaFingerprint?: string;
+  /** البصمة القاعدية الدلالية المستخرجة من database.db نفسها — الحاكمة (4A.1). */
+  canonicalSchemaFingerprint?: string;
+  /** صيغة الـ Manifest: 3 (canonical مضمّن) أو 2 (legacy). */
+  manifestFormat?: 2 | 3;
+  /** تصنيف الـ Manifest: v3 الحالي أو legacy-v2 الإرث (لا ترقية صامتة). */
+  manifestClass?: "v3" | "legacy-v2";
+  /** هل طابقت قيمة الـ Manifest المضمّنة المستخرجة من المحتوى؟ null = legacy v2 (لا قيمة مضمّنة). */
+  canonicalMatchesManifest?: boolean | null;
   durationMs: number;
 }
 
@@ -182,6 +200,10 @@ export interface BackupListEntry {
   appVersion: string;
   schemaVersion: string;
   schemaFingerprintShort: string;
+  /** صيغة الـ Manifest (4A.1) — 0 = بلا Manifest صالح. */
+  manifestFormat: 2 | 3 | 0;
+  /** البصمة القاعدية الدلالية المختصرة — فارغة لـ legacy v2 (تُستخرج وقت التحقق). */
+  canonicalFingerprintShort: string;
   level: VerificationLevel | "INVALID";
   invalidReason: string | null;
   sizeBytes: number;
@@ -231,6 +253,9 @@ function scanDirForEntries(dir: string, source: "local" | "upload"): BackupListE
       appVersion: manifest.manifest.appVersion,
       schemaVersion: manifest.manifest.schemaVersion,
       schemaFingerprintShort: shortFp(manifest.manifest.schemaFingerprint),
+      manifestFormat: manifest.manifest.formatVersion,
+      canonicalFingerprintShort:
+        manifest.manifest.formatVersion === 3 ? shortFp(manifest.manifest.canonicalSchemaFingerprint) : "",
       level: manifest.manifest.verification.level,
       invalidReason: null,
       sizeBytes,
@@ -246,7 +271,7 @@ function scanDirForEntries(dir: string, source: "local" | "upload"): BackupListE
   });
 }
 
-function hasManifest(manifestPath: string): { manifest: BackupManifestV2 } | null {
+function hasManifest(manifestPath: string): { manifest: AnyBackupManifest } | null {
   try {
     if (!existsSync(manifestPath)) return null;
     const raw = readFileSync(manifestPath, "utf8");
@@ -260,7 +285,7 @@ function hasManifest(manifestPath: string): { manifest: BackupManifestV2 } | nul
 function invalidEntry(
   id: string,
   source: "local" | "upload",
-  manifest: BackupManifestV2 | undefined,
+  manifest: AnyBackupManifest | undefined,
   code: string,
   message: string
 ): BackupListEntry {
@@ -273,6 +298,9 @@ function invalidEntry(
     appVersion: manifest?.appVersion ?? "",
     schemaVersion: manifest?.schemaVersion ?? "",
     schemaFingerprintShort: manifest ? shortFp(manifest.schemaFingerprint) : "",
+    manifestFormat: manifest?.formatVersion ?? 0,
+    canonicalFingerprintShort:
+      manifest?.formatVersion === 3 ? shortFp(manifest.canonicalSchemaFingerprint) : "",
     level: "INVALID",
     invalidReason: `${code}: ${message}`,
     sizeBytes: 0,
@@ -348,8 +376,9 @@ export async function createBackup(actor: ActorInfo): Promise<{
       if (integrityCheck !== "ok") {
         throw new BackupError("CORRUPT_DB", `integrity_check أعادت: ${integrityCheck}`);
       }
-      const schemaFingerprint = await computeSchemaFingerprint(tempClient);
-      setCurrentSchemaFingerprint(schemaFingerprint);
+      const canonicalFp = await computeCanonicalFingerprint(tempClient);
+      const physicalFp = await computePhysicalFingerprint(tempClient);
+      setCurrentSchemaIdentity({ canonical: canonicalFp, physical: physicalFp });
       const countsRes = await collectCounts(tempClient);
       if (!countsRes.ok) {
         throw new BackupError("MISSING_TABLES", countsRes.missingTable);
@@ -366,13 +395,14 @@ export async function createBackup(actor: ActorInfo): Promise<{
       // 3) SHA-256 + الحجم (بثّ — بلا تحميل كامل بالذاكرة)
       const { sha256, bytes } = await hashFileStream(dbTarget);
 
-      // 4) Manifest v2
+      // 4) Manifest v3 — يحمل البصمتين: الحاكمة canonical + التشخيصية physical
       const manifest = buildManifest({
         backupId,
         backupType: "manual",
         createdBy: { id: actor.id, username: actor.username },
         schemaVersion: CURRENT_SCHEMA_LABEL,
-        schemaFingerprint,
+        schemaFingerprint: physicalFp,
+        canonicalSchemaFingerprint: canonicalFp,
         database: {
           filename: "database.db",
           sha256,
@@ -517,7 +547,11 @@ interface ValidateArtifactArgs {
   operationId: string;
 }
 
-async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<ValidationReport> {
+/**
+ * خط التحقق المشترك — مُصدَّر لسكربتات إثبات 4A.1 (اختبارات التلاعب على نسخ
+ * مصطنعة خارج النسخ الرسمية). لا يكتب Audit/Recovery — المحاسبة على المستدعي.
+ */
+export async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<ValidationReport> {
   const { zipPath, actor, source, operationId } = args;
   const t0 = Date.now();
   const checks: CheckResult[] = [];
@@ -605,23 +639,52 @@ async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<Valid
     });
 
     const t6 = Date.now();
-    const fp = await computeSchemaFingerprint(tempClient);
-    const liveFp = await refreshCurrentSchemaFingerprint();
-    const classified = classifySchemaFingerprint(fp);
-    if (classified.schemaClass !== "current") {
+    // البصمتان تُستخرجان من database.db نفسها — لا ثقة بقيمة Manifest وحدها (قرار 4A.1)
+    const canonicalFp = await computeCanonicalFingerprint(tempClient);
+    const physicalFp = await computePhysicalFingerprint(tempClient);
+    const liveIdentity = await refreshCurrentSchemaIdentity();
+
+    // اتساق قيم الـ Manifest المضمنة مع المحتوى — فشل فوري عند أي تلاعب/اختلاف
+    const physicalMatchesManifest = embedded.schemaFingerprint === physicalFp;
+    const canonicalMatchesManifest =
+      embedded.formatVersion === 3 ? embedded.canonicalSchemaFingerprint === canonicalFp : null;
+    if (!physicalMatchesManifest || canonicalMatchesManifest === false) {
       throw new BackupError(
-        "SCHEMA_UNKNOWN",
-        "مخطط النسخة غير معروف/غير مطابق للمخطط الحالي — الرفض (يشمل الأحدث: لا downgrade)",
+        "MANIFEST_INCONSISTENT",
+        "قيمة بصمة المخطط في الـ Manifest لا تطابق ما استُخرج من database.db — رفض (لا ثقة بقيمة مكتوبة)",
         422,
-        { candidateFingerprint: shortFp(fp), currentFingerprint: shortFp(liveFp) }
+        {
+          manifestPhysical: shortFp(embedded.schemaFingerprint),
+          actualPhysical: shortFp(physicalFp),
+          ...(embedded.formatVersion === 3
+            ? { manifestCanonical: shortFp(embedded.canonicalSchemaFingerprint), actualCanonical: shortFp(canonicalFp) }
+            : {}),
+        }
       );
     }
     checks.push({
-      name: "تطابق مخطط النسخة مع الحالي",
+      name: "اتساق بصمات المخطط في الـ Manifest مع المحتوى",
+      code: "MANIFEST_CONSISTENT",
+      ok: true,
+      detail: embedded.formatVersion === 3 ? "canonical + physical" : "physical (legacy-v2)",
+    });
+
+    // قرار التوافق على البصمة القاعدية الدلالية حصرًا — لا الفيزيائية
+    const classified = classifySchemaFingerprint(canonicalFp);
+    if (classified.schemaClass !== "current") {
+      throw new BackupError(
+        "SCHEMA_UNKNOWN",
+        "المخطط الدلالي للنسخة غير معروف/غير مطابق للمخطط الحالي — الرفض (يشمل الأحدث: لا downgrade)",
+        422,
+        { candidateCanonical: shortFp(canonicalFp), currentCanonical: shortFp(liveIdentity.canonical) }
+      );
+    }
+    checks.push({
+      name: "تطابق المخطط الدلالي (canonical) مع الحالي",
       code: "SCHEMA_OK",
       ok: true,
       ms: Date.now() - t6,
-      detail: shortFp(fp),
+      detail: shortFp(canonicalFp),
     });
 
     // 6) اتساق الـ Manifest مع المحتوى الفعلي
@@ -650,14 +713,8 @@ async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<Valid
     }
 
     // 8) رفع المستوى (لا يهبط أبدًا بالتحقق؛ RESTORE_VERIFIED يبقى حتى إعادة تحقق ناجحة)
-    const updated: BackupManifestV2 = {
-      ...embedded,
-      verification: {
-        ...embedded.verification,
-        level: embedded.verification.level === "RESTORE_VERIFIED" ? "RESTORE_VERIFIED" : "VALIDATED",
-        validatedAt: new Date().toISOString(),
-      },
-    };
+    //    الصيغة تبقى كما هي: legacy v2 تبقى v2 بلا ترقية صامتة، وv3 تبقى v3.
+    const updated = withValidatedLevel(embedded);
     await rewriteManifestInZip(zipPath, updated);
     checks.push({ name: "تحديث مستوى التحقق", code: "LEVEL_SET", ok: true, detail: updated.verification.level });
 
@@ -668,7 +725,11 @@ async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<Valid
       level: updated.verification.level,
       checks,
       warnings,
-      schemaFingerprint: fp,
+      physicalSchemaFingerprint: physicalFp,
+      canonicalSchemaFingerprint: canonicalFp,
+      manifestFormat: embedded.formatVersion,
+      manifestClass: manifestClassOf(embedded),
+      canonicalMatchesManifest,
       durationMs: Date.now() - t0,
     };
   } finally {
@@ -686,8 +747,33 @@ function zipFailMsg(f: ZipInspectFail): string {
   return `${f.message}${withEntry}`;
 }
 
-/** إعادة كتابة manifest.json داخل الـ ZIP + الجانبي (ذرية tmp+rename). */
-async function rewriteManifestInZip(zipPath: string, manifest: BackupManifestV2): Promise<void> {
+/** رفع مستوى التحقق — الصيغة تبقى كما هي (2 تبقى 2، 3 تبقى 3 — لا ترقية صامتة). */
+function withValidatedLevel(m: AnyBackupManifest): AnyBackupManifest {
+  const nextLevel = m.verification.level === "RESTORE_VERIFIED" ? ("RESTORE_VERIFIED" as const) : ("VALIDATED" as const);
+  const verification = { ...m.verification, level: nextLevel, validatedAt: new Date().toISOString() };
+  if (m.formatVersion === 3) return { ...m, verification };
+  return { ...m, verification };
+}
+
+/**
+ * توثيق Drill ناجح على الـ Manifest — نفس الصيغة بلا ترقية.
+ * drillRuns يزداد مع كل نجاح — كي لا يُقرأ تشغيلان مستقلان كحدث واحد
+ * (مع operationId المستقل لكل تشغيل — ملاحظة المستخدم في 4A.1).
+ */
+function withDrillVerified(m: AnyBackupManifest, operationId: string): AnyBackupManifest {
+  const verification = {
+    ...m.verification,
+    level: "RESTORE_VERIFIED" as const,
+    drillAt: new Date().toISOString(),
+    drillOperationId: operationId,
+    drillRuns: (m.verification.drillRuns ?? 0) + 1,
+  };
+  if (m.formatVersion === 3) return { ...m, verification };
+  return { ...m, verification };
+}
+
+/** إعادة كتابة manifest.json داخل الـ ZIP + الجانبي (ذرية tmp+rename) — الصيغة كما هي. */
+async function rewriteManifestInZip(zipPath: string, manifest: AnyBackupManifest): Promise<void> {
   const zip = await JSZip.loadAsync(readFileSync(zipPath));
   zip.file("manifest.json", JSON.stringify(manifest, null, 2));
   const out = await zip.generateAsync({
@@ -772,13 +858,20 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
     let tempClient: PrismaClient | null = null;
     const ws = ensurePrivateDir(path.join(resolveStagingDir(), `drill-${opId}`));
 
+    // رقم تشغيل مستقل لكل Drill — تشغيلان لنفس النسخة لا يبدآن كحدثين مكررين
+    // (operationId مميز لكل تشغيل + sequence في details — ملاحظة المستخدم 4A.1)
+    const priorDrills = await countRecoveryEvents("DRILL_STARTED", id);
+    const drillRunSequence = priorDrills + 1;
     await appendRecoveryEvent({
       operationId: opId,
       event: "DRILL_STARTED",
       actor,
       backupId: id,
       result: "info",
-      details: { target: "temp-isolated-db" },
+      details: {
+        target: "temp-isolated-db",
+        drillRun: { sequence: drillRunSequence, startedAt: new Date().toISOString() },
+      },
     });
 
     try {
@@ -844,16 +937,36 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
         throw new BackupError("CORRUPT_DB", `integrity_check: ${integ[0]?.integrity_check}`);
       }
       await probe.$disconnect();
-      const candidateFp = await (async () => {
+      const candidateCanonical = await (async () => {
         const c = tempClientFor(extractedPath);
         try {
-          return await computeSchemaFingerprint(c);
+          return await computeCanonicalFingerprint(c);
         } finally {
           await c.$disconnect();
         }
       })();
-      const liveFp = await refreshCurrentSchemaFingerprint();
-      const classified = classifySchemaFingerprint(candidateFp);
+      const candidatePhysical = await (async () => {
+        const c = tempClientFor(extractedPath);
+        try {
+          return await computePhysicalFingerprint(c);
+        } finally {
+          await c.$disconnect();
+        }
+      })();
+      // اتساق بصمات الـ Manifest مع محتوى النسخة — قبل أي قرار قبول (لا ثقة بقيمة مكتوبة)
+      const physicalMatchesManifest = manifest.schemaFingerprint === candidatePhysical;
+      const canonicalMatchesManifest =
+        manifest.formatVersion === 3 ? manifest.canonicalSchemaFingerprint === candidateCanonical : null;
+      if (!physicalMatchesManifest || canonicalMatchesManifest === false) {
+        throw new BackupError(
+          "MANIFEST_INCONSISTENT",
+          "بصمة المخطط في الـ Manifest لا تطابق محتوى database.db داخل الحزمة",
+          422
+        );
+      }
+      const liveIdentity = await refreshCurrentSchemaIdentity();
+      // قرار التوافق على البصمة القاعدية الدلالية حصرًا (4A.1)
+      const classified = classifySchemaFingerprint(candidateCanonical);
       if (classified.schemaClass === "older-known") {
         // 4B: تطبيق تسلسل migrations على المؤقتة فقط — غير مفعّل في 4A
         throw new BackupError("SCHEMA_MIGRATION_UNAVAILABLE", "ترحيل المخططات الأقدم يعتمد في 4B (مؤقتة فقط)");
@@ -861,17 +974,17 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
       if (classified.schemaClass !== "current") {
         throw new BackupError(
           "SCHEMA_UNKNOWN",
-          "مخطط غير معروف — رفض (يشمل الأحدث من التطبيق: لا downgrade)",
+          "المخطط الدلالي غير معروف — رفض (يشمل الأحدث من التطبيق: لا downgrade)",
           422,
-          { candidateFingerprint: shortFp(candidateFp), currentFingerprint: shortFp(liveFp) }
+          { candidateCanonical: shortFp(candidateCanonical), currentCanonical: shortFp(liveIdentity.canonical) }
         );
       }
       steps.push({
-        name: "توافق المخطط (بلا ترحيل — مطابق للحالي)",
+        name: "توافق المخطط الدلالي canonical (بلا ترحيل — مطابق للحالي)",
         code: "SCHEMA_OK",
         ok: true,
         ms: Date.now() - t,
-        detail: shortFp(candidateFp),
+        detail: `${shortFp(candidateCanonical)} · physical: ${shortFp(candidatePhysical)} (تشخيصي)`,
       });
 
       // 5) integrity_check على DB مؤقتة عاملة
@@ -942,16 +1055,8 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
       }
       steps.push({ name: "فحوص sanity أعمال", code: "SANITY_OK", ok: true, ms: Date.now() - t, detail: oddStatuses.length === 0 ? "لا حالات شاذة" : "تحذيرات" });
 
-      // 9) النتيجة: RESTORE_VERIFIED
-      const updated: BackupManifestV2 = {
-        ...manifest,
-        verification: {
-          ...manifest.verification,
-          level: "RESTORE_VERIFIED",
-          drillAt: new Date().toISOString(),
-          drillOperationId: opId,
-        },
-      };
+      // 9) النتيجة: RESTORE_VERIFIED — drillRuns يزداد مع كل تشغيل ناجح
+      const updated = withDrillVerified(manifest, opId);
       await rewriteManifestInZip(artifact.zipPath, updated);
 
       const report: DrillReport = {
@@ -965,7 +1070,11 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
         warnings,
         countsMatched,
         periodRangeMatched,
-        schemaFingerprint: candidateFp,
+        physicalSchemaFingerprint: candidatePhysical,
+        canonicalSchemaFingerprint: candidateCanonical,
+        manifestFormat: manifest.formatVersion,
+        manifestClass: manifestClassOf(manifest),
+        canonicalMatchesManifest,
         durationMs: Date.now() - t0,
       };
 
@@ -981,7 +1090,12 @@ export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise
         actor,
         backupId: manifest.backupId,
         result: "success",
-        details: { durationMs: report.durationMs, counts: countsRes.counts, level: "RESTORE_VERIFIED" },
+        details: {
+          durationMs: report.durationMs,
+          counts: countsRes.counts,
+          level: "RESTORE_VERIFIED",
+          drillRun: { sequence: drillRunSequence, operationId: opId },
+        },
       });
       await writeAuditSafe({
         user: { id: actor.id, username: actor.username },
@@ -1114,9 +1228,9 @@ export async function uploadBackupZip(
       writePrivateFileAtomic(
         zipPath.replace(/\.zip$/, ".manifest.json"),
         JSON.stringify(
-          (manifest as BackupManifestV2).backupType === "upload"
+          (manifest as AnyBackupManifest).backupType === "upload"
             ? manifest
-            : { ...(manifest as BackupManifestV2), backupType: "upload" as const },
+            : { ...(manifest as AnyBackupManifest), backupType: "upload" as const },
           null,
           2
         )
@@ -1134,7 +1248,7 @@ export async function uploadBackupZip(
       const sidecarPath = zipPath.replace(/\.zip$/, ".manifest.json");
       const current = hasManifest(sidecarPath)?.manifest;
       if (current) {
-        const enriched: BackupManifestV2 = {
+        const enriched: AnyBackupManifest = {
           ...current,
           uploadInfo: {
             originalNameSanitized: displayName,
@@ -1211,7 +1325,7 @@ interface Artifact {
   id: string;
   source: "local" | "upload";
   zipPath: string;
-  manifest: BackupManifestV2;
+  manifest: AnyBackupManifest;
   sizeBytes: number;
 }
 
@@ -1238,7 +1352,7 @@ function findArtifact(id: string): Artifact | null {
 }
 
 export function getBackupDetails(id: string): {
-  manifest: BackupManifestV2;
+  manifest: AnyBackupManifest;
   source: "local" | "upload";
   sizeBytes: number;
   zipExists: boolean;

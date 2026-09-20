@@ -33,6 +33,21 @@ export function maxLevel(a: VerificationLevel, b: VerificationLevel): Verificati
 
 export type BackupType = "manual" | "pre-restore" | "replaced" | "upload";
 
+/* ── Manifest v3 (4A.1): إضافة البصمة القاعدية الدلالية — بلا كسر v2 ──
+ *
+ * قرار الصيغة: formatVersion 3 لإضافة canonicalSchemaFingerprint حقل إلزامي
+ * جديد، مع بقاء كل حقول v2 كما هي (schemaFingerprint = البصمة الفيزيائية
+ * بنفس دلالتها القديمة) — فلا يتطابق manifestان بدلالات مختلفة تحت رقم واحد.
+ *
+ * التوافق مع النسخ الموجودة (formatVersion 2) — التعامل الموثق:
+ *  - القارئ الحالي يقبل 2 و3 معًا (لا كسر صامت إطلاقًا).
+ *  - نسخ v2 تُصنف "legacy-v2" في القائمة والتقارير وتبقى صالحة للتحقق/الDrill.
+ *  - البصمة القاعدية للنسخ v2 تُستخرج من database.db نفسها أثناء التحقق
+ *    (لا تُؤخذ من الـ Manifest أصلًا — القاعدة العامة: لا ثقة بقيمة مكتوبة
+ *    دون مقابلتها بالمحتوى)، فلا تحتاج إعادة كتابة ولا ترقية صامتة.
+ *  - لا تُرقى نسخ v2 إلى v3 إطلاقًا — تبقى كما هي (روح append-only)،
+ *    والتحديث الوحيد المسموح يبقى حقول verification كما في 4A.
+ */
 export interface BackupManifestV2 {
   formatVersion: 2;
   backupId: string;
@@ -42,6 +57,7 @@ export interface BackupManifestV2 {
   createdBy: { id: string | null; username: string };
   appVersion: string;
   schemaVersion: string;
+  /** البصمة الفيزيائية (sqlite_master) — منذ 4A.1 تشخيصية فقط. */
   schemaFingerprint: string;
   database: {
     filename: "database.db";
@@ -66,6 +82,13 @@ export interface BackupManifestV2 {
     validatedAt: string | null;
     drillAt: string | null;
     drillOperationId?: string | null;
+    /**
+     * 4A.1 — عدد تشغيلات Drill الناجحة التراكمية على هذه النسخة.
+     * مع drillOperationId (آخر تشغيل) وأحداث DRILL_STARTED/VERIFIED ذات
+     * operationId المستقل لكل تشغيل — لا يُقرأ تشغيلان كحدث واحد مكرر.
+     * حقل اختياري إضافي — نسخ v2 القديمة بلا الحقل تبقى صالحة (توافق).
+     */
+    drillRuns?: number;
   };
   /** حقول الرفع — تُضاف فقط للنسخ المرفوعة (source=upload). */
   uploadInfo?: {
@@ -83,7 +106,31 @@ export interface BackupManifestV2 {
   };
 }
 
-export const MANIFEST_FORMAT_VERSION = 2;
+export const MANIFEST_FORMAT_VERSION = 3;
+/** الإصدارات المقبولة قراءةً — v2 التاريخية لا تُكسر أبدًا (قرار 4A.1). */
+export const SUPPORTED_MANIFEST_FORMAT_VERSIONS = [2, 3] as const;
+
+export interface BackupManifestV3 extends Omit<BackupManifestV2, "formatVersion"> {
+  formatVersion: 3;
+  /** البصمة الحاكمة — من metadata دلالية مرتبة (canonical-v1). بادئة csha256:. */
+  canonicalSchemaFingerprint: string;
+}
+
+export type AnyBackupManifest = BackupManifestV2 | BackupManifestV3;
+
+export function manifestFormatVersion(m: AnyBackupManifest): 2 | 3 {
+  return m.formatVersion === 3 ? 3 : 2;
+}
+
+/** تصنيف الـ Manifest للتشخيص والعرض: الحالي v3 أم إرث v2. */
+export type ManifestClass = "v3" | "legacy-v2";
+export function manifestClassOf(m: AnyBackupManifest): ManifestClass {
+  return manifestFormatVersion(m) === 3 ? "v3" : "legacy-v2";
+}
+
+export const LEGACY_MANIFEST_NOTE =
+  "Manifest من صيغة v2 (سابق 4A.1): بلا canonicalSchemaFingerprint — يُستخرج " +
+  "من database.db نفسها عند كل تحقق، ويبقى التصنيف legacy-v2 دون أي ترقية صامتة.";
 
 export const AUTHENTICITY_NOTE =
   "سلامة فقط لا أصالة: SHA-256 يكتشف فساد database.db لكنه لا يوقّع هذا الملف؛ " +
@@ -96,21 +143,15 @@ export type CountsKey = (typeof REQUIRED_TABLE_COUNTS)[number];
 /* ──────────────────────────────────────────────────────────────────────── */
 
 /**
- * بصمة المخطط: جرد (type, name, sql) من sqlite_master مع استثناء
+ * بصمة المخطط (الفيزيائية): جرد (type, name, sql) من sqlite_master مع استثناء
  * _prisma_migrations (كي لا تتغير البصمة بعد اعتماد migrations) وجداول
  * sqlite الداخلية. تجزئة SHA-256 على تمثيل قياسي.
+ *
+ * ⚠️ منذ 4A.1: هذه تشخيصية فقط — القرار الحاكم هو canonicalSchemaFingerprint
+ * (من src/lib/schema-fingerprint.ts) المبنية من metadata دلالية مرتبة لا
+ * تتأثر بترتيب الأعمدة الفيزيائي.
  */
-export async function computeSchemaFingerprint(client: PrismaClient): Promise<string> {
-  const rows = await client.$queryRawUnsafe<{ type: string; name: string; sql: string }[]>(
-    `SELECT type, name, sql FROM sqlite_master
-     WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name != '_prisma_migrations'
-     ORDER BY type, name`
-  );
-  const canon = rows
-    .map((r) => `${r.type}|${r.name}|${(r.sql ?? "").replace(/\s+/g, " ").trim()}`)
-    .join("\n");
-  return "sha256:" + createHash("sha256").update(canon).digest("hex");
-}
+export { computeSchemaFingerprint } from "@/lib/schema-fingerprint";
 
 export function configFingerprint(): string {
   // بصمة إعدادات غير سرية فقط — لا أسرار تمر من هنا إطلاقًا
@@ -162,13 +203,16 @@ export function buildManifest(input: {
   backupType: BackupType;
   createdBy: { id: string | null; username: string };
   schemaVersion: string;
+  /** البصمة الفيزيائية (تشخيصية). */
   schemaFingerprint: string;
+  /** البصمة القاعدية الدلالية الحاكمة — إلزامية في v3. */
+  canonicalSchemaFingerprint: string;
   database: BackupManifestV2["database"];
   counts: BackupManifestV2["counts"];
   periodRange: BackupManifestV2["periodRange"];
   dataRange: BackupManifestV2["dataRange"];
   level: VerificationLevel;
-}): BackupManifestV2 {
+}): BackupManifestV3 {
   return {
     formatVersion: MANIFEST_FORMAT_VERSION,
     backupId: input.backupId,
@@ -178,6 +222,7 @@ export function buildManifest(input: {
     appVersion: appVersion(),
     schemaVersion: input.schemaVersion,
     schemaFingerprint: input.schemaFingerprint,
+    canonicalSchemaFingerprint: input.canonicalSchemaFingerprint,
     database: input.database,
     counts: input.counts,
     periodRange: input.periodRange,
@@ -191,17 +236,24 @@ export function buildManifest(input: {
   };
 }
 
-/** تحقق شكلي صارم — لا ثقة بأي Manifest قبل اجتيازه. */
-export function isManifestShape(x: unknown): x is BackupManifestV2 {
+/**
+ * تحقق شكلي صارم — لا ثقة بأي Manifest قبل اجتيازه.
+ * يقبل formatVersion 2 و3 (توافق legacy موثق — لا كسر صامت للنسخ القائمة).
+ */
+export function isManifestShape(x: unknown): x is AnyBackupManifest {
   if (!x || typeof x !== "object") return false;
   const m = x as Record<string, unknown>;
-  if (m.formatVersion !== MANIFEST_FORMAT_VERSION) return false;
+  if (m.formatVersion !== 2 && m.formatVersion !== 3) return false;
   if (typeof m.backupId !== "string" || m.backupId.length === 0) return false;
   if (typeof m.backupType !== "string") return false;
   if (typeof m.createdAt !== "string") return false;
   if (typeof m.appVersion !== "string") return false;
   if (typeof m.schemaVersion !== "string") return false;
   if (typeof m.schemaFingerprint !== "string" || !m.schemaFingerprint.startsWith("sha256:")) return false;
+  if (m.formatVersion === 3) {
+    if (typeof m.canonicalSchemaFingerprint !== "string") return false;
+    if (!m.canonicalSchemaFingerprint.startsWith("csha256:")) return false;
+  }
   const db = m.database as Record<string, unknown> | undefined;
   if (!db || db.filename !== "database.db") return false;
   if (typeof db.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(db.sha256)) return false;
@@ -215,7 +267,7 @@ export function isManifestShape(x: unknown): x is BackupManifestV2 {
   return true;
 }
 
-export function parseManifest(json: string): BackupManifestV2 | null {
+export function parseManifest(json: string): AnyBackupManifest | null {
   try {
     const obj = JSON.parse(json);
     if (isManifestShape(obj)) return obj;
