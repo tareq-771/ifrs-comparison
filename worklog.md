@@ -464,3 +464,27 @@ Work Log:
 Stage Summary:
 - **بوابة 4B.1 اجتازت بالكامل**: 71/71 معزول (تشغيلان مستقلان) + 59/59 حماية مسارات + 20/20 حجب سلوكي أثناء DRAINING + 13/13 انحدار إنتاج — النجاح معرّف بالتسلسل الحرفي: Candidate verified→Pre-Restore RESTORE_VERIFIED→Drain→Disconnect→Atomic Swap→Post-Verification→Epoch Increment→NORMAL، وفشل ما بعد swap: Rollback→Post-Verify→Epoch→NORMAL، وفشل التراجع: RECOVERY_REQUIRED قفل كامل بلا reset تلقائي — Crash recovery مثبت بعملية قتل SIGKIL حقيقية وإقلاع جديد (ليس exception داخل نفس العملية) — كل أحداث كل عملية بoperationId واحد في السجل الخارجي الحاكم — الأدلة: var/test/4b1/run-20260920T125457/evidence.json
 - **التوقف هنا: 4B.2 (تفعيل المحرك على التشغيل + اختبار الاستعادة الكامل A/B) بانتظار تسجيل البوابة ثم التنفيذ حسب الموافقة الممنوحة**
+
+---
+Task ID: 4B.2 (Phase 4B.2 — اختبار الاستعادة الإنتاجية الكامل A/B عبر API الحقيقي)
+Agent: main (Z.ai Code)
+Task: بعد إثبات اجتياز بوابة 4B.1 (71/71 × تشغيلين، التزام bfbbb73): تفعيل محرك الاستعادة على التشغيل بموافقة المستخدم وتنفيذ Full Production Recovery Test كاملًا عبر API/محرك الاستعادة الحقيقي على المنفذ 3000 — منعًا قاطعًا لأي استبدال يدوي لملفات DB — ثم التقريران والتوقف قبل Deployment/Server Hardening
+
+Work Log:
+- مراجعة كود جلسة سابقة غير ملتزم (احتوت جزءًا من 4B.1): تدقيق كامل مقابل المواصفات ثم اعتماد
+- تفعيل 4B.2: RESTORE_ENGINE_ENABLED=1 في .env (خارج Git) + إعادة تشغيل خادم dev (double-fork detached ليعبر حدود الأوامر) — /api/system/status: NORMAL + epoch متاح + restoreEngineEnabled=true
+- الجرد الساكن للحراس: 59 معالجًا (34 كتابة/17 قراءة/8 معفاة موثقة) كلها محمية — EXIT=0
+- المصفوفة التدميرية المعزولة: تشغيلان مستقلان كاملان 71/71 (run-20260920T122448 + run-20260920T125457) — 18 سيناريو + الفحص السلوكي 20/20 كتابة محجوبة أثناء DRAINING + crash SIGKIL حقيقي وإقلاع عملية جديدة ⇒ RECOVERY_REQUIRED (restart ≠ نجاح) + epoch fail-safe (تالف/overflow/مفقود) + استرداد المشغّل الموثق
+- انحدار الإنتاج خلال 4B.1: 13/13 عبر HTTP (المحرك كان معطلًا: 409 RESTORE_ENGINE_DISABLED)
+- 4B.2 التشغيل الأول (13:10): الخادم رفض Restore A لغياب التأكيد الثاني (RESTORE_REJECTED: SECOND_CONFIRMATION_REQUIRED · productionUntouched=true) — إثبات حي أن التأكيد الخادمي لا يُتجاوز
+- 4B.2 التشغيل الثاني (13:16): Restore A اكتملت فعلًا (op-…-1w94ng، تسلسل كامل، epoch 1→2) ثم انقطع السكربت عند طباعة النتيجة (خطأ تسمية outA=rA.body بدل outA=rA — خلل سكربت لا محرك) — نُظفت الآثار شرعيًا عبر API (حذف Dataset A المستعادة = إثبات إضافي أن القاعدة المستعادة تقبل الكتابة)
+- إصلاح السكربت: اشتقاق التأكيد الثاني من restore-preview مثل الواجهة + قراءة شكل استجابة recovery-log {events} + حفظ abortReason في الأدلة
+- 4B.2 التشغيل النظيف الكامل (13:18:25→13:20:33): **27/27 ناجحًا** — Safety Backup bk-…-u39yib → Dataset A (مجموعة+تقرير موسوم) → Backup A bk-…-6zfx0v RESTORE_VERIFIED → حذف شرعي → Dataset B (تقريران موسومان) → Backup B bk-…-xv4puf RESTORE_VERIFIED → جلسة JWT مستقلة من B → **Restore A: op-restore-20260920T132027Z-78ap6a · pre-restore bk-…-elz5sj · COMPLETED 2.3s** → الإنتاج = A حرفيًا → جلسة B القديمة ميتة (epoch 2→3) → السجل الخارجي كامل (11 حدثًا بعملية واحدة) → NORMAL → **Restore B: op-restore-20260920T132030Z-h0yo6s · pre-restore bk-…-m8p4sv · COMPLETED 2.1s** → الإنتاج = B حرفيًا → epoch 3→4 → NORMAL → تنظيف شرعي (صفر تقارير) → integrity_check ok
+- التحقق البصري E2E (Agent Browser): دخول → /admin → تبويب التدقيق يعرض «سجل التدقيق التطبيقي (Application Audit Trail)» مع الملاحظة الرقابية الصريحة أن أحداث الاستعادة الحاكمية في Recovery Operations Log الخارجي (لأن AuditLog يرجع تاريخيًا مع القاعدة) → تبويب النسخ يعرض السجل الخارجي بoperationIds عمليتي 4B.2 (24 حدثًا) والنسختين pre-restore بشارة Manifest v3 والبصمة c:bffa026102bc → حوار الاستعادة (معاينة مقارنة + RESTORE + تأكيد ثانٍ) فُتح وأُلغي دون تنفيذ → صفر أخطاء console → جوال 390×844 سليم وتذييل ملتصق طبيعيًا
+- التقريران: docs/phase4b1-report.md + docs/phase4b2-report.md
+- لم يُعدَّل: accounts.ts، matching engine، Workflow، أي schema — لا Deployment ولا Server Hardening
+
+Stage Summary:
+- **بوابة 4B.1: اجتازت** (71/71 ×2 + 59/59 حراس + 13/13 انحدار) — التزام bfbbb73
+- **بوابة 4B.2: اجتازت** (27/27): استعادتان إنتاجيتان حقيقيتان عبر المحرك (A ثم العودة لـ B) بكل التسلسل الحرفي: Candidate verified → Pre-Restore RESTORE_VERIFIED → Drain → Disconnect → Atomic Swap → Post-Verification → Epoch Increment → NORMAL — إبطال JWT القديمة موثق (epoch 2→3→4) — بقاء السجل الخارجي الحاكم كاملًا رغم رجوع DB تاريخيًا — تنظيف شرعي — integrity ok — الحالة النهائية: NORMAL · epoch=4 · المحرك مفعّل (RESTORE_ENGINE_ENABLED=1 في .env)
+- **توقف كامل: لا Deployment / لا Server Hardening — بانتظار مراجعة المستخدم**
