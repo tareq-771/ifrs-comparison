@@ -25,7 +25,9 @@ function authError(error: unknown) {
 }
 
 const ASSIGNABLE_STATUSES = [WORKFLOW_STATUS.DRAFT, WORKFLOW_STATUS.RETURNED, WORKFLOW_STATUS.REOPENED];
-const MID_CYCLE_REVIEWER_STATUSES = [WORKFLOW_STATUS.SUBMITTED, WORKFLOW_STATUS.UNDER_REVIEW];
+// المرحلة 3.5: الدورة الجارية تشمل PENDING_APPROVAL — دور المراجع/المعتمد فيه يُستبدل ولا يُفرّغ
+// (استبدال المراجع بعد التوقيع يبطل التوقيع ويعيد إلى SUBMITTED — لا يُحتمل أن يبدو الجديد هو الموقّع)
+const MID_CYCLE_REVIEWER_STATUSES = [WORKFLOW_STATUS.SUBMITTED, WORKFLOW_STATUS.UNDER_REVIEW, WORKFLOW_STATUS.PENDING_APPROVAL];
 const MAX_REASON_LEN = 2000;
 
 interface AssignmentChange {
@@ -47,9 +49,10 @@ interface AssignmentChange {
  *      · APPROVED: لا إسناد إطلاقًا — إعادة الفتح (REOPEN) أولًا.
  *  - أهلية الهدف: مستخدم موجود وactive (ASSIGNMENT_TARGET_INVALID).
  *  - SoD: الثلاثية الناتجة يجب أن تكون مختلفة (SEGREGATION_VIOLATION).
- *  - استبدال المراجع بعد بدء المراجعة (reviewedAt موجودة): تُمسح reviewedAt/reviewedByName
- *    وتعود الحالة إلى SUBMITTED — لا يُحتمل أن يبدو المراجع الجديد هو من راجع سابقًا
- *    (تعديل المستخدم رقم 7) — المراجعة تبدأ من جديد بيد المراجع الجديد.
+ *  - استبدال المراجع بعد بدء المراجعة (reviewStartedAt موجودة): تُمسح reviewStartedAt/reviewedAt
+ *    وتعود الحالة إلى SUBMITTED — لا يُحتمل أن يبدو المراجع الجديد هو من راجع/وقّع سابقًا
+ *    (تعديل المستخدم رقم 7 + قرار 3.5) — المراجعة تبدأ من جديد بيد المراجع الجديد.
+ *    الاستبدال في PENDING_APPROVAL يبطل توقيع المراجع نفسه ويعيد إلى SUBMITTED.
  *  - ذرية: التحديث المشروط بـ {id, version, status} + WorkflowHistory + AuditLog في معاملة واحدة،
  *    وversion يزداد 1 مع أي تغيير إسناد (قرار D-6).
  */
@@ -216,7 +219,7 @@ export async function PUT(
     /* ── استبدال المراجع بعد بدء المراجعة: تصفير المراجعة + عودة إلى SUBMITTED ── */
     const reviewerChanging =
       requested.some((r) => r.role === "reviewed" && r.value !== existing.reviewedById);
-    const reviewWasStarted = !!existing.reviewedAt;
+    const reviewWasStarted = !!existing.reviewStartedAt || !!existing.reviewedAt;
     const resetReview = reviewerChanging && reviewWasStarted;
 
     const data: Record<string, unknown> = {};
@@ -242,8 +245,14 @@ export async function PUT(
     }
     if (resetReview) {
       // لا يُحتمل أن يبدو المراجع الجديد هو من راجع سابقًا — المراجعة تبدأ من جديد
+      // المرحلة 3.5: يُمسح بدء المراجعة (reviewStartedAt) وإتمامها (reviewedAt) معًا
+      data.reviewStartedAt = null;
       data.reviewedAt = null;
       if (fromStatus === WORKFLOW_STATUS.UNDER_REVIEW) {
+        data.status = WORKFLOW_STATUS.SUBMITTED;
+      }
+      // المرحلة 3.5: استبدال المراجع في PENDING_APPROVAL يبطل التوقيع ويعيد إلى SUBMITTED
+      if (fromStatus === WORKFLOW_STATUS.PENDING_APPROVAL) {
         data.status = WORKFLOW_STATUS.SUBMITTED;
       }
     }

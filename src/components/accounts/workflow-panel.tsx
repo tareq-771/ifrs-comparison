@@ -7,7 +7,7 @@
 import * as React from "react";
 import {
   Send, Eye, Undo2, CheckCircle2, RotateCcw, PencilLine, Users, History, Loader2,
-  ShieldAlert, Info,
+  ShieldAlert, Info, ClipboardCheck, CalendarClock,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -42,18 +42,22 @@ export function WorkflowPanel({
   version,
   onAction,
   onAssign,
+  onDueDate,
 }: {
   workflow: WorkflowInfo;
   reportId: string;
   version: number;
   onAction: WorkflowActionHandler;
   onAssign: (updates: { preparedById?: string | null; reviewedById?: string | null; approvedById?: string | null; reason?: string }, version: number) => Promise<boolean>;
+  /** المرحلة 3.5 — حوكمة تاريخ الاستحقاق (assignWorkflow) — PATCH /api/reports/[id]/due-date */
+  onDueDate?: (dueDate: string | null, version: number) => Promise<boolean>;
 }) {
   const [busy, setBusy] = React.useState<string | null>(null);
   const [reasonDialog, setReasonDialog] = React.useState<"RETURN" | "REOPEN" | null>(null);
   const [confirmAction, setConfirmAction] = React.useState<WorkflowAction | null>(null);
   const [assignmentOpen, setAssignmentOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [dueDateOpen, setDueDateOpen] = React.useState(false);
   const a = workflow.myActions;
 
   async function run(action: WorkflowAction, payload?: { reason?: string; comment?: string }) {
@@ -85,7 +89,20 @@ export function WorkflowPanel({
             نهاية الفترة المالية: <span dir="ltr">{workflow.periodEnd}</span>
           </Badge>
         )}
+        {/* المرحلة 3.5 — تاريخ الاستحقاق (حقل رقابي): عرض + حوكمة عبر assignWorkflow */}
+        {workflow.dueDate && (
+          <Badge variant="outline" className="gap-1 border-slate-300 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300">
+            <CalendarClock className="size-3" />
+            الاستحقاق: <span dir="ltr">{workflow.dueDate}</span>
+          </Badge>
+        )}
         <div className="ms-auto flex items-center gap-1.5">
+          {a.canAssign && onDueDate && workflow.status !== "APPROVED" && (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => setDueDateOpen(true)}>
+              <CalendarClock className="size-3.5" />
+              {workflow.dueDate ? "تغيير الاستحقاق" : "ضبط الاستحقاق"}
+            </Button>
+          )}
           {a.canAssign && (
             <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => setAssignmentOpen(true)}>
               <Users className="size-3.5" /> تغيير الإسناد
@@ -100,7 +117,7 @@ export function WorkflowPanel({
       {/* المشاركون */}
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
         <ParticipantCard role="prepared" info={workflow.preparedBy} />
-        <ParticipantCard role="reviewed" info={workflow.reviewedBy} />
+        <ParticipantCard role="reviewed" info={workflow.reviewedBy} reviewStartedAt={workflow.reviewStartedAt} />
         <ParticipantCard role="approved" info={workflow.approvedBy} />
       </div>
 
@@ -145,11 +162,18 @@ export function WorkflowPanel({
             بدء المراجعة
           </Button>
         )}
+        {a.canCompleteReview && (
+          <Button size="sm" className="h-9 gap-1.5 bg-rose-600 text-white hover:bg-rose-700" disabled={busy !== null}
+            onClick={() => setConfirmAction("COMPLETE_REVIEW")}>
+            {busy === "COMPLETE_REVIEW" ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
+            إتمام المراجعة (توقيع المراجع)
+          </Button>
+        )}
         {a.canReturn && (
           <Button size="sm" variant="outline" className="h-9 gap-1.5 border-orange-300 text-orange-700 hover:bg-orange-50 dark:border-orange-900/60 dark:text-orange-400 dark:hover:bg-orange-950/30"
             disabled={busy !== null} onClick={() => setReasonDialog("RETURN")}>
             <Undo2 className="size-4" />
-            إرجاع للتصحيح
+            {workflow.status === "PENDING_APPROVAL" ? "إرجاع قبل الاعتماد" : "إرجاع للتصحيح"}
           </Button>
         )}
         {a.canApprove && (
@@ -166,7 +190,7 @@ export function WorkflowPanel({
             إعادة فتح
           </Button>
         )}
-        {!a.canEdit && !a.canSubmit && !a.canStartReview && !a.canReturn && !a.canApprove && !a.canReopen && !a.canResume && (
+        {!a.canEdit && !a.canSubmit && !a.canStartReview && !a.canCompleteReview && !a.canReturn && !a.canApprove && !a.canReopen && !a.canResume && (
           <p className="text-xs text-slate-400 dark:text-slate-500">
             لا توجد إجراءات متاحة لك في الحالة الحالية — القراءة فقط.
           </p>
@@ -177,6 +201,7 @@ export function WorkflowPanel({
       <ReasonDialog
         open={reasonDialog === "RETURN"}
         mode="RETURN"
+        fromPendingApproval={workflow.status === "PENDING_APPROVAL"}
         busy={busy === "RETURN"}
         onOpenChange={(o) => !o && setReasonDialog(null)}
         onConfirm={(reason) => run("RETURN", { reason })}
@@ -209,14 +234,23 @@ export function WorkflowPanel({
         onOpenChange={setHistoryOpen}
         reportId={reportId}
       />
+      {onDueDate && (
+        <DueDateDialog
+          open={dueDateOpen}
+          onOpenChange={setDueDateOpen}
+          current={workflow.dueDate}
+          version={version}
+          onConfirm={onDueDate}
+        />
+      )}
     </div>
   );
 }
 
 /* ── بطاقة مشارك ── */
-function ParticipantCard({ role, info }: { role: "prepared" | "reviewed" | "approved"; info: { name: string; at: string | null } | null }) {
+function ParticipantCard({ role, info, reviewStartedAt }: { role: "prepared" | "reviewed" | "approved"; info: { name: string; at: string | null } | null; reviewStartedAt?: string | null }) {
   const labels: Record<string, string> = { prepared: "المعدّ", reviewed: "المراجع", approved: "المعتمد" };
-  const atLabels: Record<string, string> = { prepared: "تاريخ الإعداد", reviewed: "تاريخ المراجعة", approved: "تاريخ الاعتماد" };
+  const atLabels: Record<string, string> = { prepared: "تاريخ الإعداد", reviewed: "تاريخ إتمام المراجعة (التوقيع)", approved: "تاريخ الاعتماد" };
   return (
     <div className="rounded-lg border border-slate-150 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/40">
       <div className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">{labels[role]}</div>
@@ -226,19 +260,26 @@ function ParticipantCard({ role, info }: { role: "prepared" | "reviewed" | "appr
       <div className="text-[10px] text-slate-400 dark:text-slate-500">
         {atLabels[role]}: {info?.at ? fmtWorkflowDateTime(info.at) : "—"}
       </div>
+      {role === "reviewed" && (
+        <div className="text-[10px] text-slate-400 dark:text-slate-500">
+          تاريخ بدء المراجعة: {reviewStartedAt ? fmtWorkflowDateTime(reviewStartedAt) : "—"}
+        </div>
+      )}
     </div>
   );
 }
 
 /* ── حوار السبب الإلزامي (RETURN / REOPEN) ── */
 function ReasonDialog({
-  open, mode, busy, onOpenChange, onConfirm,
+  open, mode, busy, onOpenChange, onConfirm, fromPendingApproval,
 }: {
   open: boolean;
   mode: "RETURN" | "REOPEN";
   busy: boolean;
   onOpenChange: (o: boolean) => void;
   onConfirm: (reason: string) => Promise<boolean>;
+  /** المرحلة 3.5 — الإرجاع من PENDING_APPROVAL بيد المعتمد */
+  fromPendingApproval?: boolean;
 }) {
   const [reason, setReason] = React.useState("");
   const [err, setErr] = React.useState("");
@@ -251,7 +292,9 @@ function ReasonDialog({
           <DialogTitle>{isReturn ? "إرجاع التقرير للتصحيح" : "إعادة فتح التقرير المعتمد"}</DialogTitle>
           <DialogDescription>
             {isReturn
-              ? "سيُعاد التقرير إلى المعدّ للتصحيح — السبب إلزامي ويُحفظ في السجل الرقابي وسجل الدورات."
+              ? fromPendingApproval
+                ? "التقرير بانتظار الاعتماد — الإرجاع بيد المعتمد بسبب إلزامي ويعيد الكرة إلى المعدّ لتمر بالدورة من جديد (توقيع المراجع يُوثق في السجل وتبدأ مراجعة جديدة عند إعادة الإرسال)."
+                : "سيُعاد التقرير إلى المعدّ للتصحيح — السبب إلزامي ويُحفظ في السجل الرقابي وسجل الدورات."
               : "إعادة الفتح تبدأ دورة اعتماد جديدة (تزداد الدورة 1) — السبب إلزامي ويُحفظ مع أرشفة الاعتماد السابق كاملًا."}
           </DialogDescription>
         </DialogHeader>
@@ -308,13 +351,19 @@ function ConfirmActionDialog({
     },
     START_REVIEW: {
       title: "بدء مراجعة التقرير",
-      desc: "ستبدأ المراجعة الرسمية ويُثبت تاريخ بدئها. بعدها يمكنك إما الاعتماد أو الإرجاع بسبب.",
+      desc: "ستبدأ المراجعة الرسمية ويُثبت تاريخ بدئها. بعدها يمكنك إما إتمام المراجعة والتوقيع أو الإرجاع بسبب.",
       confirm: "بدء المراجعة",
       cls: "bg-violet-600 text-white hover:bg-violet-700",
     },
+    COMPLETE_REVIEW: {
+      title: "إتمام المراجعة (توقيع المراجع)",
+      desc: `سيتوقّع المراجع اكتمال المراجعة وينتقل التقرير إلى «بانتظار الاعتماد» — تصبح بيانات المطابقة مقفولة نهائيًا وتنتقل المسؤولية إلى المعتمد${workflow.approvedBy?.name ? ` «${workflow.approvedBy.name}»` : ""} الذي يعتمد أو يُرجع بسبب.`,
+      confirm: "توقيع وإتمام المراجعة",
+      cls: "bg-rose-600 text-white hover:bg-rose-700",
+    },
     APPROVE: {
       title: "اعتماد التقرير",
-      desc: `الاعتماد النهائي للدورة ${workflow.cycle} — سيُقفل التقرير كليًا ولا يمكن تعديله إلا عبر إعادة فتح بصلاحية خاصة وسبب موثّق.`,
+      desc: `الاعتماد النهائي للدورة ${workflow.cycle} بعد توقيع المراجع — سيُقفل التقرير كليًا ولا يمكن تعديله إلا عبر إعادة فتح بصلاحية خاصة وسبب موثّق.`,
       confirm: "اعتماد نهائي",
       cls: "bg-emerald-600 text-white hover:bg-emerald-700",
     },
@@ -569,6 +618,75 @@ export function WorkflowHistoryDialog({ open, onOpenChange, reportId }: { open: 
             ))}
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/*  حوار حوكمة تاريخ الاستحقاق (المرحلة 3.5 — قرار D-1)                       */
+/*  يظهر لحائز assignWorkflow فقط — المسار PATCH /api/reports/[id]/due-date   */
+/* ═══════════════════════════════════════════════════════════════════════ */
+function DueDateDialog({
+  open, onOpenChange, current, version, onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  current: string | null;
+  version: number;
+  onConfirm: (dueDate: string | null, version: number) => Promise<boolean>;
+}) {
+  const [value, setValue] = React.useState<string>("");
+  const [err, setErr] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => { if (open) { setValue(current ?? ""); setErr(""); } }, [open, current]);
+
+  async function save() {
+    setErr("");
+    const next = value.trim() === "" ? null : value.trim();
+    if (next === current) { setErr("لا يوجد تغيير في تاريخ الاستحقاق."); return; }
+    setBusy(true);
+    try {
+      const ok = await onConfirm(next, version);
+      if (ok) onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>حوكمة تاريخ الاستحقاق</DialogTitle>
+          <DialogDescription>
+            حقل رقابي — تغييره يتطلب صلاحية خاصة ويسجّل في السجل الرقابي (DUE_DATE_CHANGED)
+            مع القيمة القديمة والجديدة ورقم الدورة. الصيغة YYYY-MM-DD.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+            تاريخ الاستحقاق
+          </Label>
+          <Input
+            type="date"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setErr(""); }}
+            className="w-full sm:w-56"
+            dir="ltr"
+          />
+          <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+            اتركه فارغًا لإزالة الاستحقاق («غير محدد») — التقرير بلا استحقاق لا يدخل في المتأخرة أبدًا.
+          </p>
+          {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>إلغاء</Button>
+          <Button onClick={save} disabled={busy} className="bg-slate-700 text-white hover:bg-slate-800">
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <CalendarClock className="size-4" />}
+            حفظ الاستحقاق
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

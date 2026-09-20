@@ -33,13 +33,21 @@ function actorInfo(id: string | null, name: string, at: Date | string | null | u
 /** بناء snapshot الأدوار لحظة حدث — يُخزن في WorkflowHistory.roleSnapshot (JSON صغير). */
 export function buildRoleSnapshot(report: {
   preparedById: string | null; preparedByName: string; preparedAt: Date | null;
-  reviewedById: string | null; reviewedByName: string; reviewedAt: Date | null;
+  reviewedById: string | null; reviewedByName: string; reviewStartedAt: Date | null; reviewedAt: Date | null;
   approvedById: string | null; approvedByName: string; approvedAt: Date | null;
 }): string {
   return JSON.stringify({
     preparedBy: actorInfo(report.preparedById, report.preparedByName, report.preparedAt),
+    // المرحلة 3.5: بدء المراجعة (reviewStartedAt) منفصل عن إتمامها (reviewedAt = توقيع المراجع)
     reviewedBy: report.reviewedById
-      ? actorInfo(report.reviewedById, report.reviewedByName, report.reviewedAt)
+      ? {
+          ...actorInfo(
+            report.reviewedById,
+            report.reviewedByName,
+            report.reviewedAt
+          ),
+          reviewStartedAt: report.reviewStartedAt ? report.reviewStartedAt.toISOString() : null,
+        }
       : null,
     approvedBy: report.approvedById
       ? actorInfo(report.approvedById, report.approvedByName, report.approvedAt)
@@ -119,8 +127,10 @@ export async function buildWorkflowInfo(
   statusLabel: string;
   cycle: number;
   periodEnd: string | null;
+  dueDate: string | null;
   preparedBy: ActorInfo | null;
   reviewedBy: ActorInfo | null;
+  reviewStartedAt: string | null;
   approvedBy: ActorInfo | null;
   returned: { by: string; byName: string; at: string | null; reason: string } | null;
   reopened: { by: string; byName: string; at: string | null; reason: string } | null;
@@ -149,6 +159,7 @@ export async function buildWorkflowInfo(
     preparedById: report.preparedById,
     reviewedById: report.reviewedById,
     approvedById: report.approvedById,
+    reviewStartedAt: report.reviewStartedAt,
     reviewedAt: report.reviewedAt,
     preparedByName: report.preparedByName,
     preparedAt: report.preparedAt,
@@ -164,6 +175,7 @@ export async function buildWorkflowInfo(
     reopenedAt: report.reopenedAt,
     reopenReason: report.reopenReason,
     periodEnd: report.periodEnd,
+    dueDate: report.dueDate,
   };
 
   const linked = Array.isArray(user.permissions.groupIds) ? user.permissions.groupIds : [];
@@ -189,12 +201,14 @@ export async function buildWorkflowInfo(
     statusLabel: WORKFLOW_STATUS_LABELS[report.status as keyof typeof WORKFLOW_STATUS_LABELS] ?? report.status,
     cycle: report.cycle,
     periodEnd: report.periodEnd ?? null,
+    dueDate: report.dueDate ?? null,
     preparedBy: report.preparedById
       ? actorInfo(report.preparedById, report.preparedByName, report.preparedAt)
       : null,
     reviewedBy: report.reviewedById
       ? actorInfo(report.reviewedById, report.reviewedByName, report.reviewedAt)
       : null,
+    reviewStartedAt: report.reviewStartedAt ? report.reviewStartedAt.toISOString() : null,
     approvedBy: report.approvedById
       ? actorInfo(report.approvedById, report.approvedByName, report.approvedAt)
       : null,

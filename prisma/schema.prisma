@@ -92,9 +92,15 @@ model Report {
   // السجل التاريخي الكامل للدورات في WorkflowHistory (append-only).
   // بلا FK علاقات مع User عمدًا (نفس مبرر AuditLog): حذف المستخدم لا يمس الأدوار
   // الرقابية، والأسماء محفوظة كـ snapshot في حقول *ByName.
-  status          String    @default("DRAFT")   // DRAFT | SUBMITTED | UNDER_REVIEW | RETURNED | APPROVED | REOPENED
+  // المرحلة 3.5: +PENDING_APPROVAL — DRAFT→SUBMITTED→UNDER_REVIEW→PENDING_APPROVAL→APPROVED
+  status          String    @default("DRAFT")   // DRAFT | SUBMITTED | UNDER_REVIEW | PENDING_APPROVAL | RETURNED | APPROVED | REOPENED
   periodEnd       String?                       // نهاية الفترة المالية — نص date-only "YYYY-MM-DD" (بلا انزياح timezone)
   cycle           Int       @default(1)         // رقم دورة الاعتماد الحالية (يزيد 1 مع كل REOPEN فقط)
+
+  // المرحلة 3.5 — تاريخ استحقاق المطابقة (حقل رقابي контролد:
+  // يُضبط عند الإنشاء/عبر مسار الحوكمة assignWorkflow فقط — لا عبر تعديل المعدّ المعتاد).
+  // نص date-only "YYYY-MM-DD" — null = «غير محدد» ولا يُختلق له تاريخ إطلاقًا.
+  dueDate         String?
 
   preparedById    String?                       // المعدّ (يُثبت عند الإنشاء/الإسناد)
   preparedByName  String    @default("")        // snapshot للاسم
@@ -102,7 +108,11 @@ model Report {
 
   reviewedById    String?                       // المراجع (معيّن قبل SUBMIT)
   reviewedByName  String    @default("")
-  reviewedAt      DateTime?                     // تاريخ بدء المراجعة (يُثبت عند START_REVIEW)
+  // المرحلة 3.5 — فصل دلالتي البدء والإتمام (لا تغيير دلالة صامت):
+  //   reviewStartedAt = وقت START_REVIEW  (مهاجرة من reviewedAt القديم بدلالة «البدء»)
+  //   reviewedAt      = وقت COMPLETE_REVIEW (توقيع المراجع وانتقال إلى PENDING_APPROVAL)
+  reviewStartedAt DateTime?                     // تاريخ بدء المراجعة (يُثبت عند START_REVIEW)
+  reviewedAt      DateTime?                     // تاريخ إتمام المراجعة/توقيع المراجع (يُثبت عند COMPLETE_REVIEW)
 
   approvedById    String?                       // المعتمد
   approvedByName  String    @default("")
@@ -129,6 +139,12 @@ model Report {
   @@index([preparedById])
   @@index([reviewedById])
   @@index([approvedById])
+  // فهارس لوحة المتابعة (المرحلة 3.5) — تُدقّق مقابل Query Plans فعلية وقد تُقلّص بعد القياس
+  @@index([periodEnd])
+  @@index([dueDate])
+  @@index([updatedAt])
+  @@index([cycle])
+  @@index([groupId, status])
 }
 
 // ── Workflow History (append-only) ──

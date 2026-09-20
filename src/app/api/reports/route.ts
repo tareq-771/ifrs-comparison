@@ -4,7 +4,8 @@ import { db } from "@/lib/db";
 import { requireAuth } from "@/lib/session";
 import { AUDIT_ACTIONS, AUDIT_ENTITY_TYPES } from "@/lib/audit-actions";
 import { writeAudit, getClientIp, reportBlobSizes } from "@/lib/audit";
-import { normalizePeriodEndStrict, WORKFLOW_STATUS } from "@/lib/workflow";
+import { normalizeDueDateStrict, normalizePeriodEndStrict, WORKFLOW_STATUS } from "@/lib/workflow";
+import { canAssignWorkflow } from "@/lib/permissions";
 import { buildRoleSnapshot, buildWorkflowInfo, writeWorkflowHistory } from "@/lib/workflow-server";
 import { WORKFLOW_HISTORY_ACTION } from "@/lib/workflow";
 
@@ -155,6 +156,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // المرحلة 3.5 (قرار D-1): dueDate حقل رقابي — يُضبط عند الإنشاء فقط لمن يملك
+    // صلاحية الحوكمة (assignWorkflow)؛ المعدّ لا يضبطه لاحقًا لمجرد امتلاكه edit.
+    let dueDate: string | null | undefined = undefined;
+    if (body.dueDate !== undefined) {
+      const dd = normalizeDueDateStrict(body.dueDate);
+      if (dd.invalid) {
+        return NextResponse.json(
+          { error: "تاريخ استحقاق المطابقة غير صحيح — الصيغة المطلوبة YYYY-MM-DD.", code: "DUE_DATE_INVALID" },
+          { status: 400 }
+        );
+      }
+      // قيمة صريحة (تاريخ أو إفراغ) تتطلب الصلاحية — غياب الحقل تمامًا مسموح للجميع
+      if (dd.value !== undefined && !canAssignWorkflow(user.permissions, user.role)) {
+        return NextResponse.json(
+          {
+            error: "ضبط تاريخ الاستحقاق حقل رقابي — يتطلب صلاحية assignWorkflow لا تملكها.",
+            code: "DUE_DATE_FORBIDDEN",
+          },
+          { status: 403 }
+        );
+      }
+      dueDate = dd.value;
+    }
+
     // إنشاء التقرير + إسناد المنشئ كمعدّ تلقائيًا + صف CREATED في سجل الدورات
     // + تسجيل الأثر الرقابي — كل ذلك في نفس المعاملة (ذرية كاملة)
     const report = await db.$transaction(async (tx) => {
@@ -184,6 +209,7 @@ export async function POST(req: NextRequest) {
           status: WORKFLOW_STATUS.DRAFT,
           cycle: 1,
           periodEnd: pe.value ?? null,
+          ...(dueDate !== undefined ? { dueDate } : {}),
           // المنشئ يصبح المعد تلقائيًا — preparedAt يُثبت عند أول SUBMIT (اكتمال الإعداد)
           preparedById: user.id,
           preparedByName: user.name || user.username,
@@ -212,6 +238,7 @@ export async function POST(req: NextRequest) {
           numMonths: created.numMonths,
           groupId: created.groupId,
           periodEnd: created.periodEnd,
+          dueDate: created.dueDate,
           status: created.status,
           preparedBy: created.preparedByName,
         },

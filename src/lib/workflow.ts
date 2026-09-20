@@ -10,6 +10,7 @@ export const WORKFLOW_STATUS = {
   DRAFT: "DRAFT",
   SUBMITTED: "SUBMITTED",
   UNDER_REVIEW: "UNDER_REVIEW",
+  PENDING_APPROVAL: "PENDING_APPROVAL", // المرحلة 3.5: المراجع أتمّ المراجعة — الكرة مع المعتمد
   RETURNED: "RETURNED",
   APPROVED: "APPROVED",
   REOPENED: "REOPENED",
@@ -21,6 +22,7 @@ export const WORKFLOW_STATUS_LABELS: Record<WorkflowStatus, string> = {
   DRAFT: "مسودة",
   SUBMITTED: "مُرسَل للمراجعة",
   UNDER_REVIEW: "تحت المراجعة",
+  PENDING_APPROVAL: "بانتظار الاعتماد",
   RETURNED: "مُرجَع للتصحيح",
   APPROVED: "معتمد",
   REOPENED: "مُعاد فتحه",
@@ -31,6 +33,7 @@ export const WORKFLOW_STATUS_BADGE_CLASS: Record<WorkflowStatus, string> = {
   DRAFT: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
   SUBMITTED: "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400",
   UNDER_REVIEW: "bg-violet-100 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300",
+  PENDING_APPROVAL: "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
   RETURNED: "bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-400",
   APPROVED: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400",
   REOPENED: "bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300",
@@ -77,6 +80,7 @@ export type WorkflowErrorCode =
 export const WORKFLOW_ACTION = {
   SUBMIT: "SUBMIT",
   START_REVIEW: "START_REVIEW",
+  COMPLETE_REVIEW: "COMPLETE_REVIEW", // المرحلة 3.5: توقيع المراجع UNDER_REVIEW → PENDING_APPROVAL
   RETURN: "RETURN",
   APPROVE: "APPROVE",
   REOPEN: "REOPEN",
@@ -91,6 +95,7 @@ export const WORKFLOW_HISTORY_ACTION = {
   SUBMITTED: "SUBMITTED",
   RESUBMITTED: "RESUBMITTED",
   REVIEW_STARTED: "REVIEW_STARTED",
+  REVIEW_COMPLETED: "REVIEW_COMPLETED", // المرحلة 3.5: توقيع المراجع (snapshot لحظة التوقيع)
   RETURNED: "RETURNED",
   APPROVED: "APPROVED",
   REOPENED: "REOPENED",
@@ -106,6 +111,7 @@ export const WORKFLOW_HISTORY_ACTION_LABELS: Record<WorkflowHistoryAction, strin
   SUBMITTED: "إرسال للمراجعة",
   RESUBMITTED: "إعادة إرسال بعد التصحيح",
   REVIEW_STARTED: "بدء المراجعة",
+  REVIEW_COMPLETED: "إتمام المراجعة وتوقيع المراجع",
   RETURNED: "إرجاع للتصحيح",
   APPROVED: "اعتماد",
   REOPENED: "إعادة فتح",
@@ -121,6 +127,12 @@ export const WORKFLOW_HISTORY_ACTION_LABELS: Record<WorkflowHistoryAction, strin
  * الانتقالات المسموحة: من الحالة → الإجراء → الحالة الهدف.
  * SUBMIT يتطلب مراجعًا معيّنًا (يفحصه الخادم قبل التنفيذ).
  * RETURN و REOPEN يتطلبان سببًا إلزاميًا (يفحصه الخادم).
+ *
+ * المرحلة 3.5 (قرار D-4/D-5):
+ *  - UNDER_REVIEW + COMPLETE_REVIEW (المراجع) → PENDING_APPROVAL — توقيع مراجع مستقل قبل الاعتماد.
+ *  - APPROVE لا يعمل إلا من PENDING_APPROVAL (المعتمد) — لا اعتماد مباشر من UNDER_REVIEW.
+ *  - RETURN من UNDER_REVIEW (المراجع) أو من PENDING_APPROVAL (المعتمد، سبب إلزامي) —
+ *    الإرجاع يعيد الكرة إلى المعدّ في الحالتين ثم تمر بالدورة من جديد.
  */
 export const TRANSITIONS: Record<WorkflowStatus, Partial<Record<WorkflowAction, WorkflowStatus>>> = {
   [WORKFLOW_STATUS.DRAFT]: {
@@ -130,8 +142,12 @@ export const TRANSITIONS: Record<WorkflowStatus, Partial<Record<WorkflowAction, 
     [WORKFLOW_ACTION.START_REVIEW]: WORKFLOW_STATUS.UNDER_REVIEW,
   },
   [WORKFLOW_STATUS.UNDER_REVIEW]: {
+    [WORKFLOW_ACTION.COMPLETE_REVIEW]: WORKFLOW_STATUS.PENDING_APPROVAL,
     [WORKFLOW_ACTION.RETURN]: WORKFLOW_STATUS.RETURNED,
+  },
+  [WORKFLOW_STATUS.PENDING_APPROVAL]: {
     [WORKFLOW_ACTION.APPROVE]: WORKFLOW_STATUS.APPROVED,
+    [WORKFLOW_ACTION.RETURN]: WORKFLOW_STATUS.RETURNED,
   },
   [WORKFLOW_STATUS.RETURNED]: {
     [WORKFLOW_ACTION.RESUME_EDIT]: WORKFLOW_STATUS.DRAFT,
@@ -143,6 +159,54 @@ export const TRANSITIONS: Record<WorkflowStatus, Partial<Record<WorkflowAction, 
     [WORKFLOW_ACTION.RESUME_EDIT]: WORKFLOW_STATUS.DRAFT,
   },
 };
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  المسؤولية الحالية — القاعدة الخادمية الواحدة (المرحلة 3.5)              */
+/* ──────────────────────────────────────────────────────────────────── */
+
+/**
+ * «على من الكرة الآن» — قاعدة خادمية واحدة تُستخدم في Dashboard والفلاتر والواجهة.
+ * تعيد الدور المسؤول عن الإجراء الإنجازي المطلوب الآن (لا صلاحية إدارية):
+ *   DRAFT / RETURNED / REOPENED → المعدّ (preparedById)
+ *   SUBMITTED / UNDER_REVIEW    → المراجع (reviewedById)
+ *   PENDING_APPROVAL            → المعتمد (approvedById)
+ *   APPROVED                    → لا أحد — مقفول (REOPEN سلطة رقابية لا «مسؤولية إنجاز»)
+ */
+export const OWNER_ROLE = {
+  PREPARER: "PREPARER",
+  REVIEWER: "REVIEWER",
+  APPROVER: "APPROVER",
+  NONE: "NONE",
+} as const;
+
+export type OwnerRole = (typeof OWNER_ROLE)[keyof typeof OWNER_ROLE];
+
+export const OWNER_ROLE_LABELS: Record<OwnerRole, string> = {
+  PREPARER: "المعدّ",
+  REVIEWER: "المراجع",
+  APPROVER: "المعتمد",
+  NONE: "مقفول — مكتملة",
+};
+
+/** دالة خادمية نقية: الدور المسؤول حسب الحالة — المصدر الواحد للوحة والفلاتر. */
+export function deriveOwnerRole(status: string): OwnerRole {
+  switch (status) {
+    case WORKFLOW_STATUS.DRAFT:
+    case WORKFLOW_STATUS.RETURNED:
+    case WORKFLOW_STATUS.REOPENED:
+      return OWNER_ROLE.PREPARER;
+    case WORKFLOW_STATUS.SUBMITTED:
+    case WORKFLOW_STATUS.UNDER_REVIEW:
+      return OWNER_ROLE.REVIEWER;
+    case WORKFLOW_STATUS.PENDING_APPROVAL:
+      return OWNER_ROLE.APPROVER;
+    case WORKFLOW_STATUS.APPROVED:
+      return OWNER_ROLE.NONE;
+    default:
+      // حالة غير معروفة (دفاعي) — تعامل كغير محددة
+      return OWNER_ROLE.NONE;
+  }
+}
 
 /** الحالة الهدف للانتقال، أو null إذا كان الانتقال ممنوعًا (قفزة مباشرة). */
 export function transitionTarget(from: string, action: WorkflowAction): WorkflowStatus | null {
@@ -228,6 +292,12 @@ export function normalizePeriodEndStrict(v: unknown): { value: string | null | u
   return { value: undefined, invalid: true }; // غير صالح
 }
 
+/**
+ * المرحلة 3.5 — تطابق dueDate قادم من العميل (نفس قواعد date-only تمامًا).
+ * مُسمّى صراحة لقرار D-1: dueDate حقل رقابي مستقل — يُضبط عبر مسارات الحوكمة فقط.
+ */
+export const normalizeDueDateStrict = normalizePeriodEndStrict;
+
 /* ──────────────────────────────────────────────────────────────────────── */
 /*  حساب الإجراءات المسموحة للمستخدم الحالي (myActions)                       */
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -238,7 +308,8 @@ export interface WorkflowReportSnapshot {
   preparedById: string | null;
   reviewedById: string | null;
   approvedById: string | null;
-  reviewedAt: string | Date | null;
+  reviewStartedAt?: string | Date | null; // المرحلة 3.5 — وقت START_REVIEW
+  reviewedAt: string | Date | null;       // المرحلة 3.5 — وقت COMPLETE_REVIEW (توقيع المراجع)
   // للعرض فقط
   preparedByName?: string;
   preparedAt?: string | Date | null;
@@ -254,6 +325,7 @@ export interface WorkflowReportSnapshot {
   reopenedAt?: string | Date | null;
   reopenReason?: string;
   periodEnd?: string | null;
+  dueDate?: string | null;                // المرحلة 3.5 — حقل رقابي
 }
 
 export interface WorkflowUserContext {
@@ -276,6 +348,7 @@ export interface WorkflowMyActions {
   canEdit: boolean;
   canSubmit: boolean;
   canStartReview: boolean;
+  canCompleteReview: boolean; // المرحلة 3.5 — توقيع المراجع (UNDER_REVIEW → PENDING_APPROVAL)
   canReturn: boolean;
   canApprove: boolean;
   canReopen: boolean;
@@ -292,6 +365,8 @@ export interface WorkflowMyActions {
  *  - المدير لا يتجاوز SoD ولا قفل APPROVED ولا يصبح تلقائيًا مراجعًا/معتمدًا؛
  *    صلاحياته الإدارية: الإسناد + REOPEN + القراءة + الإدارة.
  *  - REVIEW/APPROVE تتطلب إسنادًا فعليًا حتى للمدير.
+ *  - المرحلة 3.5: canCompleteReview للمراجع في UNDER_REVIEW؛ canApprove للمعتمد
+ *    في PENDING_APPROVAL فقط (توقيع المراجع شرط ضمني — الانتقال لا يمر إلا بها).
  */
 export function computeMyActions(
   report: WorkflowReportSnapshot,
@@ -324,11 +399,11 @@ export function computeMyActions(
     canEdit,
     canSubmit: isPreparer && status === WORKFLOW_STATUS.DRAFT && !!report.reviewedById,
     canStartReview: isReviewer && status === WORKFLOW_STATUS.SUBMITTED,
-    canReturn: isReviewer && status === WORKFLOW_STATUS.UNDER_REVIEW,
-    canApprove:
-      isApprover &&
-      status === WORKFLOW_STATUS.UNDER_REVIEW &&
-      !!report.reviewedAt, // المراجعة بدأت بصورة صحيحة
+    canCompleteReview: isReviewer && status === WORKFLOW_STATUS.UNDER_REVIEW,
+    canReturn:
+      (isReviewer && status === WORKFLOW_STATUS.UNDER_REVIEW) ||
+      (isApprover && status === WORKFLOW_STATUS.PENDING_APPROVAL),
+    canApprove: isApprover && status === WORKFLOW_STATUS.PENDING_APPROVAL,
     canReopen: canReopenPerm && status === WORKFLOW_STATUS.APPROVED,
     canResume: isPreparer && (status === WORKFLOW_STATUS.RETURNED || status === WORKFLOW_STATUS.REOPENED),
     canAssign,
@@ -352,8 +427,10 @@ export interface WorkflowInfo {
   statusLabel: string;
   cycle: number;
   periodEnd: string | null;
+  dueDate: string | null;                 // المرحلة 3.5 — حقل رقابي (عرض + حوكمة عبر مسار assignWorkflow)
   preparedBy: WorkflowActorInfo | null;
-  reviewedBy: WorkflowActorInfo | null;
+  reviewedBy: WorkflowActorInfo | null;   // at = وقت إتمام المراجعة (توقيع المراجع)
+  reviewStartedAt: string | null;         // المرحلة 3.5 — وقت بدء المراجعة
   approvedBy: WorkflowActorInfo | null;
   returned: { by: string; byName: string; at: string | null; reason: string } | null;
   reopened: { by: string; byName: string; at: string | null; reason: string } | null;

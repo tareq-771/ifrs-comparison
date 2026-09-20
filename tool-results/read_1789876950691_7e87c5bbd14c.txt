@@ -1,0 +1,576 @@
+     1→"use client";
+     2→
+     3→// لوحة الحوكمة (Workflow) للتقرير المفتوح — المرحلة 3.
+     4→// كل الأزرار تُبنى من workflow.myActions القادمة من الخادم حصرًا —
+     5→// الواجهة تعرض ما يسمح به الخادم فقط (لا منطق صلاحيات محلي).
+     6→
+     7→import * as React from "react";
+     8→import {
+     9→  Send, Eye, Undo2, CheckCircle2, RotateCcw, PencilLine, Users, History, Loader2,
+    10→  ShieldAlert, Info,
+    11→} from "lucide-react";
+    12→
+    13→import { Button } from "@/components/ui/button";
+    14→import { Badge } from "@/components/ui/badge";
+    15→import { Textarea } from "@/components/ui/textarea";
+    16→import { Label } from "@/components/ui/label";
+    17→import { Input } from "@/components/ui/input";
+    18→import { Alert, AlertDescription } from "@/components/ui/alert";
+    19→import {
+    20→  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    21→} from "@/components/ui/dialog";
+    22→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+    23→import { cn } from "@/lib/utils";
+    24→import {
+    25→  WORKFLOW_STATUS_BADGE_CLASS, WORKFLOW_STATUS_LABELS, WORKFLOW_HISTORY_ACTION_LABELS,
+    26→  fmtWorkflowDateTime, workflowRoleLabel,
+    27→  type WorkflowInfo, type WorkflowAction, type WorkflowHistoryRow, type AssignmentCandidate,
+    28→} from "@/lib/workflow";
+    29→
+    30→export type WorkflowActionHandler = (
+    31→  action: WorkflowAction,
+    32→  payload: { reason?: string; comment?: string }
+    33→) => Promise<boolean>;
+    34→
+    35→/* ═══════════════════════════════════════════════════════════════════════ */
+    36→/*  اللوحة الرئيسية                                                          */
+    37→/* ═══════════════════════════════════════════════════════════════════════ */
+    38→
+    39→export function WorkflowPanel({
+    40→  workflow,
+    41→  reportId,
+    42→  version,
+    43→  onAction,
+    44→  onAssign,
+    45→}: {
+    46→  workflow: WorkflowInfo;
+    47→  reportId: string;
+    48→  version: number;
+    49→  onAction: WorkflowActionHandler;
+    50→  onAssign: (updates: { preparedById?: string | null; reviewedById?: string | null; approvedById?: string | null; reason?: string }, version: number) => Promise<boolean>;
+    51→}) {
+    52→  const [busy, setBusy] = React.useState<string | null>(null);
+    53→  const [reasonDialog, setReasonDialog] = React.useState<"RETURN" | "REOPEN" | null>(null);
+    54→  const [confirmAction, setConfirmAction] = React.useState<WorkflowAction | null>(null);
+    55→  const [assignmentOpen, setAssignmentOpen] = React.useState(false);
+    56→  const [historyOpen, setHistoryOpen] = React.useState(false);
+    57→  const a = workflow.myActions;
+    58→
+    59→  async function run(action: WorkflowAction, payload?: { reason?: string; comment?: string }) {
+    60→    setBusy(action);
+    61→    try {
+    62→      const ok = await onAction(action, payload ?? {});
+    63→      if (ok) setConfirmAction(null);
+    64→      return ok;
+    65→    } finally {
+    66→      setBusy(null);
+    67→    }
+    68→  }
+    69→
+    70→  const statusKey = (workflow.status as keyof typeof WORKFLOW_STATUS_BADGE_CLASS) || "DRAFT";
+    71→
+    72→  return (
+    73→    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
+    74→      {/* الرأس: الحالة + الدورة + الفترة */}
+    75→      <div className="flex flex-wrap items-center gap-2">
+    76→        <span className="text-sm font-bold text-slate-700 dark:text-slate-200">دورة الاعتماد:</span>
+    77→        <Badge className={cn("border-transparent px-2.5 text-xs font-bold", WORKFLOW_STATUS_BADGE_CLASS[statusKey] ?? WORKFLOW_STATUS_BADGE_CLASS.DRAFT)}>
+    78→          {workflow.statusLabel}
+    79→        </Badge>
+    80→        <Badge variant="outline" className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+    81→          الدورة <span dir="ltr">{workflow.cycle}</span>
+    82→        </Badge>
+    83→        {workflow.periodEnd && (
+    84→          <Badge variant="outline" className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+    85→            نهاية الفترة المالية: <span dir="ltr">{workflow.periodEnd}</span>
+    86→          </Badge>
+    87→        )}
+    88→        <div className="ms-auto flex items-center gap-1.5">
+    89→          {a.canAssign && (
+    90→            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => setAssignmentOpen(true)}>
+    91→              <Users className="size-3.5" /> تغيير الإسناد
+    92→            </Button>
+    93→          )}
+    94→          <Button size="sm" variant="ghost" className="h-8 gap-1.5 text-xs text-slate-500 dark:text-slate-400" onClick={() => setHistoryOpen(true)}>
+    95→            <History className="size-3.5" /> سجل الدورات
+    96→          </Button>
+    97→        </div>
+    98→      </div>
+    99→
+   100→      {/* المشاركون */}
+   101→      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+   102→        <ParticipantCard role="prepared" info={workflow.preparedBy} />
+   103→        <ParticipantCard role="reviewed" info={workflow.reviewedBy} />
+   104→        <ParticipantCard role="approved" info={workflow.approvedBy} />
+   105→      </div>
+   106→
+   107→      {/* أسباب الإرجاع / إعادة الفتح (إرشاد للدورة الحالية) */}
+   108→      {workflow.returned?.reason && (
+   109→        <Alert className="mt-3 border-orange-200 bg-orange-50/70 text-orange-800 dark:border-orange-900/60 dark:bg-orange-950/30 dark:text-orange-300">
+   110→          <ShieldAlert className="size-4" />
+   111→          <AlertDescription className="text-xs leading-relaxed">
+   112→            <strong>أُرجع للتصحيح بواسطة {workflow.returned.byName || "المراجع"} ({fmtWorkflowDateTime(workflow.returned.at)}):</strong> {workflow.returned.reason}
+   113→          </AlertDescription>
+   114→        </Alert>
+   115→      )}
+   116→      {workflow.reopened?.reason && (
+   117→        <Alert className="mt-3 border-purple-200 bg-purple-50/70 text-purple-800 dark:border-purple-900/60 dark:bg-purple-950/30 dark:text-purple-300">
+   118→          <Info className="size-4" />
+   119→          <AlertDescription className="text-xs leading-relaxed">
+   120→            <strong>أُعيد فتحه بواسطة {workflow.reopened.byName || "مستخدم مخوّل"} ({fmtWorkflowDateTime(workflow.reopened.at)}):</strong> {workflow.reopened.reason}
+   121→          </AlertDescription>
+   122→        </Alert>
+   123→      )}
+   124→
+   125→      {/* أزرار الإجراءات المسموحة للمستخدم الحالي — من الخادم حصرًا */}
+   126→      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+   127→        {a.canResume && (
+   128→          <Button size="sm" variant="outline" className="h-9 gap-1.5" disabled={busy !== null}
+   129→            onClick={() => setConfirmAction("RESUME_EDIT")}>
+   130→            {busy === "RESUME_EDIT" ? <Loader2 className="size-4 animate-spin" /> : <PencilLine className="size-4" />}
+   131→            استئناف التعديل
+   132→          </Button>
+   133→        )}
+   134→        {a.canSubmit && (
+   135→          <Button size="sm" className="h-9 gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy !== null}
+   136→            onClick={() => setConfirmAction("SUBMIT")}>
+   137→            {busy === "SUBMIT" ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+   138→            إرسال للمراجعة
+   139→          </Button>
+   140→        )}
+   141→        {a.canStartReview && (
+   142→          <Button size="sm" className="h-9 gap-1.5 bg-violet-600 text-white hover:bg-violet-700" disabled={busy !== null}
+   143→            onClick={() => setConfirmAction("START_REVIEW")}>
+   144→            {busy === "START_REVIEW" ? <Loader2 className="size-4 animate-spin" /> : <Eye className="size-4" />}
+   145→            بدء المراجعة
+   146→          </Button>
+   147→        )}
+   148→        {a.canReturn && (
+   149→          <Button size="sm" variant="outline" className="h-9 gap-1.5 border-orange-300 text-orange-700 hover:bg-orange-50 dark:border-orange-900/60 dark:text-orange-400 dark:hover:bg-orange-950/30"
+   150→            disabled={busy !== null} onClick={() => setReasonDialog("RETURN")}>
+   151→            <Undo2 className="size-4" />
+   152→            إرجاع للتصحيح
+   153→          </Button>
+   154→        )}
+   155→        {a.canApprove && (
+   156→          <Button size="sm" className="h-9 gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy !== null}
+   157→            onClick={() => setConfirmAction("APPROVE")}>
+   158→            {busy === "APPROVE" ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+   159→            اعتماد التقرير
+   160→          </Button>
+   161→        )}
+   162→        {a.canReopen && (
+   163→          <Button size="sm" variant="outline" className="h-9 gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50 dark:border-purple-900/60 dark:text-purple-300 dark:hover:bg-purple-950/30"
+   164→            disabled={busy !== null} onClick={() => setReasonDialog("REOPEN")}>
+   165→            <RotateCcw className="size-4" />
+   166→            إعادة فتح
+   167→          </Button>
+   168→        )}
+   169→        {!a.canEdit && !a.canSubmit && !a.canStartReview && !a.canReturn && !a.canApprove && !a.canReopen && !a.canResume && (
+   170→          <p className="text-xs text-slate-400 dark:text-slate-500">
+   171→            لا توجد إجراءات متاحة لك في الحالة الحالية — القراءة فقط.
+   172→          </p>
+   173→        )}
+   174→      </div>
+   175→
+   176→      {/* حوارات الإجراءات */}
+   177→      <ReasonDialog
+   178→        open={reasonDialog === "RETURN"}
+   179→        mode="RETURN"
+   180→        busy={busy === "RETURN"}
+   181→        onOpenChange={(o) => !o && setReasonDialog(null)}
+   182→        onConfirm={(reason) => run("RETURN", { reason })}
+   183→      />
+   184→      <ReasonDialog
+   185→        open={reasonDialog === "REOPEN"}
+   186→        mode="REOPEN"
+   187→        busy={busy === "REOPEN"}
+   188→        onOpenChange={(o) => !o && setReasonDialog(null)}
+   189→        onConfirm={(reason) => run("REOPEN", { reason })}
+   190→      />
+   191→      <ConfirmActionDialog
+   192→        action={confirmAction}
+   193→        workflow={workflow}
+   194→        busy={confirmAction ? busy === confirmAction : false}
+   195→        onOpenChange={(o) => !o && setConfirmAction(null)}
+   196→        onConfirm={(act) => run(act, act === "SUBMIT" ? {} : act === "APPROVE" ? {} : {})}
+   197→      />
+   198→
+   199→      {/* حوار الإسناد + سجل الدورات */}
+   200→      <AssignmentDialog
+   201→        open={assignmentOpen}
+   202→        onOpenChange={setAssignmentOpen}
+   203→        workflow={workflow}
+   204→        onAssign={onAssign}
+   205→        version={version}
+   206→      />
+   207→      <WorkflowHistoryDialog
+   208→        open={historyOpen}
+   209→        onOpenChange={setHistoryOpen}
+   210→        reportId={reportId}
+   211→      />
+   212→    </div>
+   213→  );
+   214→}
+   215→
+   216→/* ── بطاقة مشارك ── */
+   217→function ParticipantCard({ role, info }: { role: "prepared" | "reviewed" | "approved"; info: { name: string; at: string | null } | null }) {
+   218→  const labels: Record<string, string> = { prepared: "المعدّ", reviewed: "المراجع", approved: "المعتمد" };
+   219→  const atLabels: Record<string, string> = { prepared: "تاريخ الإعداد", reviewed: "تاريخ المراجعة", approved: "تاريخ الاعتماد" };
+   220→  return (
+   221→    <div className="rounded-lg border border-slate-150 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/40">
+   222→      <div className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">{labels[role]}</div>
+   223→      <div className={cn("truncate text-sm font-bold", info?.name ? "text-slate-800 dark:text-slate-100" : "text-slate-400 dark:text-slate-500")}>
+   224→        {info?.name || "— غير معيّن —"}
+   225→      </div>
+   226→      <div className="text-[10px] text-slate-400 dark:text-slate-500">
+   227→        {atLabels[role]}: {info?.at ? fmtWorkflowDateTime(info.at) : "—"}
+   228→      </div>
+   229→    </div>
+   230→  );
+   231→}
+   232→
+   233→/* ── حوار السبب الإلزامي (RETURN / REOPEN) ── */
+   234→function ReasonDialog({
+   235→  open, mode, busy, onOpenChange, onConfirm,
+   236→}: {
+   237→  open: boolean;
+   238→  mode: "RETURN" | "REOPEN";
+   239→  busy: boolean;
+   240→  onOpenChange: (o: boolean) => void;
+   241→  onConfirm: (reason: string) => Promise<boolean>;
+   242→}) {
+   243→  const [reason, setReason] = React.useState("");
+   244→  const [err, setErr] = React.useState("");
+   245→  React.useEffect(() => { if (open) { setReason(""); setErr(""); } }, [open]);
+   246→  const isReturn = mode === "RETURN";
+   247→  return (
+   248→    <Dialog open={open} onOpenChange={onOpenChange}>
+   249→      <DialogContent className="sm:max-w-md">
+   250→        <DialogHeader>
+   251→          <DialogTitle>{isReturn ? "إرجاع التقرير للتصحيح" : "إعادة فتح التقرير المعتمد"}</DialogTitle>
+   252→          <DialogDescription>
+   253→            {isReturn
+   254→              ? "سيُعاد التقرير إلى المعدّ للتصحيح — السبب إلزامي ويُحفظ في السجل الرقابي وسجل الدورات."
+   255→              : "إعادة الفتح تبدأ دورة اعتماد جديدة (تزداد الدورة 1) — السبب إلزامي ويُحفظ مع أرشفة الاعتماد السابق كاملًا."}
+   256→          </DialogDescription>
+   257→        </DialogHeader>
+   258→        <div className="space-y-2">
+   259→          <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+   260→            {isReturn ? "سبب الإرجاع" : "سبب إعادة الفتح"} <span className="text-rose-500">*</span>
+   261→          </Label>
+   262→          <Textarea
+   263→            value={reason}
+   264→            onChange={(e) => { setReason(e.target.value); if (e.target.value.trim()) setErr(""); }}
+   265→            placeholder={isReturn ? "مثال: أرقام الحسابات غير مكتملة — يرجى التصحيح" : "مثال: اكتشاف خطأ في التصنيف — يلزم إعادة الاعتماد"}
+   266→            rows={4}
+   267→            maxLength={2000}
+   268→            autoFocus
+   269→          />
+   270→          {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+   271→        </div>
+   272→        <DialogFooter>
+   273→          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>إلغاء</Button>
+   274→          <Button
+   275→            className={isReturn ? "bg-orange-600 text-white hover:bg-orange-700" : "bg-purple-600 text-white hover:bg-purple-700"}
+   276→            disabled={busy}
+   277→            onClick={async () => {
+   278→              if (!reason.trim()) { setErr(isReturn ? "سبب الإرجاع إلزامي." : "سبب إعادة الفتح إلزامي."); return; }
+   279→              const ok = await onConfirm(reason.trim());
+   280→              if (ok) onOpenChange(false);
+   281→            }}
+   282→          >
+   283→            {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+   284→            {isReturn ? "تأكيد الإرجاع" : "تأكيد إعادة الفتح"}
+   285→          </Button>
+   286→        </DialogFooter>
+   287→      </DialogContent>
+   288→    </Dialog>
+   289→  );
+   290→}
+   291→
+   292→/* ── حوار تأكيد الإجراء (SUBMIT / START_REVIEW / APPROVE / RESUME_EDIT) ── */
+   293→function ConfirmActionDialog({
+   294→  action, workflow, busy, onOpenChange, onConfirm,
+   295→}: {
+   296→  action: WorkflowAction | null;
+   297→  workflow: WorkflowInfo;
+   298→  busy: boolean;
+   299→  onOpenChange: (o: boolean) => void;
+   300→  onConfirm: (a: WorkflowAction) => Promise<boolean>;
+   301→}) {
+   302→  const meta: Record<string, { title: string; desc: string; confirm: string; cls: string }> = {
+   303→    SUBMIT: {
+   304→      title: "إرسال التقرير للمراجعة",
+   305→      desc: `سيرسل التقرير إلى المراجع${workflow.reviewedBy?.name ? ` «${workflow.reviewedBy.name}»` : ""} وتُقفل بيانات المطابقة ضد التعديل حتى المراجعة. تأكد من حفظ تعديلاتك أولًا.`,
+   306→      confirm: "إرسال",
+   307→      cls: "bg-emerald-600 text-white hover:bg-emerald-700",
+   308→    },
+   309→    START_REVIEW: {
+   310→      title: "بدء مراجعة التقرير",
+   311→      desc: "ستبدأ المراجعة الرسمية ويُثبت تاريخ بدئها. بعدها يمكنك إما الاعتماد أو الإرجاع بسبب.",
+   312→      confirm: "بدء المراجعة",
+   313→      cls: "bg-violet-600 text-white hover:bg-violet-700",
+   314→    },
+   315→    APPROVE: {
+   316→      title: "اعتماد التقرير",
+   317→      desc: `الاعتماد النهائي للدورة ${workflow.cycle} — سيُقفل التقرير كليًا ولا يمكن تعديله إلا عبر إعادة فتح بصلاحية خاصة وسبب موثّق.`,
+   318→      confirm: "اعتماد نهائي",
+   319→      cls: "bg-emerald-600 text-white hover:bg-emerald-700",
+   320→    },
+   321→    RESUME_EDIT: {
+   322→      title: "استئناف التعديل",
+   323→      desc: "سيعود التقرير إلى حالة «مسودة» لتتمكن من تعديل بيانات المطابقة قبل إعادة الإرسال.",
+   324→      confirm: "استئناف",
+   325→      cls: "bg-slate-700 text-white hover:bg-slate-800",
+   326→    },
+   327→  };
+   328→  const m = action ? meta[action] : null;
+   329→  return (
+   330→    <Dialog open={!!action} onOpenChange={onOpenChange}>
+   331→      <DialogContent className="sm:max-w-md">
+   332→        <DialogHeader>
+   333→          <DialogTitle>{m?.title}</DialogTitle>
+   334→          <DialogDescription>{m?.desc}</DialogDescription>
+   335→        </DialogHeader>
+   336→        <DialogFooter>
+   337→          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>إلغاء</Button>
+   338→          <Button className={m?.cls} disabled={busy || !action} onClick={() => action && onConfirm(action)}>
+   339→            {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+   340→            {m?.confirm}
+   341→          </Button>
+   342→        </DialogFooter>
+   343→      </DialogContent>
+   344→    </Dialog>
+   345→  );
+   346→}
+   347→
+   348→/* ═══════════════════════════════════════════════════════════════════════ */
+   349→/*  حوار الإسناد (assignWorkflow)                                            */
+   350→/* ═══════════════════════════════════════════════════════════════════════ */
+   351→
+   352→export function AssignmentDialog({
+   353→  open, onOpenChange, workflow, version, onAssign,
+   354→}: {
+   355→  open: boolean;
+   356→  onOpenChange: (o: boolean) => void;
+   357→  workflow: WorkflowInfo;
+   358→  version: number;
+   359→  onAssign: (updates: { preparedById?: string | null; reviewedById?: string | null; approvedById?: string | null; reason?: string }, version: number) => Promise<boolean>;
+   360→}) {
+   361→  const [users, setUsers] = React.useState<AssignmentCandidate[]>([]);
+   362→  const [loading, setLoading] = React.useState(false);
+   363→  const [prep, setPrep] = React.useState<string>("__none__");
+   364→  const [rev, setRev] = React.useState<string>("__none__");
+   365→  const [appr, setAppl] = React.useState<string>("__none__");
+   366→  const [reason, setReason] = React.useState("");
+   367→  const [err, setErr] = React.useState("");
+   368→  const [saving, setSaving] = React.useState(false);
+   369→
+   370→  React.useEffect(() => {
+   371→    if (!open) return;
+   372→    setPrep(workflow.preparedBy?.id ?? "__none__");
+   373→    setRev(workflow.reviewedBy?.id ?? "__none__");
+   374→    setAppl(workflow.approvedBy?.id ?? "__none__");
+   375→    setReason(""); setErr("");
+   376→    setLoading(true);
+   377→    fetch("/api/users?for=assignment")
+   378→      .then((r) => (r.ok ? r.json() : Promise.reject()))
+   379→      .then((d) => setUsers(d))
+   380→      .catch(() => setErr("تعذر جلب قائمة المستخدمين."))
+   381→      .finally(() => setLoading(false));
+   382→  }, [open, workflow.preparedBy?.id, workflow.reviewedBy?.id, workflow.approvedBy?.id]);
+   383→
+   384→  // فحص SoD فوري في الواجهة (الخادم يعيد الفحص دائمًا)
+   385→  const trio = [
+   386→    ["المعدّ", prep] as const,
+   387→    ["المراجع", rev] as const,
+   388→    ["المعتمد", appr] as const,
+   389→  ].filter(([, v]) => v !== "__none__");
+   390→  const sodConflict = trio.some(([, v], i) => trio.slice(i + 1).some(([, v2]) => v === v2));
+   391→
+   392→  async function save() {
+   393→    setErr("");
+   394→    if (sodConflict) { setErr("فصل المهام: لا يجوز أن يشغل نفس الشخص دورين في نفس التقرير."); return; }
+   395→    setSaving(true);
+   396→    try {
+   397→      const updates: Record<string, string | null> = {};
+   398→      if (prep !== (workflow.preparedBy?.id ?? "__none__")) updates.preparedById = prep === "__none__" ? null : prep;
+   399→      if (rev !== (workflow.reviewedBy?.id ?? "__none__")) updates.reviewedById = rev === "__none__" ? null : rev;
+   400→      if (appr !== (workflow.approvedBy?.id ?? "__none__")) updates.approvedById = appr === "__none__" ? null : appr;
+   401→      if (Object.keys(updates).length === 0) { setErr("لا يوجد تغيير فعلي."); return; }
+   402→      const ok = await onAssign({ ...updates, reason: reason.trim() || undefined }, version);
+   403→      if (ok) onOpenChange(false); else setErr("تعذر حفظ الإسناد — راجع الرسالة أعلى الصفحة.");
+   404→    } finally {
+   405→      setSaving(false);
+   406→    }
+   407→  }
+   408→
+   409→  const activeUsers = users.filter((u) => u.active);
+   410→  const userLabel = (u: AssignmentCandidate) => u.displayName || u.username;
+   411→
+   412→  return (
+   413→    <Dialog open={open} onOpenChange={onOpenChange}>
+   414→      <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-lg">
+   415→        <DialogHeader>
+   416→          <DialogTitle>إسناد أدوار التقرير</DialogTitle>
+   417→          <DialogDescription>
+   418→            المعد والمراجع والمعتمد لهذا التقرير تحديدًا — مع فصل مهام إلزامي (لا يجوز جمع دورين لشخص واحد).
+   419→            تغيير الإسناد يرفع نسخة التقرير ويُسجَّل في السجل الرقابي.
+   420→          </DialogDescription>
+   421→        </DialogHeader>
+   422→        {loading ? (
+   423→          <div className="flex items-center justify-center py-8"><Loader2 className="size-5 animate-spin text-slate-400" /></div>
+   424→        ) : (
+   425→          <div className="space-y-3">
+   426→            <RoleSelect label="المعدّ" hint="يستطيع تعديل بيانات المطابقة في المسودة/المُرجَع/المُعاد فتحه" value={prep} onChange={setPrep} users={activeUsers} userLabel={userLabel} />
+   427→            <RoleSelect label="المراجع" hint="يبدأ المراجعة ويُرجع للتصحيح بسبب" value={rev} onChange={setRev} users={activeUsers} userLabel={userLabel} />
+   428→            <RoleSelect label="المعتمد" hint="يعتمد التقرير بعد اكتمال المراجعة (منفصل عن المراجع إلزاميًا)" value={appr} onChange={setAppl} users={activeUsers} userLabel={userLabel} />
+   429→            <div className="space-y-1.5">
+   430→              <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">سبب التغيير (اختياري)</Label>
+   431→              <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} placeholder="مثال: المراجع السابق في إجازة" />
+   432→            </div>
+   433→            {sodConflict && (
+   434→              <Alert className="border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+   435→                <ShieldAlert className="size-4" />
+   436→                <AlertDescription className="text-xs font-semibold">
+   437→                  فصل المهام: لا يجوز أن يشغل نفس الشخص دورين في نفس التقرير.
+   438→                </AlertDescription>
+   439→              </Alert>
+   440→            )}
+   441→            {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+   442→          </div>
+   443→        )}
+   444→        <DialogFooter>
+   445→          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>إلغاء</Button>
+   446→          <Button onClick={save} disabled={saving || loading || sodConflict} className="bg-emerald-600 text-white hover:bg-emerald-700">
+   447→            {saving ? <Loader2 className="size-4 animate-spin" /> : <Users className="size-4" />}
+   448→            حفظ الإسناد
+   449→          </Button>
+   450→        </DialogFooter>
+   451→      </DialogContent>
+   452→    </Dialog>
+   453→  );
+   454→}
+   455→
+   456→function RoleSelect({
+   457→  label, hint, value, onChange, users, userLabel,
+   458→}: {
+   459→  label: string; hint: string; value: string; onChange: (v: string) => void;
+   460→  users: AssignmentCandidate[]; userLabel: (u: AssignmentCandidate) => string;
+   461→}) {
+   462→  return (
+   463→    <div className="space-y-1.5">
+   464→      <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</Label>
+   465→      <Select value={value} onValueChange={onChange}>
+   466→        <SelectTrigger className="w-full" size="sm"><SelectValue /></SelectTrigger>
+   467→        <SelectContent>
+   468→          <SelectItem value="__none__">— غير معيّن —</SelectItem>
+   469→          {users.map((u) => (
+   470→            <SelectItem key={u.id} value={u.id}>{userLabel(u)} <span dir="ltr" className="text-[10px] text-slate-400">({u.username})</span></SelectItem>
+   471→          ))}
+   472→        </SelectContent>
+   473→      </Select>
+   474→      <p className="text-[10px] text-slate-400 dark:text-slate-500">{hint}</p>
+   475→    </div>
+   476→  );
+   477→}
+   478→
+   479→/* ═══════════════════════════════════════════════════════════════════════ */
+   480→/*  حوار سجل الدورات (WorkflowHistory — قراءة فقط)                           */
+   481→/* ═══════════════════════════════════════════════════════════════════════ */
+   482→
+   483→export function WorkflowHistoryDialog({ open, onOpenChange, reportId }: { open: boolean; onOpenChange: (o: boolean) => void; reportId: string }) {
+   484→  const [rows, setRows] = React.useState<WorkflowHistoryRow[] | null>(null);
+   485→  const [loading, setLoading] = React.useState(false);
+   486→
+   487→  React.useEffect(() => {
+   488→    if (!open || !reportId) return;
+   489→    setLoading(true);
+   490→    fetch(`/api/reports/${reportId}/workflow-history`)
+   491→      .then((r) => (r.ok ? r.json() : Promise.reject()))
+   492→      .then((d) => setRows(d))
+   493→      .catch(() => setRows([]))
+   494→      .finally(() => setLoading(false));
+   495→  }, [open]);
+   496→
+   497→  // تجميع حسب الدورة
+   498→  const cycles = React.useMemo(() => {
+   499→    if (!rows) return [];
+   500→    const map = new Map<number, WorkflowHistoryRow[]>();
+   501→    for (const r of rows) {
+   502→      const list = map.get(r.cycle) ?? [];
+   503→      list.push(r);
+   504→      map.set(r.cycle, list);
+   505→    }
+   506→    return [...map.entries()].sort((a, b) => a[0] - b[0]);
+   507→  }, [rows]);
+   508→
+   509→  return (
+   510→    <Dialog open={open} onOpenChange={onOpenChange}>
+   511→      <DialogContent className="max-h-[85vh] overflow-auto sm:max-w-2xl">
+   512→        <DialogHeader>
+   513→          <DialogTitle>سجل دورات الاعتماد</DialogTitle>
+   514→          <DialogDescription>
+   515→            السجل التاريخي الكامل (للقراءة فقط) — يُحفظ كل حدث مع فاعله ووقته والسبب وأدوار التقرير لحظته.
+   516→          </DialogDescription>
+   517→        </DialogHeader>
+   518→        {loading ? (
+   519→          <div className="flex items-center justify-center py-8"><Loader2 className="size-5 animate-spin text-slate-400" /></div>
+   520→        ) : !rows || rows.length === 0 ? (
+   521→          <p className="py-6 text-center text-sm text-slate-400">لا سجل بعد.</p>
+   522→        ) : (
+   523→          <div className="space-y-4">
+   524→            {cycles.map(([cycle, list]) => (
+   525→              <div key={cycle} className="rounded-lg border border-slate-200 dark:border-slate-800">
+   526→                <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/40">
+   527→                  <Badge variant="outline" className="text-[11px] font-bold">الدورة {cycle}</Badge>
+   528→                  <span className="text-[11px] text-slate-400">{list.length} حدث</span>
+   529→                </div>
+   530→                <ol className="divide-y divide-slate-100 dark:divide-slate-800">
+   531→                  {list.map((r) => (
+   532→                    <li key={r.id} className="px-3 py-2.5">
+   533→                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+   534→                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{WORKFLOW_HISTORY_ACTION_LABELS[r.action as keyof typeof WORKFLOW_HISTORY_ACTION_LABELS] ?? r.action}</span>
+   535→                        {r.fromStatus && r.toStatus && r.fromStatus !== r.toStatus && (
+   536→                          <span className="text-[10px] text-slate-400" dir="ltr">
+   537→                            {WORKFLOW_STATUS_LABELS[r.fromStatus as keyof typeof WORKFLOW_STATUS_LABELS] ?? r.fromStatus}
+   538→                            {" → "}
+   539→                            {WORKFLOW_STATUS_LABELS[r.toStatus as keyof typeof WORKFLOW_STATUS_LABELS] ?? r.toStatus}
+   540→                          </span>
+   541→                        )}
+   542→                        <span className="ms-auto text-[10px] text-slate-400">{fmtWorkflowDateTime(r.createdAt)}</span>
+   543→                      </div>
+   544→                      <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+   545→                        بواسطة: <strong>{r.actorUsername || "—"}</strong>
+   546→                        {r.reason ? <> · السبب: {r.reason}</> : null}
+   547→                        {r.comment ? <> · ملاحظة: {r.comment}</> : null}
+   548→                      </div>
+   549→                      {r.action === "REOPENED" && (() => {
+   550→                        try {
+   551→                          const snap = JSON.parse(r.roleSnapshot || "{}");
+   552→                          const prev = snap?.previousApproval ?? snap?.roles?.previousApproval;
+   553→                          if (prev?.approvedBy) {
+   554→                            return (
+   555→                              <div className="mt-1 rounded bg-slate-50 px-2 py-1.5 text-[10px] leading-relaxed text-slate-500 dark:bg-slate-950/60 dark:text-slate-400">
+   556→                                الاعتماد السابق المؤرشف: اعتمده <strong>{String(prev.approvedBy)}</strong>
+   557→                                {prev.approvedAt ? ` في ${fmtWorkflowDateTime(prev.approvedAt)}` : ""}
+   558→                                {prev.reviewedBy ? ` · راجعه ${String(prev.reviewedBy)}` : ""}
+   559→                              </div>
+   560→                            );
+   561→                          }
+   562→                        } catch { /* ignore */ }
+   563→                        return null;
+   564→                      })()}
+   565→                    </li>
+   566→                  ))}
+   567→                </ol>
+   568→              </div>
+   569→            ))}
+   570→          </div>
+   571→        )}
+   572→      </DialogContent>
+   573→    </Dialog>
+   574→  );
+   575→}
+   576→

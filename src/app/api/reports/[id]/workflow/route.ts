@@ -171,6 +171,10 @@ export async function POST(
           // تنظيف حقول الإرشاد (سبب الإرجاع/إعادة الفتح) عند الإرسال — الأصل محفوظ في التاريخ
           returnedById: null, returnedByName: "", returnedAt: null, returnReason: "",
           reopenedById: null, reopenedByName: "", reopenedAt: null, reopenReason: "",
+          // المرحلة 3.5: أدلة المراجعة السابقة تمثل دورة مراجعة منتهية — لا يجوز أن تبدو
+          // مراجعة الدورة الجديدة مكتملة/بدأت قبل حدوثها (المراجعة تبدأ من جديد بيد المراجع المعيّن)
+          reviewStartedAt: null,
+          reviewedAt: null,
         };
         auditAction = isResubmission ? AUDIT_ACTIONS.REPORT_RESUBMITTED : AUDIT_ACTIONS.REPORT_SUBMITTED;
         historyAction = isResubmission ? WORKFLOW_HISTORY_ACTION.RESUBMITTED : WORKFLOW_HISTORY_ACTION.SUBMITTED;
@@ -193,7 +197,9 @@ export async function POST(
             { status: 403 }
           );
         }
-        data = { status: WORKFLOW_STATUS.UNDER_REVIEW, reviewedAt: new Date() };
+        // المرحلة 3.5: بدء المراجعة يثبت reviewStartedAt (وليس reviewedAt —
+        // التي أصبحت وقت إتمام المراجعة وتوقيع المراجع)
+        data = { status: WORKFLOW_STATUS.UNDER_REVIEW, reviewStartedAt: new Date() };
         auditAction = AUDIT_ACTIONS.REVIEW_STARTED;
         historyAction = WORKFLOW_HISTORY_ACTION.REVIEW_STARTED;
         historyMetadata = {};
@@ -201,11 +207,57 @@ export async function POST(
         break;
       }
 
-      case WORKFLOW_ACTION.RETURN: {
+      case WORKFLOW_ACTION.COMPLETE_REVIEW: {
+        // المرحلة 3.5 (قرار D-4/D-5): توقيع المراجع — UNDER_REVIEW → PENDING_APPROVAL.
+        // بعد التوقيع تصبح بيانات المطابقة مقفولة نهائيًا والكرة مع المعتمد
+        // (APPROVE أو RETURN بسبب إلزامي — لا تعديل بيانات).
         if (existing.reviewedById !== user.id) {
           return NextResponse.json(
             {
-              error: "الإرجاع يتم من المراجع المعيّن لهذا التقرير فقط.",
+              error: "إتمام المراجعة يتم من المراجع المعيّن لهذا التقرير فقط.",
+              code: "NOT_ASSIGNED",
+              currentStatus: fromStatus,
+            },
+            { status: 403 }
+          );
+        }
+        if (sodViolations.length > 0) {
+          return NextResponse.json(
+            {
+              error: SoDViolationMessage(sodViolations),
+              code: "SEGREGATION_VIOLATION",
+              currentStatus: fromStatus,
+            },
+            { status: 400 }
+          );
+        }
+        // reviewedAt = وقت إتمام المراجعة (الدلالة الجديدة) — التوقيع يُوثق بالكامل
+        data = { status: WORKFLOW_STATUS.PENDING_APPROVAL, reviewedAt: new Date() };
+        auditAction = AUDIT_ACTIONS.REVIEW_COMPLETED;
+        historyAction = WORKFLOW_HISTORY_ACTION.REVIEW_COMPLETED;
+        historyMetadata = {
+          reviewerSigned: true,
+          reviewStartedAt: existing.reviewStartedAt ? existing.reviewStartedAt.toISOString() : null,
+          reviewCompletedAt: new Date().toISOString(),
+        };
+        description = `إتمام مراجعة التقرير «${existing.name}» وتوقيع المراجع (v${versionNum} → v${versionNum + 1}) — انتقلت إلى بانتظار الاعتماد — المعتمد: ${existing.approvedByName || "—"}${comment ? " · ملاحظة: " + comment : ""}`;
+        break;
+      }
+
+      case WORKFLOW_ACTION.RETURN: {
+        // المرحلة 3.5: الإرجاع من حالتين —
+        //  UNDER_REVIEW → المراجع هو الفاعل (كما في المرحلة 3)
+        //  PENDING_APPROVAL → المعتمد هو الفاعل (اكتشف مشكلة قبل الاعتماد)
+        const expectedActorId =
+          fromStatus === WORKFLOW_STATUS.PENDING_APPROVAL
+            ? existing.approvedById
+            : existing.reviewedById;
+        const expectedActorLabel =
+          fromStatus === WORKFLOW_STATUS.PENDING_APPROVAL ? "المعتمد" : "المراجع";
+        if (expectedActorId !== user.id) {
+          return NextResponse.json(
+            {
+              error: `الإرجاع يتم من ${expectedActorLabel} المعيّن لهذا التقرير فقط.`,
               code: "NOT_ASSIGNED",
               currentStatus: fromStatus,
             },
@@ -231,7 +283,11 @@ export async function POST(
         };
         auditAction = AUDIT_ACTIONS.REPORT_RETURNED;
         historyAction = WORKFLOW_HISTORY_ACTION.RETURNED;
-        historyMetadata = { reasonSet: true };
+        historyMetadata = {
+          reasonSet: true,
+          // من أين أُرجع: مراجعة جارية أم بانتظار الاعتماد — حاسم للرقابة
+          returnedFromPendingApproval: fromStatus === WORKFLOW_STATUS.PENDING_APPROVAL,
+        };
         description = `إرجاع التقرير «${existing.name}» للتصحيح (v${versionNum} → v${versionNum + 1}) — السبب: ${reason}`;
         break;
       }
@@ -247,16 +303,8 @@ export async function POST(
             { status: 403 }
           );
         }
-        if (!existing.reviewedAt || !existing.reviewedById) {
-          return NextResponse.json(
-            {
-              error: "لا يمكن الاعتماد قبل أن تبدأ المراجعة بصورة صحيحة.",
-              code: "REVIEW_NOT_STARTED",
-              currentStatus: fromStatus,
-            },
-            { status: 400 }
-          );
-        }
+        // المرحلة 3.5: الاعتماد لا يمر إلا من PENDING_APPROVAL (توقيع مراجع مستقل قبل الاعتماد) —
+        // محاولات الاعتماد مباشرة من UNDER_REVIEW تُرفض بالمصفوفة (INVALID_TRANSITION).
         if (sodViolations.length > 0) {
           return NextResponse.json(
             {
@@ -270,7 +318,10 @@ export async function POST(
         data = { status: WORKFLOW_STATUS.APPROVED, approvedAt: new Date() };
         auditAction = AUDIT_ACTIONS.REPORT_APPROVED;
         historyAction = WORKFLOW_HISTORY_ACTION.APPROVED;
-        historyMetadata = {};
+        historyMetadata = {
+          // منظور رقابي: منذ توقيع المراجع (بداية الانتظار) حتى الاعتماد
+          pendingSince: existing.reviewedAt ? existing.reviewedAt.toISOString() : null,
+        };
         description = `اعتماد التقرير «${existing.name}» (v${versionNum} → v${versionNum + 1}) — الدورة ${existing.cycle}${comment ? " · ملاحظة: " + comment : ""}`;
         break;
       }
@@ -309,12 +360,17 @@ export async function POST(
           approvedById: null,
           approvedByName: "",
           approvedAt: null,
+          // المرحلة 3.5: أدلة مراجعة الدورة المنتهية تمثل الدورة القديمة — لا تبدو مراجعة
+          // الدورة الجديدة بدأت/اكتملت قبل حدوثها (الأصل مؤرشف في WorkflowHistory)
+          reviewStartedAt: null,
+          reviewedAt: null,
         };
         historyMetadata = {
           previousApproval: {
             approvedBy: existing.approvedByName || existing.approvedById,
             approvedAt: existing.approvedAt ? existing.approvedAt.toISOString() : null,
             reviewedBy: existing.reviewedByName || existing.reviewedById,
+            reviewStartedAt: existing.reviewStartedAt ? existing.reviewStartedAt.toISOString() : null,
             reviewedAt: existing.reviewedAt ? existing.reviewedAt.toISOString() : null,
             cycle: existing.cycle,
           },
@@ -362,7 +418,8 @@ export async function POST(
 
       // الأرشفة داخل نفس المعاملة — snapshot الأدوار لحظة الحدث.
       // لمعظم الانتقالات نستخدم الحالة اللاحقة للانتقال حتى يحمل الصف الأثر المُثبَت
-      // (SUBMITTED: preparedAt=الآن، REVIEW_STARTED: reviewedAt=الآن، APPROVED: approvedAt=الآن)
+      // (SUBMITTED: preparedAt=الآن، REVIEW_STARTED: reviewStartedAt=الآن،
+      //  REVIEW_COMPLETED: reviewedAt=الآن، APPROVED: approvedAt=الآن)
       // أما REOPEN فيأخذ الحالة السابقة للانتقال — snapshot الاعتماد قبل مسح حقوله
       // (تعديل المستخدم رقم 3: الأرشفة أولًا داخل نفس المعاملة قبل أي مسح).
       const postState = { ...existing, ...data } as typeof existing;

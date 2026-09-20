@@ -11,11 +11,13 @@ export const AUDIT_ACTIONS = {
   // Workflow (المرحلة 3) — دورة الاعتماد وفصل المهام
   REPORT_SUBMITTED: "REPORT_SUBMITTED",
   REVIEW_STARTED: "REVIEW_STARTED",
+  REVIEW_COMPLETED: "REVIEW_COMPLETED", // المرحلة 3.5 — توقيع المراجع وانتقال إلى PENDING_APPROVAL
   REPORT_RETURNED: "REPORT_RETURNED",
   REPORT_RESUBMITTED: "REPORT_RESUBMITTED",
   REPORT_APPROVED: "REPORT_APPROVED",
   REPORT_REOPENED: "REPORT_REOPENED",
   ASSIGNMENT_CHANGED: "ASSIGNMENT_CHANGED",
+  DUE_DATE_CHANGED: "DUE_DATE_CHANGED", // المرحلة 3.5 — تغيير تاريخ الاستحقاق (حوكمة assignWorkflow)
   GROUP_CREATED: "GROUP_CREATED",
   GROUP_UPDATED: "GROUP_UPDATED",
   GROUP_DELETED: "GROUP_DELETED",
@@ -39,11 +41,13 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   REPORT_DELETED: "حذف تقرير",
   REPORT_SUBMITTED: "إرسال تقرير للمراجعة",
   REVIEW_STARTED: "بدء مراجعة تقرير",
+  REVIEW_COMPLETED: "إتمام مراجعة تقرير (توقيع المراجع)",
   REPORT_RETURNED: "إرجاع تقرير للتصحيح",
   REPORT_RESUBMITTED: "إعادة إرسال تقرير بعد التصحيح",
   REPORT_APPROVED: "اعتماد تقرير",
   REPORT_REOPENED: "إعادة فتح تقرير معتمد",
   ASSIGNMENT_CHANGED: "تغيير إسناد أدوار التقرير",
+  DUE_DATE_CHANGED: "تغيير تاريخ استحقاق تقرير",
   GROUP_CREATED: "إنشاء مجموعة",
   GROUP_UPDATED: "تعديل مجموعة",
   GROUP_DELETED: "حذف مجموعة",

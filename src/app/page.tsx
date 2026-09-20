@@ -117,6 +117,8 @@ export default function Home() {
   const canManageUsers = perms.manageUsers;
   const settingsLocked = !perms.settings;
   const currentUserId = (session?.user as any)?.id as string | undefined;
+  // المرحلة 3.5 — حوكمة الاستحقاق (المدير يمتلكها ضمنيًا بالدور)
+  const canAssignWorkflowFlag = (session?.user as any)?.role === "admin" || perms.assignWorkflow === true;
 
   const [raw1, setRaw1] = React.useState<FileData | null>(null);
   const [raw2, setRaw2] = React.useState<FileData | null>(null);
@@ -361,6 +363,8 @@ export default function Home() {
   const [saving, setSaving] = React.useState(false);
   // نهاية الفترة المالية — date-only "YYYY-MM-DD" بلا timezone
   const [periodEndDraft, setPeriodEndDraft] = React.useState<string>("");
+  // المرحلة 3.5 — تاريخ الاستحقاق (حقل رقابي): يُضبط عند الإنشاء لحائز assignWorkflow فقط
+  const [dueDateDraft, setDueDateDraft] = React.useState<string>("");
   // معلومات تعارض النسخ (HTTP 409 VERSION_CONFLICT) — لا تمس تعديلات المستخدم تلقائيًا
   const [conflictInfo, setConflictInfo] = React.useState<{
     reportId: string; reportName: string; clientVersion: number;
@@ -419,6 +423,9 @@ export default function Home() {
         bsFile2Cols: { nameCol: bsCn2, numCol: effBs2?.numCol ?? 0, debitCol: bsCd2 },
         // نهاية الفترة المالية — date-only (بلا timezone)
         periodEnd: periodEndDraft ? periodEndDraft : null,
+        // المرحلة 3.5 — الاستحقاق عند الإنشاء فقط لحائز الحوكمة (الخادم يفرض الصلاحية):
+        // في وضع التحديث لا يُرسل الحقل إطلاقًا (مساره PATCH due-date وليس PUT)
+        ...(isUpdate ? {} : { dueDate: canAssignWorkflowFlag ? (dueDateDraft ? dueDateDraft : null) : undefined }),
       };
 
       if (isUpdate && target) {
@@ -475,6 +482,7 @@ export default function Home() {
         setReportName("");
         setSelectedGroupId(null);
         setSaveMode("update");
+        setDueDateDraft("");
       }
     } catch (err) {
       toast({ title: "خطأ في الحفظ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
@@ -771,12 +779,50 @@ export default function Home() {
       const actionTitles: Record<string, string> = {
         SUBMIT: "تم إرسال التقرير للمراجعة",
         START_REVIEW: "بدأت المراجعة",
+        COMPLETE_REVIEW: "أُتمّت المراجعة وتوقّع المراجع — بانتظار الاعتماد",
         RETURN: "أُرجع التقرير للتصحيح",
         APPROVE: "تم اعتماد التقرير — مقفل كليًا",
         REOPEN: "أُعيد فتح التقرير — دورة جديدة",
         RESUME_EDIT: "عاد التقرير إلى مسودة",
       };
       toast({ title: actionTitles[action] || "تمت العملية", description: `الحالة الآن: ${data.workflow?.statusLabel ?? ""} · v${data.version ?? ""}` });
+      return true;
+    } catch (err) {
+      toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
+      return false;
+    }
+  }
+
+  /** المرحلة 3.5 — حوكمة تاريخ الاستحقاق (assignWorkflow) — PATCH /api/reports/[id]/due-date.
+   *  مسار مستقل عن PUT: الحقل رقابي لا بيانات مطابقة، والتدقيق DUE_DATE_CHANGED من الخادم. */
+  async function handleDueDate(dueDate: string | null, version: number): Promise<boolean> {
+    if (!openReport) return false;
+    try {
+      const res = await fetch(`/api/reports/${openReport.id}/due-date`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dueDate, version }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data.code === "VERSION_CONFLICT") {
+        setConflictInfo({
+          reportId: openReport.id,
+          reportName: openReport.name,
+          clientVersion: version,
+          currentVersion: typeof data.currentVersion === "number" ? data.currentVersion : null,
+          updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : null,
+          lastModifiedBy: null,
+          lastModifiedAt: null,
+        });
+        return false;
+      }
+      if (!res.ok) {
+        toast({ title: "تعذر تغيير الاستحقاق", description: (data as { error?: string }).error || "خطأ", variant: "destructive" });
+        return false;
+      }
+      applyReportToSession(data);
+      trackOpenReport(data);
+      toast({ title: "تم تحديث تاريخ الاستحقاق", description: `${data.dueDate ? "الاستحقاق: " + data.dueDate : "أُزيل الاستحقاق (غير محدد)"} · v${data.version ?? ""}` });
       return true;
     } catch (err) {
       toast({ title: "خطأ", description: err instanceof Error ? err.message : "خطأ", variant: "destructive" });
@@ -946,6 +992,25 @@ export default function Home() {
                     />
                     <p className="text-[10px] text-slate-400">تُحفظ كتاريخ أعمال (YYYY-MM-DD) دون أي تأثر بتوقيت الجهاز أو المنطقة الزمنية.</p>
                   </div>
+                  {/* المرحلة 3.5 — الاستحقاق عند إنشاء نسخة جديدة: حقل رقابي لحائز assignWorkflow فقط.
+                      تحديث تقرير قائم يتم عبر لوحة دورة الاعتماد (PATCH due-date) وليس من هنا. */}
+                  {canAssignWorkflowFlag && !(saveMode === "update" && openReport?.canUpdate) && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                        تاريخ الاستحقاق (اختياري — رقابي)
+                      </Label>
+                      <Input
+                        type="date"
+                        value={dueDateDraft}
+                        onChange={(e) => setDueDateDraft(e.target.value)}
+                        className="w-full sm:w-56"
+                        dir="ltr"
+                      />
+                      <p className="text-[10px] text-slate-400">
+                        يُضبط هنا عند الإنشاء فقط — تغييره لاحقًا من لوحة دورة الاعتماد بصلاحية الحوكمة ويُسجّل في السجل الرقابي.
+                      </p>
+                    </div>
+                  )}
                   {canManageGroups && (
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
@@ -1240,6 +1305,7 @@ export default function Home() {
               version={openReport.version}
               onAction={handleWorkflowAction}
               onAssign={handleAssign}
+              onDueDate={canAssignWorkflowFlag ? handleDueDate : undefined}
             />
           </motion.section>
         )}
