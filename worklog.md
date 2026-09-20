@@ -364,3 +364,23 @@ Work Log:
 
 Stage Summary:
 - تصميم Phase 4 مكتمل وموثق: نطاق النسخ أثبت فحصًا أنه قاعدة البيانات كاملة بلا أي حالة خارجية عدا الإعدادات، النسخ بـ VACUUM INTO المجرَّب، كل استعادة خلف خط تحقق ثماني + pre-restore إلزامي + صيانة + Rollback، وأدلة الاسترجاع في سجل خارجي لا يمحوه الاستبدال — بانتظار موافقة المستخدم على الوثيقة وحسم D-1..D-10 قبل أي كود، ولن يبدأ أي تنفيذ (4A أو 4B) قبل ذلك
+
+---
+Task ID: 4-design-v2 (Phase 4 — Final Design Addendum)
+Agent: main (Z.ai Code)
+Task: مراجعة تصميم Phase 4 وفق القرارات المعدلة من المستخدم (D-2/D-3/D-7/D-9 معدلة + إضافات إلزامية: Restore Drill، مستويات التحقق الثلاثة، آلة حالات الاستعادة، RECOVERY_REQUIRED، Session Epoch، أمن ZIP، Recovery Test) — تصميم فقط بلا تنفيذ
+
+Work Log:
+- إعادة كتابة docs/phase4-backup-restore-design.md إلى v2 (25 قسمًا) بدمج كل القرارات:
+  * D-2: فصل BACKUP_DIR القابل للتهيئة عن مجلد التطبيق (افتراضي var/backups داخل مساحة العمل الدائمة بسبب درس فقدان /home/z — لكن بلا افتراض معماري لوجوده في source tree) + .gitignore للأمام فقط
+  * D-3: منع ترحيل أي نسخة على قاعدة التشغيل — Restore Drill يرحّل نسخة مؤقتة في staging (integrity + Prisma read tests + counts sanity) والناتج يصبح Candidate؛ الأحدث/غير المعروف: رفض قاطع (SCHEMA_NEWER/SCHEMA_UNKNOWN)
+  * D-7: Session Epoch — ملف var/auth/session-epoch خارج DB المستبدلة؛ jwt callback يوقع epoch عند الدخول ويفحصه في كل استدعاء؛ التوكن المخالف يُقتل (بلا user) فترفضه كل مصادر البيانات Node-runtime؛ حدوثة Edge proxy موثقة صراحة (غلاف صفحات فقط بلا وصول بيانات)؛ فصل كامل عن NEXTAUTH_SECRET الثابت (D-10: يثبت قويًا ولا يدخل ZIP/Manifest/API/سجلات)
+  * D-9: مستويا صيانة (write-block أثناء التحقق/العرض، full-block من disconnect حتى التحقق البعدي+الإبطال) + تسلسل الثماني المراحل الحرفي + reconnectDb عبر export let db (ESM live bindings) مع بديل restart مضمون + PRAGMA journal_mode=WAL بعد التبديل (VACUUM INTO يخرج بوضع rollback)
+  * إضافات المستخدم: مستويات CREATED/VALIDATED/RESTORE_VERIFIED في manifest.verification (لا كلمة «متحقق» لمجرد integrity) — Restore Drill وظيفة أساسية بزر UI وAPI لا اختبار يدوي — آلة حالات الاستعادة الكاملة بحالات نهائية ثلاث (COMPLETED/ROLLED_BACK/RECOVERY_REQUIRED) وقاعدة «لا خروج من الصيانة إلا بنجاح الاستعادة أو التراجع» — مصفوفة فشل/تراجع بثمانية صفوف مع إجراء الطوارئ اليدوي — سجل الاسترجاع بـ eventId/timestamp/operationId/event/actor/backupId/result/details + append-only بلا أي update/delete endpoint — Manifest v2 بحقول formatVersion/appVersion/schemaVersion/createdAt/createdBy (وصفي لا أمني)/backupType/databaseSha256/databaseBytes/integrityCheck/counts/periodRange — أمن ZIP: حدود مضغوط/غير مضغوط/نسبة/عدد مداخل + رفض zip-slip/symlinks/متداخلات + مقبول v1 حصرًا database.db+manifest.json — Recovery Test سيناريو التسعة خطوات إلزامي — RPO/RTO مع التصريح «اليدوي لا يضمن 24h» — off-device interface مستقبلية فقط مع اشتراط التشفير
+  * D-4: إجراء baseline الآمن بست خطوات (diff بلا لمس أي قاعدة → بناء فارغ من migrations → مقارنة ثنائية incl. fingerprint → اختبار سكربتات التحقق على المبنية → فقط بعدها migrate resolve --applied على الأصلية → status clean) مع خطوة drift منفصلة
+  * قوائم ملفات 4A (14 ملفًا: 8 جديدة) و4B (15 ملفًا: 5 جديدة + 13 مسارًا كتابيًا يضاف له assertWritable) مع «لا يُعدل إطلاقًا» صريح
+- تحقق تقني قبل التصميم: getServerSession في session.ts يعمل Node runtime ⇒ فحص epoch في jwt/session callbacks يغطي كل مسارات API — jszip موجود أصلًا في dependencies للحزم والفك المضبوط
+- لم يُعدَّل أي ملف كود/Schema/API/UI — الإنتاج: الوثيقة v2 + هذا المدخل + commit انتقائي append-only
+
+Stage Summary:
+- تصميم Phase 4 v2 جاهز: النسخ بـ VACUUM INTO في BACKUP_DIR منفصل، كل استعادة خلف خط تحقق ثماني + Drill للمخططات الأقدم على نسخ مؤقتة + pre-restore مدقق إلزامي + صيانة بمستويين + آلة حالات لا تخرج إلا بنجاح أو تراجع صحيح وإلا RECOVERY_REQUIRED، وإبطال الجلسات بـ Session Epoch خارج القاعدة، وأدلة الاسترجاع في سجل خارجي append-only بعناوين operationId — بانتظار الموافقة النهائية على الملخص المرسل قبل كتابة أي كود (4A أو 4B)
