@@ -24,6 +24,7 @@ import {
   UserCog,
   Users as UsersIcon,
   FolderOpen,
+  ArchiveRestore,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -55,7 +56,6 @@ import { BackupManagerTab } from "@/components/admin/backup-manager";
 import {
   parsePermissions,
   DEFAULT_USER_PERMISSIONS,
-  ADMIN_PERMISSIONS,
   canManageBackups,
   type Permissions,
 } from "@/lib/permissions";
@@ -93,6 +93,12 @@ const PERMISSION_KEYS: { key: Exclude<keyof Permissions, "groupIds">; label: str
   { key: "settings", label: "الإعدادات", desc: "تعديل البادئات" },
   { key: "manageUsers", label: "إدارة المستخدمين", desc: "الوصول لهذه الصفحة" },
   { key: "manageBackups", label: "النسخ الاحتياطي", desc: "إنشاء/تحقق/Drill/تنزيل النسخ (Phase 4A)" },
+  // 4B.3 — صلاحية مستقلة عالية الخطورة: لا تُمنح مع المدير تلقائيًا (Explicit High-Risk)
+  {
+    key: "restoreDatabase",
+    label: "استعادة قاعدة البيانات",
+    desc: "استبدال قاعدة التشغيل بالكامل — مفتاح صريح مستقل لا يُمنح تلقائيًا لأي دور (4B.3)",
+  },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -135,6 +141,13 @@ export default function AdminPage() {
   const currentUserId = (session?.user as any)?.id as string | undefined;
   const currentUserRole = ((session?.user as any)?.role as string) || "user";
   const showBackupsTab = canManageBackups(perms, currentUserRole);
+  // 4B.3 — صفحة الإدارة تفتح لصاحب manageUsers أو manageBackups (فصل الصلاحيات):
+  // حامل النسخ فقط يرى تبويب النسخ حصرًا، وحامل manageUsers يرى المستخدمين.
+  const canOpenAdminPage = perms.manageUsers || showBackupsTab;
+  // تبويب التدقيق: الـAPI خلف requireAdmin (دور) — يُخفى لغير المدير دورًا.
+  const showAuditTab = currentUserRole === "admin";
+  const showUsersTab = perms.manageUsers;
+  const defaultTab = showUsersTab ? "users" : "backups";
 
   React.useEffect(() => {
     if (status === "loading") return;
@@ -142,18 +155,20 @@ export default function AdminPage() {
       router.replace("/login?callbackUrl=/admin");
       return;
     }
-    if (!perms.manageUsers) {
+    if (!canOpenAdminPage) {
       toast({
         title: "غير مصرّح",
-        description: "لا تملك صلاحية إدارة المستخدمين",
+        description: "لا تملك صلاحية إدارة المستخدمين أو النسخ الاحتياطي",
         variant: "destructive",
       });
       router.replace("/");
       return;
     }
-    void fetchUsers();
-    void fetchGroups();
-  }, [status, perms.manageUsers]);
+    if (perms.manageUsers) {
+      void fetchUsers();
+      void fetchGroups();
+    }
+  }, [status, canOpenAdminPage, perms.manageUsers]);
 
   async function fetchUsers() {
     setLoading(true);
@@ -254,7 +269,10 @@ export default function AdminPage() {
         displayName: form.displayName.trim(),
         role: form.role,
         active: form.active,
-        permissions: isAdmin ? ADMIN_PERMISSIONS : form.permissions,
+        // 4B.3 — نرسل صلاحيات النموذج دائمًا كما هي (من بينها restoreDatabase):
+        // الخادم يطبق قالب المدير على باقي الصلاحيات لكن يأخذ restoreDatabase
+        // من القيمة الصريحة هنا — لا ADMIN_PERMISSIONS جاهزة (كانت تمنح/تمحو بصمت).
+        permissions: form.permissions,
         groupIds: validGroupIds,
       };
       if (form.password) body.password = form.password;
@@ -338,7 +356,8 @@ export default function AdminPage() {
     }
   }
 
-  if (status === "loading" || (!perms.manageUsers && status === "authenticated")) {
+  // 4B.3 — حالة التحقق عند التحميل، أو إذا انتهى التحميل بلا أي صلاحية إدارية
+  if (status === "loading" || (!canOpenAdminPage && status === "authenticated")) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
         <div className="flex items-center gap-3 text-slate-500 dark:text-slate-400">
@@ -349,7 +368,7 @@ export default function AdminPage() {
     );
   }
 
-  if (!perms.manageUsers) return null;
+  if (!canOpenAdminPage) return null;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
@@ -383,7 +402,7 @@ export default function AdminPage() {
                 </div>
                 <div className="leading-tight">
                   <div className="font-semibold text-slate-800 dark:text-slate-100">{session.user.name}</div>
-                  <div className="text-[10px] text-slate-400">{perms.role || session.user.role || "user"}</div>
+                  <div className="text-[10px] text-slate-400">{(session.user as { role?: string }).role || "user"}</div>
                 </div>
               </div>
             )}
@@ -402,16 +421,27 @@ export default function AdminPage() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
-        <Tabs defaultValue="users" className="w-full">
-          <TabsList className={cn("mb-4 grid w-full", showBackupsTab ? "grid-cols-3" : "grid-cols-2", "sm:w-fit")}>
-            <TabsTrigger value="users" className="gap-1.5">
-              <UsersIcon className="size-3.5" />
-              المستخدمون
-            </TabsTrigger>
-            <TabsTrigger value="audit" className="gap-1.5">
-              <ScrollText className="size-3.5" />
-              سجل التدقيق
-            </TabsTrigger>
+        <Tabs defaultValue={defaultTab} className="w-full">
+          <TabsList  className={cn(
+              "mb-4 grid w-full",
+              showUsersTab && showAuditTab && showBackupsTab && "grid-cols-3",
+              showUsersTab && !showBackupsTab && "grid-cols-2",
+              !showUsersTab && "grid-cols-1",
+              "sm:w-fit"
+            )}
+          >
+            {showUsersTab && (
+              <TabsTrigger value="users" className="gap-1.5">
+                <UsersIcon className="size-3.5" />
+                المستخدمون
+              </TabsTrigger>
+            )}
+            {showAuditTab && (
+              <TabsTrigger value="audit" className="gap-1.5">
+                <ScrollText className="size-3.5" />
+                سجل التدقيق
+              </TabsTrigger>
+            )}
             {showBackupsTab && (
               <TabsTrigger value="backups" className="gap-1.5">
                 <DatabaseBackup className="size-3.5" />
@@ -420,6 +450,7 @@ export default function AdminPage() {
             )}
           </TabsList>
 
+          {showUsersTab && (
           <TabsContent value="users" className="mt-0 space-y-6">
         {/* Summary cards */}
         <motion.section
@@ -537,15 +568,24 @@ export default function AdminPage() {
                               .map((p) => (
                                 <span
                                   key={p.key}
-                                  className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                                  className={cn(
+                                    "rounded-md px-1.5 py-0.5 text-[9px] font-medium",
+                                    p.key === "restoreDatabase"
+                                      ? "bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300"
+                                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                                  )
+                                  }
                                   title={p.desc}
                                 >
                                   {p.label}
                                 </span>
                               ))}
                             {u.role === "admin" && (
-                              <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
-                                الكل
+                              <span
+                                className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                                title="صلاحيات الإدارة كاملة بالدور — عدا استعادة قاعدة البيانات (مفتاح صريح مستقل — 4B.3)"
+                              >
+                                إدارة كاملة (عدا الاستعادة)
                               </span>
                             )}
                             {u.role !== "admin" && Array.isArray(u.permissions.groupIds) && u.permissions.groupIds.length > 0 && (
@@ -634,9 +674,19 @@ export default function AdminPage() {
               {PERMISSION_KEYS.map((p) => (
                 <div
                   key={p.key}
-                  className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5 dark:border-slate-800 dark:bg-slate-900/40"
+                  className={cn(
+                    "rounded-lg border p-2.5",
+                    p.key === "restoreDatabase"
+                      ? "border-rose-200 bg-rose-50/60 dark:border-rose-900 dark:bg-rose-950/30"
+                      : "border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-900/40"
+                  )}
                 >
-                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200">{p.label}</div>
+                  <div className={cn(
+                    "text-xs font-bold",
+                    p.key === "restoreDatabase"
+                      ? "text-rose-700 dark:text-rose-300"
+                      : "text-slate-700 dark:text-slate-200"
+                  )}>{p.label}</div>
                   <div className="text-[10px] text-slate-500 dark:text-slate-400">{p.desc}</div>
                 </div>
               ))}
@@ -644,10 +694,13 @@ export default function AdminPage() {
           </CardContent>
         </Card>
           </TabsContent>
+          )}
 
+          {showAuditTab && (
           <TabsContent value="audit" className="mt-0">
             <AuditTrailTab />
           </TabsContent>
+          )}
 
           {showBackupsTab && (
             <TabsContent value="backups" className="mt-0">
@@ -784,7 +837,7 @@ export default function AdminPage() {
                 <Label>الصلاحيات</Label>
                 {form.role === "admin" && (
                   <Badge className="border-transparent bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
-                    <ShieldAlert className="size-3" /> المدير يملك جميع الصلاحيات تلقائياً
+                    <ShieldAlert className="size-3" /> المدير يملك الصلاحيات الإدارية تلقائياً (عدا الاستعادة)
                   </Badge>
                 )}
               </div>
@@ -794,7 +847,7 @@ export default function AdminPage() {
                   form.role === "admin" && "pointer-events-none opacity-50"
                 )}
               >
-                {PERMISSION_KEYS.map((p) => (
+                {PERMISSION_KEYS.filter((p) => p.key !== "restoreDatabase").map((p) => (
                   <label
                     key={p.key}
                     htmlFor={`perm-${p.key}`}
@@ -816,6 +869,37 @@ export default function AdminPage() {
                     </div>
                   </label>
                 ))}
+              </div>
+
+              {/* 4B.3 — صلاحية الاستعادة: مستقلة دائمًا عن الدور، قابلة للمنح/السحب
+                  لكل من المدير والمستخدم — لا تُمنح تلقائيًا أبدًا */}
+              <div className="rounded-lg border border-rose-300 bg-rose-50/70 p-3 dark:border-rose-900 dark:bg-rose-950/30">
+                <label
+                  htmlFor="perm-restoreDatabase"
+                  className="flex cursor-pointer items-start gap-2 rounded-md p-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                >
+                  <Checkbox
+                    id="perm-restoreDatabase"
+                    checked={form.permissions.restoreDatabase === true}
+                    onCheckedChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        permissions: { ...f.permissions, restoreDatabase: v === true },
+                      }))
+                    }
+                  />
+                  <div className="leading-tight">
+                    <div className="flex items-center gap-1 text-xs font-semibold text-rose-700 dark:text-rose-300">
+                      <ArchiveRestore className="size-3.5" />
+                      استعادة قاعدة البيانات (خطورة عالية)
+                    </div>
+                    <div className="text-[10px] text-rose-600/90 dark:text-rose-400/90">
+                      استبدال قاعدة التشغيل بالكامل عبر Recovery Engine — مفتاح صريح مستقل لا
+                      يُمنح مع دور المدير ولا مع أي صلاحية أخرى. يظهر إجراء الاستعادة في واجهة
+                      النسخ لحاملي هذا المفتاح فقط (4B.3).
+                    </div>
+                  </div>
+                </label>
               </div>
             </div>
 

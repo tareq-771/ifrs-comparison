@@ -29,9 +29,11 @@ export interface Permissions {
    */
   manageBackups?: boolean;
   /**
-   * Phase 4B (محجوز — لا تشير إليه أي API في 4A): تنفيذ الاستعادة الفعلية
-   * (استبدال قاعدة التشغيل). يُعرّف المفتاح الآن لضمان فصل الصلاحيتين منذ البداية،
-   * ولا تمنح لمجرد امتلاك settings — ويبقى بلا أي تأثير حتى 4B.
+   * Phase 4B.3 — Explicit High-Risk Permission: تنفيذ الاستعادة الفعلية
+   * (استبدال قاعدة التشغيل بالكامل). صلاحية مستقلة عالية الخطورة تُمنح بمفتاح
+   * صريح حصرًا (canRestoreDatabase) — لا تُمنح ضمنيًا بدور admin ولا بـsettings
+   * ولا بـmanageBackups. يُمكن أن يوجد مدير كامل الصلاحيات الإدارية بلا هذا
+   * المفتاح فلا يستطيع استبدال قاعدة البيانات (قرار المستخدم 4B.3).
    */
   restoreDatabase?: boolean;
   /**
@@ -78,7 +80,10 @@ export const ADMIN_PERMISSIONS: Permissions = {
   assignWorkflow: true,
   reopenReport: true,
   manageBackups: true,
-  restoreDatabase: true, // محجوز 4B — لا API يستخدمه في 4A
+  // 4B.3 — Explicit High-Risk Permission: قالب المدير لا يحمل الاستعادة إطلاقًا.
+  // منحها يجري بمفتاح صريح عند الإنشاء/التعديل (body.permissions.restoreDatabase
+  // === true) — تحويل مستخدم إلى admin لا يمنحها تلقائيًا (قرار المستخدم 4B.3).
+  restoreDatabase: false,
   // Admins see all groups they own (no linkage restriction)
   groupIds: [],
 };
@@ -151,9 +156,14 @@ export function canManageBackups(perms: Permissions, role: string): boolean {
 }
 
 /**
- * Phase 4B (محجوز) — تنفيذ الاستعادة الفعلية. لا يستدعيها أي مسار في 4A؛
- * وجودها هنا يثبت الفصل عن manageBackups وعن settings منذ البداية.
+ * Phase 4B.3 — بوابة تنفيذ الاستعادة الفعلية (استبدال قاعدة التشغيل).
+ *
+ * Explicit High-Risk Permission (قرار المستخدم 4B.3، متسق مع D-5):
+ *   تعتمد على permissions.restoreDatabase === true حصرًا.
+ *   لا منح ضمني بدور admin — يمكن وجود مدير كامل الصلاحيات الإدارية
+ *   (manageUsers/settings/…) بلا القدرة على استبدال قاعدة البيانات.
+ *   عمدًا لا نستقبل role هنا حتى لا يُساء استخدامها كمنح ضمني مستقبلًا.
  */
-export function canRestoreDatabase(perms: Permissions, role: string): boolean {
-  return role === "admin" || perms.restoreDatabase === true;
+export function canRestoreDatabase(perms: Permissions): boolean {
+  return perms.restoreDatabase === true;
 }

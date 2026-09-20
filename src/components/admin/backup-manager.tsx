@@ -36,6 +36,13 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { useSession } from "next-auth/react";
+import {
+  canRestoreDatabase as canRestoreDatabasePermission,
+  parsePermissions,
+  DEFAULT_USER_PERMISSIONS,
+  type Permissions,
+} from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { RestoreDialog } from "@/components/admin/restore-dialog";
 
@@ -198,6 +205,20 @@ function fmtDate(iso: string): string {
 
 export function BackupManagerTab() {
   const { toast } = useToast();
+  // 4B.3 — إجراء الاستعادة يظهر لحاملي المفتاح الصريح restoreDatabase فقط
+  // (المدير بلا المفتاح يراه مخفيًا أيضًا — Explicit High-Risk Permission).
+  // permissions في الـJWT سلسلة JSON خام — تُحلل عبر parsePermissions.
+  const { data: session } = useSession();
+  const canRestoreDatabase = React.useMemo(() => {
+    const raw = (session?.user as { permissions?: unknown } | undefined)?.permissions;
+    const parsed =
+      typeof raw === "string"
+        ? parsePermissions(raw)
+        : raw && typeof raw === "object"
+          ? { ...DEFAULT_USER_PERMISSIONS, ...(raw as Partial<Permissions>) }
+          : { ...DEFAULT_USER_PERMISSIONS };
+    return canRestoreDatabasePermission(parsed);
+  }, [session]);
 
   const [data, setData] = React.useState<ListResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -419,7 +440,7 @@ export function BackupManagerTab() {
           )}
         >
           <ArchiveRestore className="size-3" />
-          محرك الاستعادة الفعلية: {engineEnabled ? "مفعّل" : "معطّل — التفعيل في 4B.2"}
+          محرك الاستعادة الفعلية: {engineEnabled ? "مفعّل" : "معطّل في هذه البيئة"}
         </span>
       </div>
 
@@ -526,26 +547,30 @@ export function BackupManagerTab() {
                           <PlayCircle className="size-3.5" />
                           Drill
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={cn(
-                            "h-8 gap-1 px-2 text-[11px]",
-                            e.level === "RESTORE_VERIFIED" && "border-rose-300 text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40"
-                          )}
-                          disabled={e.level !== "RESTORE_VERIFIED" || !engineEnabled}
-                          title={
-                            e.level !== "RESTORE_VERIFIED"
-                              ? "الاستعادة الفعلية تقبل RESTORE_VERIFIED فقط"
-                              : engineEnabled
-                                ? "استعادة فعلية لقاعدة التشغيل"
-                                : "محرك الاستعادة معطّل — يُفعّل في 4B.2"
-                          }
-                          onClick={() => setRestoreId(e.backupId)}
-                        >
-                          <ArchiveRestore className="size-3.5" />
-                          استعادة
-                        </Button>
+                        {/* 4B.3 — زر الاستعادة لحاملي restoreDatabase الصريحين فقط.
+                            حامل manageBackups بلا المفتاح لا يراه إطلاقًا (لا تعطيل — إخفاء). */}
+                        {canRestoreDatabase && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className={cn(
+                              "h-8 gap-1 px-2 text-[11px]",
+                              e.level === "RESTORE_VERIFIED" && "border-rose-300 text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                            )}
+                            disabled={e.level !== "RESTORE_VERIFIED" || !engineEnabled}
+                            title={
+                              e.level !== "RESTORE_VERIFIED"
+                                ? "الاستعادة الفعلية تقبل RESTORE_VERIFIED فقط"
+                                : engineEnabled
+                                  ? "استعادة فعلية لقاعدة التشغيل"
+                                  : "محرك الاستعادة معطّل في هذه البيئة"
+                            }
+                            onClick={() => setRestoreId(e.backupId)}
+                          >
+                            <ArchiveRestore className="size-3.5" />
+                            استعادة
+                          </Button>
+                        )}
                         <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-[11px]" disabled={!!e.invalidReason} asChild>
                           <a href={`/api/backups/${e.backupId}/download`} download>
                             <Download className="size-3.5" /> تنزيل

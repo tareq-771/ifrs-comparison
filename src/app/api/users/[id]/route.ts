@@ -139,14 +139,56 @@ export async function PUT(
         }
       }
 
+      // ── 4B.3 — Explicit High-Risk Permission (restoreDatabase) ─────────────
+      // القاعدة: قيمة boolean صريحة في الطلب تُعتمد حرفيًا؛ غيابها يحفظ القيمة
+      // المخزنة (لا منح ولا محو صامت). المفتاح لا يأتي من قالب المدير أبدًا.
+      let storedRestoreDatabase = false;
+      try {
+        const parsedExisting = JSON.parse(existing.permissions || "{}") as Record<string, unknown>;
+        storedRestoreDatabase = parsedExisting.restoreDatabase === true;
+      } catch {
+        storedRestoreDatabase = false;
+      }
+      const resolveRestoreDatabase = (fromBody: unknown): boolean =>
+        typeof fromBody === "boolean" ? fromBody : storedRestoreDatabase;
+
       let perms: Permissions;
       if (role === "admin") {
-        perms = ADMIN_PERMISSIONS;
+        if (body.permissions && typeof body.permissions === "object") {
+          // قالب المدير + طلب صريح — الاستعادة لا تأتي من القالب أبدًا
+          perms = { ...ADMIN_PERMISSIONS, ...body.permissions, groupIds: undefined };
+          perms.restoreDatabase = resolveRestoreDatabase(
+            (body.permissions as Record<string, unknown>).restoreDatabase
+          );
+        } else if (role !== existing.role) {
+          // ترقية إلى مدير بلا permissions في الطلب: قالب المدير دون أي منح
+          // ضمني للاستعادة — تبقى كما كانت مخزنة (عادة false)
+          perms = { ...ADMIN_PERMISSIONS, restoreDatabase: storedRestoreDatabase };
+        } else {
+          // تعديل مدير دون permissions (مثل تبديل التفعيل): حفظ المخزن حرفيًا —
+          // قد يكون مديرًا سُحبت منه الاستعادة صراحة؛ لا يجوز إعادتها من القالب
+          let preserved: Partial<Permissions> = {};
+          try {
+            preserved = JSON.parse(existing.permissions || "{}");
+          } catch {
+            preserved = {};
+          }
+          perms = {
+            ...DEFAULT_USER_PERMISSIONS,
+            ...ADMIN_PERMISSIONS,
+            ...preserved,
+            groupIds: undefined,
+          };
+        }
       } else if (body.permissions && typeof body.permissions === "object") {
         perms = { ...DEFAULT_USER_PERMISSIONS, ...body.permissions, groupIds };
+        perms.restoreDatabase = resolveRestoreDatabase(
+          (body.permissions as Record<string, unknown>).restoreDatabase
+        );
       } else if (role !== existing.role) {
         // تغيير الدور إلى مستخدم — نبدأ من الافتراضي (لا وراثة صلاحيات مدير)
-        perms = { ...DEFAULT_USER_PERMISSIONS, groupIds };
+        // لكن المفتاح الصريح المخزن للاستعادة يُحفظ (منح صريح سابق لا يُمحى بصمت)
+        perms = { ...DEFAULT_USER_PERMISSIONS, restoreDatabase: storedRestoreDatabase, groupIds };
       } else {
         // لا صلاحيات في الطلب والدور دون تغيير (مثل تبديل التفعيل) —
         // إصلاح خلل قديم كشفه سجل التدقيق: كان يُعاد بناء الصلاحيات من الافتراضي
@@ -203,6 +245,10 @@ export async function PUT(
         changedFields.push("permissions");
       }
       const passwordChanged = !!data.passwordHash;
+      // 4B.3 — إبراز تغيّر صلاحية الاستعادة في الأثر الرقابي بشكل صريح
+      // (إضافة إلى ظهورها داخل before/after.permissions)
+      const restoreDatabaseChanged =
+        permsChanged && storedRestoreDatabase !== perms.restoreDatabase;
 
       // اختيار كود العملية: الأخطر أولًا (PERMISSIONS > ROLE > DISABLE/ENABLE > UPDATE)
       let action: string = AUDIT_ACTIONS.USER_UPDATED;
@@ -226,6 +272,10 @@ export async function PUT(
               changedFields,
               passwordChanged,
               actionPriority: AUDIT_ACTION_PRIORITY.indexOf(action),
+              // 4B.3 — رقابة مركزة على أعلى صلاحية خطورة في النظام
+              ...(restoreDatabaseChanged
+                ? { restoreDatabaseChanged: { from: storedRestoreDatabase, to: perms.restoreDatabase } }
+                : {}),
             },
             ip: getClientIp(req),
           });

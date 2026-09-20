@@ -122,10 +122,17 @@ export async function POST(req: NextRequest) {
         groupIds = cleaned.length > 0 ? cleaned : undefined;
       }
 
+      // 4B.3 — Explicit High-Risk Permission:
+      //  • admin: قالب المدير لا يمنح restoreDatabase — تُمنح فقط بمفتاح صريح
+      //    في body.permissions (قرار المستخدم: تحويل مستخدم إلى admin لا يمنحها تلقائيًا).
+      //  • غير admin: المفاتيح الصريحة تُحترم حرفيًا (من بينها restoreDatabase).
+      const bodyPerms = (body.permissions && typeof body.permissions === "object"
+        ? body.permissions
+        : {}) as Record<string, unknown>;
       const perms =
         role === "admin"
-          ? ADMIN_PERMISSIONS
-          : { ...DEFAULT_USER_PERMISSIONS, ...(body.permissions || {}), groupIds };
+          ? { ...ADMIN_PERMISSIONS, restoreDatabase: bodyPerms.restoreDatabase === true }
+          : { ...DEFAULT_USER_PERMISSIONS, ...bodyPerms, groupIds };
 
       // إنشاء المستخدم + تسجيل أثره الرقابي في نفس المعاملة
       // (لا تُخزن كلمة المرور أو هاشها أبدًا — serializeAuditField يحجبها مركزيًا أيضًا)

@@ -65,13 +65,17 @@ export async function requireAdmin(): Promise<SessionUser> {
 }
 
 /**
- * Phase 4B.1 — بوابة تنفيذ الاستعادة الفعلية (استبدال قاعدة التشغيل).
- * منفصلة تمامًا عن manageBackups وsettings (فصل صارم منذ 4A).
- * المدير ضمنيًا بالدور؛ غيره بمفتاح restoreDatabase الصريح حصرًا.
+ * Phase 4B.3 — بوابة تنفيذ الاستعادة الفعلية (استبدال قاعدة التشغيل).
+ *
+ * Explicit High-Risk Permission (قرار المستخدم 4B.3):
+ *   restoreDatabase مفتاح صريح مستقل — لا يُمنح ضمنيًا بدور admin ولا بـsettings
+ *   ولا بـmanageBackups. مدير كامل الصلاحيات الإدارية بلا المفتاح يُرد هنا 403
+ *   قبل أي فحص لاحق (المحرك/الحالة/التأكيدات) — أي أن حالة المحرك لا تُكشف
+ *   لغير المخوّل إطلاقًا.
  */
 export async function requireRestoreDatabase(): Promise<SessionUser> {
   const user = await requireAuth();
-  if (!canRestoreDatabase(user.permissions, user.role)) {
+  if (!canRestoreDatabase(user.permissions)) {
     throw new Error("Forbidden");
   }
   return user;
