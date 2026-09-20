@@ -18,6 +18,7 @@ import {
 } from "@/lib/reconciliation";
 import { WORKFLOW_STATUS_LABELS, computeMyActions } from "@/lib/workflow";
 import type { WorkflowMyActions } from "@/lib/workflow";
+import { guardRead } from "@/lib/api-guard";
 
 function authError(error: unknown) {
   const msg = error instanceof Error ? error.message : "خطأ";
@@ -125,79 +126,81 @@ function toRow(
  * خارج العقد ⇒ 400 DASHBOARD_INVALID_PARAM بلا أي استعلام مكلف.
  */
 export async function GET(req: NextRequest) {
-  try {
-    const user = await requireAuth();
-    const { searchParams } = new URL(req.url);
-
-    let f: ListFilters;
+  return guardRead("/api/dashboard/reconciliations", async () => {
     try {
-      f = parseListParams(searchParams);
-    } catch (e) {
-      if (e instanceof DashboardParamError) {
-        return NextResponse.json({ error: "باراميترات غير صالحة", code: e.code, detail: e.message }, { status: 400 });
+      const user = await requireAuth();
+      const { searchParams } = new URL(req.url);
+
+      let f: ListFilters;
+      try {
+        f = parseListParams(searchParams);
+      } catch (e) {
+        if (e instanceof DashboardParamError) {
+          return NextResponse.json({ error: "باراميترات غير صالحة", code: e.code, detail: e.message }, { status: 400 });
+        }
+        throw e;
       }
-      throw e;
-    }
 
-    const today = businessToday();
+      const today = businessToday();
 
-    // بحث بالاسم: رموز LIKE الخاصة تُحل حرفيًا عبر SQL مع ESCAPE (بدل wildcards)
-    let qIds: string[] | undefined;
-    if (f.q && hasLikeWildcards(f.q)) {
-      const escaped = f.q.replace(/[\\%_]/g, (ch) => "\\" + ch);
-      const rows = await db.$queryRawUnsafe<{ id: string }[]>(
-        `SELECT id FROM Report WHERE name LIKE ? ESCAPE '\\'`,
-        `%${escaped}%`
+      // بحث بالاسم: رموز LIKE الخاصة تُحل حرفيًا عبر SQL مع ESCAPE (بدل wildcards)
+      let qIds: string[] | undefined;
+      if (f.q && hasLikeWildcards(f.q)) {
+        const escaped = f.q.replace(/[\\%_]/g, (ch) => "\\" + ch);
+        const rows = await db.$queryRawUnsafe<{ id: string }[]>(
+          `SELECT id FROM Report WHERE name LIKE ? ESCAPE '\\'`,
+          `%${escaped}%`
+        );
+        qIds = rows.map((r) => r.id);
+      }
+
+      const where = buildListWhere(user, f, today, qIds);
+      const orderBy: Prisma.ReportOrderByWithRelationInput = { [f.sort]: f.dir };
+
+      const [total, rowsRaw] = await Promise.all([
+        db.report.count({ where }),
+        db.report.findMany({
+          where,
+          orderBy,
+          skip: (f.page - 1) * f.pageSize,
+          take: f.pageSize,
+          select: {
+            id: true, name: true, groupId: true, userId: true, periodEnd: true, dueDate: true,
+            status: true, cycle: true, version: true, updatedAt: true,
+            preparedById: true, preparedByName: true, preparedAt: true,
+            reviewedById: true, reviewedByName: true, reviewStartedAt: true, reviewedAt: true,
+            approvedById: true, approvedByName: true, approvedAt: true,
+            returnedAt: true, reopenedAt: true,
+            group: { select: { name: true } },
+          },
+        }),
+      ]);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          rows: rowsRaw.map((r) => toRow(r, user, today)),
+          pagination: {
+            page: f.page,
+            pageSize: f.pageSize,
+            total,
+            totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
+          },
+          sort: f.sort,
+          dir: f.dir,
+          today,
+          tzOffsetMinutes: businessTzOffsetMinutes(),
+          stageLabels: BUSINESS_STAGE_LABELS,
+        },
+      });
+    } catch (error) {
+      const { status, msg } = authError(error);
+      return NextResponse.json(
+        { error: status === 500 ? "فشل في جلب بيانات اللوحة: " + msg : msg },
+        { status }
       );
-      qIds = rows.map((r) => r.id);
     }
-
-    const where = buildListWhere(user, f, today, qIds);
-    const orderBy: Prisma.ReportOrderByWithRelationInput = { [f.sort]: f.dir };
-
-    const [total, rowsRaw] = await Promise.all([
-      db.report.count({ where }),
-      db.report.findMany({
-        where,
-        orderBy,
-        skip: (f.page - 1) * f.pageSize,
-        take: f.pageSize,
-        select: {
-          id: true, name: true, groupId: true, userId: true, periodEnd: true, dueDate: true,
-          status: true, cycle: true, version: true, updatedAt: true,
-          preparedById: true, preparedByName: true, preparedAt: true,
-          reviewedById: true, reviewedByName: true, reviewStartedAt: true, reviewedAt: true,
-          approvedById: true, approvedByName: true, approvedAt: true,
-          returnedAt: true, reopenedAt: true,
-          group: { select: { name: true } },
-        },
-      }),
-    ]);
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        rows: rowsRaw.map((r) => toRow(r, user, today)),
-        pagination: {
-          page: f.page,
-          pageSize: f.pageSize,
-          total,
-          totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
-        },
-        sort: f.sort,
-        dir: f.dir,
-        today,
-        tzOffsetMinutes: businessTzOffsetMinutes(),
-        stageLabels: BUSINESS_STAGE_LABELS,
-      },
-    });
-  } catch (error) {
-    const { status, msg } = authError(error);
-    return NextResponse.json(
-      { error: status === 500 ? "فشل في جلب بيانات اللوحة: " + msg : msg },
-      { status }
-    );
-  }
+  });
 }
 
 // قراءة فقط — اللوحة لا تنشئ منطق workflow موازيًا ولا تكتب أي بيانات

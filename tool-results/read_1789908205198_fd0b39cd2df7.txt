@@ -1,0 +1,759 @@
+     1→// Phase 4B.1 — الاختبارات التدميرية المعزولة (Isolated Destructive Tests).
+     2→//
+     3→// بيئة معزولة بالكامل عن التشغيل: قاعدة مبنية من migrations في مجلد اختبار،
+     4→// VAR_DIR خاص، خادم Next على 3101 بمتغيرات: RESTORE_ENGINE_ENABLED=1 و
+     5→// RECOVERY_FAULT_INJECTION=1 (لا يُضبطان على الإنتاج إطلاقًا).
+     6→//
+     7→// المصفوفة التدميرية (طلب المستخدم حرفيًا):
+     8→//   1  restore ناجح (A→B عبر API الفعلي)      10 rollback فاشل ⇒ RECOVERY_REQUIRED
+     9→//   2  فشل pre-restore backup                 11 crash بعد SWAP_STARTED قبل SWAP_COMPLETED
+    10→//   3  candidate غير RESTORE_VERIFIED         12 crash بعد SWAP_COMPLETED قبل POST_VERIFY
+    11→//   4  canonical mismatch (تلاعب بالمخطط)     13 ملف maintenance state تالف
+    12→//   5  drain timeout                          14 epoch file تالف
+    13→//   6  فشل disconnect                         15 restore متزامنان (409)
+    14→//   7  فشل swap قبل rename                    16 write request أثناء DRAINING
+    15→//   8  فشل post-verify بعد swap               17 read/write أثناء SWAPPING
+    16→//   9  rollback ناجح                          18 جلسة JWT قديمة بعد restore
+    17→//   +  الجرد السلوكي لكل مسارات الكتابة أثناء DRAINING (503 لكل منها)
+    18→//   +  epoch overflow + epoch مفقود + العودة إلى الحالة الأحدث + integrity نهائي
+    19→//
+    20→// Fault Injection: قناة ملف control فقط (VAR_DIR/test/fault-injection.json) —
+    21→// غير متاحة في production API إطلاقًا (بوابة بيئية مزدوجة في fault-injection.ts).
+    22→
+    23→import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync, readdirSync } from "node:fs";
+    24→import path from "node:path";
+    25→import { spawn, spawnSync } from "node:child_process";
+    26→
+    27→const ROOT = "/home/z/my-project";
+    28→const PORT = 3101;
+    29→const BASE = `http://127.0.0.1:${PORT}`;
+    30→const RUN_ID = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
+    31→const ISO = path.join(ROOT, "var", "test", "4b1", `run-${RUN_ID}`);
+    32→const VAR_DIR = path.join(ISO, "var");
+    33→const DB_DIR = path.join(ISO, "db");
+    34→const DB_PATH = path.join(DB_DIR, "test.db");
+    35→const STATE_FILE = path.join(VAR_DIR, "maintenance", "state.json");
+    36→const EPOCH_FILE = path.join(VAR_DIR, "auth", "session-epoch");
+    37→const CONTROL_FILE = path.join(VAR_DIR, "test", "fault-injection.json");
+    38→const RECOVERY_LOG = path.join(VAR_DIR, "recovery", "recovery-log.jsonl");
+    39→const EVIDENCE = path.join(ISO, "evidence.json");
+    40→
+    41→let serverProc: ReturnType<typeof spawn> | null = null;
+    42→let serverLog = "";
+    43→const results: Array<{ name: string; ok: boolean; detail: string }> = [];
+    44→
+    45→function line(name: string, ok: boolean, detail = ""): boolean {
+    46→  results.push({ name, ok, detail });
+    47→  console.log(`${ok ? "✅" : "❌"} ${name}${detail ? ` — ${detail}` : ""}`);
+    48→  return ok;
+    49→}
+    50→
+    51→function setControl(control: Record<string, unknown> | null): void {
+    52→  if (control === null) {
+    53→    if (existsSync(CONTROL_FILE)) rmSync(CONTROL_FILE);
+    54→  } else {
+    55→    mkdirSync(path.dirname(CONTROL_FILE), { recursive: true });
+    56→    writeFileSync(CONTROL_FILE, JSON.stringify(control, null, 2));
+    57→  }
+    58→}
+    59→
+    60→function readRecoveryLog(): Array<Record<string, unknown>> {
+    61→  if (!existsSync(RECOVERY_LOG)) return [];
+    62→  return readFileSync(RECOVERY_LOG, "utf8")
+    63→    .split("\n")
+    64→    .filter((l) => l.trim())
+    65→    .map((l) => {
+    66→      try {
+    67→        return JSON.parse(l) as Record<string, unknown>;
+    68→      } catch {
+    69→        return {};
+    70→      }
+    71→    });
+    72→}
+    73→
+    74→async function status(): Promise<{
+    75→  maintenance: { active: boolean; state: string; level: string | null; operationId: string | null; stateFileStatus: string; recovery: { reason: string; originalState: string | null } | null };
+    76→  epoch: { available: boolean };
+    77→  restoreEngineEnabled: boolean;
+    78→}> {
+    79→  for (let i = 0; i < 3; i++) {
+    80→    try {
+    81→      const res = await fetch(`${BASE}/api/system/status`, { cache: "no-store" });
+    82→      if (res.ok) return (await res.json()) as Awaited<ReturnType<typeof status>>;
+    83→    } catch {
+    84→      /* retry */
+    85→    }
+    86→    await sleep(300);
+    87→  }
+    88→  throw new Error("status endpoint غير مستجيب");
+    89→}
+    90→
+    91→function makeSession() {
+    92→  const jar = new Map<string, string>();
+    93→  const cookieHeader = () => [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+    94→  async function capture(res: Response): Promise<void> {
+    95→    const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+    96→    for (const sc of setCookies) {
+    97→      const [pair] = sc.split(";");
+    98→      const idx = pair.indexOf("=");
+    99→      if (idx > 0) jar.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+   100→    }
+   101→  }
+   102→  async function login(username: string, password: string): Promise<boolean> {
+   103→    const csrfRes = await fetch(`${BASE}/api/auth/csrf`, { redirect: "manual" });
+   104→    await capture(csrfRes);
+   105→    const { csrfToken } = (await csrfRes.json()) as { csrfToken: string };
+   106→    const body = new URLSearchParams({ csrfToken, username, password, json: "true" });
+   107→    const res = await fetch(`${BASE}/api/auth/callback/credentials`, {
+   108→      method: "POST",
+   109→      headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookieHeader() },
+   110→      body: body.toString(),
+   111→      redirect: "manual",
+   112→    });
+   113→    await capture(res);
+   114→    return !!(await whoami())?.id;
+   115→  }
+   116→  async function whoami(): Promise<{ id?: string; username?: string } | null> {
+   117→    const res = await fetch(`${BASE}/api/auth/session`, { headers: { Cookie: cookieHeader() }, cache: "no-store" });
+   118→    await capture(res);
+   119→    if (!res.ok) return null;
+   120→    const j = (await res.json()) as { user?: { id?: string; username?: string } };
+   121→    return j?.user ?? null;
+   122→  }
+   123→  async function api<T = unknown>(p: string, init?: RequestInit): Promise<{ status: number; body: T }> {
+   124→    const res = await fetch(`${BASE}${p}`, {
+   125→      ...init,
+   126→      headers: { "Content-Type": "application/json", Cookie: cookieHeader(), ...(init?.headers ?? {}) },
+   127→    });
+   128→    await capture(res);
+   129→    const body = (await res.json().catch(() => ({}))) as T;
+   130→    return { status: res.status, body };
+   131→  }
+   132→  const drop = () => jar.clear();
+   133→  return { login, whoami, api, drop, cookieHeader };
+   134→}
+   135→type Session = ReturnType<typeof makeSession>;
+   136→
+   137→function serverEnv(): Record<string, string> {
+   138→  return {
+   139→    ...process.env,
+   140→    DATABASE_URL: `file:${DB_PATH}`,
+   141→    VAR_DIR,
+   142→    NEXT_DIST_DIR: '.next-iso',
+   143→    NEXTAUTH_SECRET: `test-secret-${RUN_ID}-a7f3c9e1b2d4`,
+   144→    RECOVERY_FAULT_INJECTION: "1",
+   145→    RESTORE_ENGINE_ENABLED: "1",
+   146→  } as Record<string, string>;
+   147→}
+   148→
+   149→async function startServer(): Promise<void> {
+   150→  const proc = spawn("bunx", ["next", "dev", "-p", String(PORT)], {
+   151→    cwd: ROOT,
+   152→    env: { ...serverEnv(), NODE_ENV: process.env.NODE_ENV ?? "development" } as NodeJS.ProcessEnv,
+   153→    stdio: "pipe" as const,
+   154→  });
+   155→  serverProc = proc;
+   156→  proc.stdout?.on("data", (d) => {
+   157→    serverLog += String(d);
+   158→  });
+   159→  proc.stderr?.on("data", (d) => {
+   160→    serverLog += String(d);
+   161→  });
+   162→  const deadline = Date.now() + 150_000;
+   163→  while (Date.now() < deadline) {
+   164→    try {
+   165→      // /api/system/status معفاة من حراس الصيانة — تعمل حتى لو أقلع الخادم
+   166→      // في RECOVERY_REQUIRED بعد crash (وهذا متوقع في اختبارات 11/12)
+   167→      const res = await fetch(`${BASE}/api/system/status`, { cache: "no-store" });
+   168→      if (res.ok) return;
+   169→    } catch {
+   170→      /* not ready */
+   171→    }
+   172→    await sleep(800);
+   173→  }
+   174→  throw new Error("الخادم المعزول لم يجهز — السجل:\n" + serverLog.slice(-3000));
+   175→}
+   176→
+   177→async function stopServer(): Promise<void> {
+   178→  if (!serverProc) return;
+   179→  const p = serverProc;
+   180→  serverProc = null;
+   181→  p.kill("SIGKILL");
+   182→  // قتل السلسلة كاملة: bunx (parent) قد يموت ويرتب next-server (grandchild) —
+   183→  // يبقى ممسكًا بالمنفذ ⇒ EADDRINUSE في الإقلاع التالي. نصطاد حامل المنفذ صراحة.
+   184→  const killPort = spawnSync("bash", ["-c", `ss -ltnp 2>/dev/null | grep ':${PORT} ' | grep -oP 'pid=\\K[0-9]+' | xargs -r kill -9`], { encoding: "utf8" });
+   185→  void killPort;
+   186→  spawnSync("pkill", ["-f", `next dev -p ${PORT}`], { encoding: "utf8" });
+   187→  await sleep(800);
+   188→}
+   189→
+   190→async function restartServer(): Promise<void> {
+   191→  await stopServer();
+   192→  await startServer();
+   193→}
+   194→
+   195→function sleep(ms: number): Promise<void> {
+   196→  return new Promise((r) => setTimeout(r, ms));
+   197→}
+   198→
+   199→async function waitForState(state: string, timeoutMs = 30_000): Promise<boolean> {
+   200→  const deadline = Date.now() + timeoutMs;
+   201→  while (Date.now() < deadline) {
+   202→    try {
+   203→      const st = await status();
+   204→      if (st.maintenance.state === state) return true;
+   205→      if (st.maintenance.state === "RECOVERY_REQUIRED" && state !== "RECOVERY_REQUIRED") return false;
+   206→    } catch {
+   207→      /* الاتصال قد ينقطع لحظة */
+   208→    }
+   209→    await sleep(150);
+   210→  }
+   211→  return false;
+   212→}
+   213→
+   214→async function waitServerDown(timeoutMs = 30_000): Promise<boolean> {
+   215→  const deadline = Date.now() + timeoutMs;
+   216→  while (Date.now() < deadline) {
+   217→    try {
+   218→      await fetch(`${BASE}/api/system/status`, { cache: "no-store" });
+   219→    } catch {
+   220→      return true; // الاتصال انقطع — الخادم مات
+   221→    }
+   222→    await sleep(300);
+   223→  }
+   224→  return false;
+   225→}
+   226→
+   227→async function waitServerUp(timeoutMs = 150_000): Promise<void> {
+   228→  const deadline = Date.now() + timeoutMs;
+   229→  while (Date.now() < deadline) {
+   230→    try {
+   231→      const res = await fetch(`${BASE}/api/system/status`, { cache: "no-store" });
+   232→      if (res.ok) return; // معفاة من الحرس — تعيد 200 فور إقلاع الخادم بأي حالة
+   233→    } catch {
+   234→      /* not ready */
+   235→    }
+   236→    await sleep(700);
+   237→  }
+   238→  throw new Error("الخادم لم يععد للعمل");
+   239→}
+   240→
+   241→async function ensureLogin(s: Session, username: string, password: string): Promise<void> {
+   242→  if ((await s.whoami())?.id) return;
+   243→  const ok = await s.login(username, password);
+   244→  if (!ok) throw new Error(`فشل دخول ${username} بعد انقطاع الجلسة`);
+   245→}
+   246→
+   247→async function createDataset(s: Session, label: string, reports: number): Promise<{ groupId: string; reportIds: string[] }> {
+   248→  const grp = await s.api<{ id: string }>("/api/groups", { method: "POST", body: JSON.stringify({ name: `مجموعة ${label}` }) });
+   249→  if (grp.status !== 201) throw new Error(`فشل إنشاء مجموعة ${label}: ${JSON.stringify(grp.body)}`);
+   250→  const reportIds: string[] = [];
+   251→  for (let i = 1; i <= reports; i++) {
+   252→    const rep = await s.api<{ id: string }>("/api/reports", {
+   253→      method: "POST",
+   254→      body: JSON.stringify({ name: `تقرير ${label} رقم ${i}`, label1: label, label2: `${i}`, groupId: grp.body.id, periodEnd: "2026-09-30" }),
+   255→    });
+   256→    if (rep.status !== 201) throw new Error(`فشل إنشاء تقرير ${label}: ${JSON.stringify(rep.body)}`);
+   257→    reportIds.push(rep.body.id);
+   258→  }
+   259→  return { groupId: grp.body.id, reportIds };
+   260→}
+   261→
+   262→async function deleteDataset(s: Session, ds: { groupId: string; reportIds: string[] }): Promise<void> {
+   263→  for (const id of ds.reportIds) {
+   264→    const del = await s.api(`/api/reports/${id}`, { method: "DELETE" });
+   265→    if (del.status !== 200 && del.status !== 204) throw new Error(`فشل حذف تقرير ${id}: ${JSON.stringify(del.body)}`);
+   266→  }
+   267→  const delG = await s.api(`/api/groups/${ds.groupId}`, { method: "DELETE" });
+   268→  if (delG.status !== 200 && delG.status !== 204) throw new Error(`فشل حذف مجموعة: ${JSON.stringify(delG.body)}`);
+   269→}
+   270→
+   271→async function createBackupAndDrill(s: Session): Promise<string> {
+   272→  let bk = await s.api<{ backupId: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+   273→  // فترة التهدئة (60 ثانية بين النسخ — سلوك 4A) — تنتظر وتعيد المحاولة
+   274→  while (bk.status === 429) {
+   275→    const waitMs = Number((bk.body as { retryAfterMs?: number }).retryAfterMs ?? 60_000) + 500;
+   276→    await sleep(Math.min(waitMs, 65_000));
+   277→    bk = await s.api<{ backupId: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+   278→  }
+   279→  if (bk.status !== 201) throw new Error(`فشل إنشاء نسخة: ${JSON.stringify(bk.body)}`);
+   280→  const drill = await s.api<{ level: string }>(`/api/backups/${bk.body.backupId}/drill`, { method: "POST" });
+   281→  if (drill.status !== 200 || drill.body.level !== "RESTORE_VERIFIED") {
+   282→    throw new Error(`فشل Drill: ${JSON.stringify(drill.body)}`);
+   283→  }
+   284→  return bk.body.backupId;
+   285→}
+   286→
+   287→interface RestoreResponseBody {
+   288→  result?: string;
+   289→  operationId?: string;
+   290→  code?: string;
+   291→  error?: string;
+   292→  abortReason?: string;
+   293→  epochBumped?: boolean;
+   294→  preRestoreBackupId?: string | null;
+   295→  postVerify?: Array<{ code: string; ok: boolean }> | null;
+   296→  rollbackVerify?: Array<{ code: string; ok: boolean }> | null;
+   297→  downgradeReasons?: string[];
+   298→  requiredText?: string;
+   299→  holderOperationId?: string | null;
+   300→  currentState?: string;
+   301→  [key: string]: unknown;
+   302→}
+   303→
+   304→async function tryRestore(
+   305→  s: Session,
+   306→  backupId: string,
+   307→  extra?: Record<string, unknown>
+   308→): Promise<{ status: number; body: RestoreResponseBody }> {
+   309→  const res = await fetch(`${BASE}/api/backups/${backupId}/restore`, {
+   310→    method: "POST",
+   311→    headers: { "Content-Type": "application/json", Cookie: s.cookieHeader() },
+   312→    body: JSON.stringify({ confirmationText: "RESTORE", ...(extra ?? {}) }),
+   313→  });
+   314→  const body = (await res.json().catch(() => ({}))) as RestoreResponseBody;
+   315→  return { status: res.status, body };
+   316→}
+   317→
+   318→/** قائمة المسارات الكتابية من الجرد الساكن (تُستخدم للفحص السلوكي أثناء DRAINING). */
+   319→function writeProbeRoutes(): Array<{ path: string; method: string; body?: string }> {
+   320→  return [
+   321→    { path: "/api/setup", method: "POST", body: "{}" },
+   322→    { path: "/api/users", method: "POST", body: "{}" },
+   323→    { path: "/api/users/x", method: "PUT", body: "{}" },
+   324→    { path: "/api/users/x", method: "DELETE" },
+   325→    { path: "/api/groups", method: "POST", body: "{}" },
+   326→    { path: "/api/groups/x", method: "PUT", body: "{}" },
+   327→    { path: "/api/groups/x", method: "DELETE" },
+   328→    { path: "/api/reports", method: "POST", body: "{}" },
+   329→    { path: "/api/reports/x", method: "PUT", body: "{}" },
+   330→    { path: "/api/reports/x", method: "DELETE" },
+   331→    { path: "/api/reports/x/assignments", method: "PUT", body: "{}" },
+   332→    { path: "/api/reports/x/due-date", method: "PATCH", body: "{}" },
+   333→    { path: "/api/reports/x/workflow", method: "POST", body: "{}" },
+   334→    { path: "/api/backups", method: "POST" },
+   335→    { path: "/api/backups/x/validate", method: "POST" },
+   336→    { path: "/api/backups/x/drill", method: "POST" },
+   337→    { path: "/api/backups/upload", method: "POST", body: "{}" },
+   338→    { path: "/api/chat", method: "POST", body: "{}" },
+   339→    { path: "/api/conversations/x", method: "PATCH", body: "{}" },
+   340→    { path: "/api/conversations/x", method: "DELETE" },
+   341→  ];
+   342→}
+   343→
+   344→async function main(): Promise<void> {
+   345→  console.log(`=== Phase 4B.1 — المصفوفة التدميرية المعزولة ===`);
+   346→  console.log(`البيئة المعزولة: ${ISO}\n`);
+   347→
+   348→  // ── تجهيز البيئة ───────────────────────────────────────────────────────
+   349→  rmSync(ISO, { recursive: true, force: true });
+   350→  mkdirSync(DB_DIR, { recursive: true });
+   351→  mkdirSync(VAR_DIR, { recursive: true });
+   352→
+   353→  const deploy = spawnSync("bunx", ["prisma", "migrate", "deploy"], {
+   354→    cwd: ROOT,
+   355→    env: { ...process.env, DATABASE_URL: `file:${DB_PATH}` },
+   356→    encoding: "utf8",
+   357→  });
+   358→  line("تجهيز: قاعدة معزولة من migrations", deploy.status === 0, (deploy.stdout ?? "").includes("in sync") || (deploy.stdout ?? "").includes("applied") ? "migrated" : (deploy.stderr ?? "").slice(0, 120));
+   359→
+   360→  await startServer();
+   361→  line("تجهيز: خادم معزول على 3101", true, `VAR_DIR=${path.relative(ROOT, VAR_DIR)}`);
+   362→
+   363→  const st0 = await status();
+   364→  line("0أ) الحالة الابتدائية NORMAL + epoch متاح + المحرك مفعّل", st0.maintenance.state === "NORMAL" && st0.epoch.available && st0.restoreEngineEnabled);
+   365→
+   366→  // إعداد المدير
+   367→  const rnd = RUN_ID.slice(-6);
+   368→  const ADMIN = `op_admin_${rnd}`;
+   369→  const PASS = `Op-${crypto.randomUUID()}-Aa1!`;
+   370→  const s = makeSession();
+   371→  const setup = await s.api("/api/setup", { method: "POST", body: JSON.stringify({ username: ADMIN, password: PASS, displayName: "مشغّل 4B.1" }) });
+   372→  line("0ب) الإعداد الأولي (مدير)", setup.status === 201);
+   373→  line("0ج) دخول المدير", await s.login(ADMIN, PASS));
+   374→
+   375→  // ── المجموعتان A وB ─────────────────────────────────────────────────────
+   376→  const datasetA = await createDataset(s, `DatasetA-${rnd}`, 1);
+   377→  const backupA = await createBackupAndDrill(s);
+   378→  line("1أ) نسخة A (تقرير واحد) — RESTORE_VERIFIED", true, backupA);
+   379→
+   380→  const datasetB = await createDataset(s, `DatasetB-${rnd}`, 2);
+   381→  await deleteDataset(s, datasetA);
+   382→  const backupB = await createBackupAndDrill(s);
+   383→  line("1ب) نسخة B (تقريران بعد حذف A شرعيًا) — RESTORE_VERIFIED", true, backupB);
+   384→
+   385→  // جلسة من حالة B (للاختبار 18)
+   386→  const sessionB = makeSession();
+   387→  await sessionB.login(ADMIN, PASS);
+   388→  line("1ج) جلسة مستخدم من حالة B محفوظة", !!(await sessionB.whoami())?.id);
+   389→
+   390→  const reportsNow = async (sess: Session): Promise<string[]> => {
+   391→    const r = await sess.api<Array<{ name: string }> | { error?: string }>("/api/reports");
+   392→    if (r.status !== 200 || !Array.isArray(r.body)) {
+   393→      throw new Error(`قراءة التقارير فشلت: ${r.status} ${JSON.stringify(r.body).slice(0, 80)}`);
+   394→    }
+   395→    return (r.body as Array<{ name: string }>).map((x) => x.name);
+   396→  };
+   397→
+   398→  // ── 3) candidate غير RESTORE_VERIFIED (قبل الاستعادة الناجحة كي لا نهدم A) ──
+   399→  let candidateC = await s.api<{ backupId: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+   400→  while (candidateC.status === 429) {
+   401→    await sleep(Math.min(Number(candidateC.body.retryAfterMs ?? 60_000) + 500, 65_000));
+   402→    candidateC = await s.api<{ backupId: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+   403→  }
+   404→  if (candidateC.status === 201) {
+   405→    const attempt = await tryRestore(s, candidateC.body.backupId);
+   406→    line("3) رفض candidate غير RESTORE_VERIFIED (409)", attempt.status === 409 && attempt.body.code === "CANDIDATE_NOT_RESTORE_VERIFIED", String(attempt.body.code ?? attempt.status));
+   407→    const stAfter = await status();
+   408→    line("3ب) الحالة بقيت NORMAL بعد الرفض", stAfter.maintenance.state === "NORMAL");
+   409→  } else {
+   410→    line("3) إنشاء نسخة C للرفض", false, JSON.stringify(candidateC.body));
+   411→  }
+   412→
+   413→  // ── 4) canonical mismatch: تلاعب بالمخطط ثم رفع للتحقق ──────────────────
+   414→  {
+   415→    // نسخة A كأساس — استبدل database.db بأخرى فيها جدول زائد + Manifest متسق معها
+   416→    const bkDir = path.join(VAR_DIR, "backups");
+   417→    const zipPath = path.join(bkDir, `${backupA}.zip`);
+   418→    const work = path.join(ISO, "tamper");
+   419→    mkdirSync(work, { recursive: true });
+   420→    // فك عبر bun (JSZip من node_modules)
+   421→    const unzipScript = `
+   422→      const JSZip = require("jszip"); const fs = require("fs");
+   423→      (async () => {
+   424→        const zip = await JSZip.loadAsync(fs.readFileSync(${JSON.stringify(zipPath)}));
+   425→        fs.writeFileSync(${JSON.stringify(path.join(work, "database.db"))}, await zip.file("database.db").async("nodebuffer"));
+   426→        fs.writeFileSync(${JSON.stringify(path.join(work, "manifest.json"))}, await zip.file("manifest.json").async("nodebuffer"));
+   427→      })();`;
+   428→    spawnSync("bun", ["-e", unzipScript], { cwd: ROOT });
+   429→    // عدّل المخطط: جدول زائد (canonical يتغير)
+   430→    const { PrismaClient } = await import("@prisma/client");
+   431→    const tamper = new PrismaClient({ datasources: { db: { url: `file:${path.join(work, "database.db")}` } }, log: [] });
+   432→    await tamper.$executeRawUnsafe(`CREATE TABLE forged_table (id TEXT PRIMARY KEY, note TEXT)`);
+   433→    await tamper.$queryRawUnsafe(`PRAGMA wal_checkpoint(TRUNCATE)`);
+   434→    await tamper.$disconnect();
+   435→    // بصمات حقيقية من المحتوى المعدّل — Manifest "متسق" لكنه مخطط غريب
+   436→    const { canonicalSchemaFingerprint, physicalSchemaFingerprint } = await import("../src/lib/schema-fingerprint");
+   437→    const probe = new PrismaClient({ datasources: { db: { url: `file:${path.join(work, "database.db")}` } }, log: [] });
+   438→    const canon = await canonicalSchemaFingerprint(probe);
+   439→    const phys = await physicalSchemaFingerprint(probe);
+   440→    await probe.$disconnect();
+   441→    const manifest = JSON.parse(readFileSync(path.join(work, "manifest.json"), "utf8")) as Record<string, unknown>;
+   442→    const dbBytes = readFileSync(path.join(work, "database.db"));
+   443→    const { createHash } = await import("node:crypto");
+   444→    manifest.schemaFingerprint = phys;
+   445→    manifest.canonicalSchemaFingerprint = canon;
+   446→    (manifest.database as Record<string, unknown>).sha256 = createHash("sha256").update(dbBytes).digest("hex");
+   447→    (manifest.database as Record<string, unknown>).bytes = dbBytes.length;
+   448→    // ⬅ الحاسم: كتابة الـ Manifest المعدّل على القرص قبل إعادة الحزم (الباكية القديمة كانت تحمل sha الأصل!)
+   449→    writeFileSync(path.join(work, "manifest.json"), JSON.stringify(manifest, null, 2));
+   450→    // أعد الحزم وارفع
+   451→    const zipScript = `
+   452→      const JSZip = require("jszip"); const fs = require("fs");
+   453→      (async () => {
+   454→        const zip = new JSZip();
+   455→        zip.file("database.db", fs.readFileSync(${JSON.stringify(path.join(work, "database.db"))}));
+   456→        zip.file("manifest.json", fs.readFileSync(${JSON.stringify(path.join(work, "manifest.json"))}));
+   457→        fs.writeFileSync(${JSON.stringify(path.join(work, "forged.zip"))}, await zip.generateAsync({ type: "nodebuffer" }));
+   458→      })();`;
+   459→    spawnSync("bun", ["-e", zipScript], { cwd: ROOT });
+   460→    const b64 = readFileSync(path.join(work, "forged.zip")).toString("base64");
+   461→    const up = await s.api<{ code?: string; error?: string }>("/api/backups/upload", { method: "POST", body: JSON.stringify({ dataBase64: b64, name: "forged.zip" }) });
+   462→    line("4) رفض مخطط متلاعب به (SCHEMA_UNKNOWN قبل أي لمس للإنتاج)", up.status === 422 && up.body.code === "SCHEMA_UNKNOWN", `${up.status} ${String(up.body.code ?? up.body.error ?? "").slice(0, 80)}`);
+   463→  }
+   464→
+   465→  // ── 2) restore ناجح: A فوق B (عبر API الفعلي) ──────────────────────────
+   466→  {
+   467→    const beforeNames = await reportsNow(s);
+   468→    line("2أ) الحالة قبل الاستعادة = Dataset B حصرًا (تقريران)", beforeNames.length === 2 && beforeNames.every((n) => n.includes("DatasetB")), beforeNames.join(" · "));
+   469→    const pre = await fetch(`${BASE}/api/backups/${backupA}/restore-preview`, { headers: { Cookie: s.cookieHeader() } });
+   470→    const preview = (await pre.json()) as { downgradeRequired: boolean; requiredConfirmations: { secondary: string | null } };
+   471→    line("2ب) المعاينة تشترط تأكيدًا ثانيًا (نسخة أقدم/تقليل تقارير)", preview.downgradeRequired === true && preview.requiredConfirmations.secondary === backupA);
+   472→    const out = await tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   473→    line("2ج) الاستعادة اكتملت COMPLETED", out.status === 200 && out.body.result === "COMPLETED", `op=${String(out.body.operationId ?? "")}`);
+   474→    await ensureLogin(s, ADMIN, PASS); // الجلسة القديمة ماتت (epoch+1) — دخول جديد قبل القراءة
+   475→    const afterNames = await reportsNow(s);
+   476→    line("2د) الإنتاج أصبح A فعلًا (تقرير واحد بالاسم الأصلي)", afterNames.length === 1 && afterNames[0].includes("DatasetA"), afterNames.join(" · "));
+   477→    const st = await status();
+   478→    line("2هـ) الخروج الطبيعي من الصيانة إلى NORMAL", st.maintenance.state === "NORMAL");
+   479→    const opId = String(out.body.operationId ?? "");
+   480→    const events = readRecoveryLog().filter((e) => e.operationId === opId).map((e) => e.event);
+   481→    const expectedSeq = [
+   482→      "RESTORE_STARTED", "MAINTENANCE_ENTERED", "CANDIDATE_VERIFIED", "PRE_RESTORE_STARTED", "PRE_RESTORE_VERIFIED",
+   483→      "DRAIN_COMPLETED", "DB_DISCONNECTED", "SWAP_STARTED", "SWAP_COMPLETED", "POST_VERIFY_STARTED", "RESTORE_COMPLETED",
+   484→    ];
+   485→    const allPresent = expectedSeq.every((e) => events.includes(e));
+   486→    line("2و) السجل الخارجي يحمل التسلسل الحرفي الكامل بعملية واحدة", allPresent, `${events.length} حدثًا · op=${opId.slice(-12)}`);
+   487→
+   488→    // 18) الجلسة القديمة من حالة B ماتت (epoch+1)
+   489→    const oldWho = await sessionB.whoami();
+   490→    line("18) جلسة JWT القديمة (من حالة B) لم تعد صالحة بعد الاستعادة", !oldWho?.id, oldWho?.id ? "ما زالت حية!" : "ميتة (epoch) — 401");
+   491→    await ensureLogin(s, ADMIN, PASS);
+   492→    line("18ب) الدخول الجديد يعمل بعد epoch+1", true);
+   493→  }
+   494→
+   495→  // ── 15) استعادتان متزامنتان ────────────────────────────────────────────
+   496→  {
+   497→    setControl({ points: { VALIDATING_STALL: "stall" } });
+   498→    const first = tryRestore(s, backupB, { downgradeConfirmation: backupB });
+   499→    line("15أ) الأولى دخلت VALIDATING", await waitForState("VALIDATING", 20_000));
+   500→    const second = await tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   501→    line("15ب) الثانية ⇒ 409 RECOVERY_OPERATION_IN_PROGRESS", second.status === 409 && second.body.code === "RECOVERY_OPERATION_IN_PROGRESS", String(second.body.code ?? second.status));
+   502→    setControl(null);
+   503→    const firstOut = await first;
+   504→    line("15ج) الأولى أكملت مسارها بعد رفع التعليق", firstOut.body.result === "COMPLETED" || firstOut.body.result === "ROLLED_BACK", String(firstOut.body.result ?? firstOut.body.code));
+   505→    await ensureLogin(s, ADMIN, PASS);
+   506→  }
+   507→
+   508→  // الحالة الآن: B (من 15ج إن COMPLETED) — نثبت ثم نكمل
+   509→  {
+   510→    const names = await reportsNow(s);
+   511→    line("15د) الحالة الراهنة موثقة", true, `${names.length} تقارير`);
+   512→  }
+   513→
+   514→  // ── 2#pre) فشل pre-restore backup (الاختبار 2 من المصفوفة) ──────────────
+   515→  {
+   516→    setControl({ points: { PRE_RESTORE_BACKUP: "fail" } });
+   517→    const out = await tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   518→    line("5) فشل pre-restore backup ⇒ ABORTED قبل أي تبديل", out.body.result === "ABORTED" && String(out.body.abortReason ?? "").includes("محقون"), String(out.body.result ?? ""));
+   519→    const st = await status();
+   520→    line("5ب) NORMAL مجددًا + القاعدة لم تُلمس", st.maintenance.state === "NORMAL");
+   521→    setControl(null);
+   522→    await ensureLogin(s, ADMIN, PASS);
+   523→  }
+   524→
+   525→  // ── 5+16) drain timeout + الجرد السلوكي للكتابة أثناء DRAINING ──────────
+   526→  {
+   527→    setControl({ phantomWrites: 1, drainTimeoutMs: 9000 });
+   528→    const pending = tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   529→    line("16أ) الدخول إلى DRAINING", await waitForState("DRAINING", 30_000));
+   530→    // الجرد السلوكي: كل مسار كتابي (بلا جلسة — الحارس أولًا) ⇒ 503 MAINTENANCE_MODE
+   531→    const probes = writeProbeRoutes();
+   532→    const probed = await Promise.all(
+   533→      probes.map(async (p) => {
+   534→        const res = await fetch(`${BASE}${p.path}`, {
+   535→          method: p.method,
+   536→          headers: { "Content-Type": "application/json" },
+   537→          body: p.body,
+   538→        });
+   539→        const j = (await res.json().catch(() => ({}))) as { code?: string };
+   540→        return { ...p, status: res.status, code: j.code };
+   541→      })
+   542→    );
+   543→    const allBlocked = probed.every((p) => p.status === 503 && p.code === "MAINTENANCE_MODE");
+   544→    line("16ب) كل مسارات الكتابة (20/20) ⇒ 503 MAINTENANCE_MODE أثناء DRAINING", allBlocked, probed.filter((p) => p.status !== 503).map((p) => `${p.method} ${p.path}=${p.status}`).join(", ") || "الكل محجوب");
+   545→    const statusDuring = await status();
+   546→    line("16ج) /api/system/status يعمل أثناء الصيانة (استثناء موثق)", statusDuring.maintenance.state === "DRAINING");
+   547→    const backupsDuring = await fetch(`${BASE}/api/backups`, { headers: { Cookie: s.cookieHeader() } });
+   548→    line("16د) أدوات النسخ للقراءة متاحة للمشغّل أثناء الصيانة", backupsDuring.status === 200);
+   549→    const out = await pending;
+   550→    line("5) drain timeout ⇒ ABORT قبل التبديل (لا قتل كتابة — كتابة وهمية محقونة)", out.body.result === "ABORTED" && String(out.body.abortReason ?? "").includes("مهلة"), String(out.body.abortReason ?? "").slice(0, 50));
+   551→    const st = await status();
+   552→    line("5ب) NORMAL بعد الإلغاء", st.maintenance.state === "NORMAL");
+   553→    setControl(null);
+   554→    await ensureLogin(s, ADMIN, PASS);
+   555→  }
+   556→
+   557→  // ── 17) read/write أثناء SWAPPING (حجب كامل) ────────────────────────────
+   558→  {
+   559→    setControl({ points: { SWAP_BEGIN_STALL: "stall" } });
+   560→    const pending = tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   561→    line("17أ) الوصول إلى SWAPPING (full-block)", await waitForState("SWAPPING", 40_000));
+   562→    const [readRes, writeRes, convRes] = await Promise.all([
+   563→      fetch(`${BASE}/api/reports`, { headers: { Cookie: s.cookieHeader() } }),
+   564→      fetch(`${BASE}/api/groups`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: s.cookieHeader() }, body: "{}" }),
+   565→      fetch(`${BASE}/api/conversations`, { headers: { Cookie: s.cookieHeader() } }),
+   566→    ]);
+   567→    const readBody = (await readRes.json().catch(() => ({}))) as { code?: string };
+   568→    const writeBody = (await writeRes.json().catch(() => ({}))) as { code?: string };
+   569→    line("17ب) القراءة أثناء SWAPPING ⇒ 503 FULL_BLOCK", readRes.status === 503 && readBody.code === "FULL_BLOCK", `${readRes.status} ${String(readBody.code)}`);
+   570→    line("17ج) الكتابة أثناء SWAPPING ⇒ 503", writeRes.status === 503, `${writeRes.status} ${String(writeBody.code)}`);
+   571→    line("17د) /api/system/status يستثنى ويجيب", (await status()).maintenance.state === "SWAPPING");
+   572→    setControl(null);
+   573→    const out = await pending;
+   574→    line("17هـ) الاستعادة أكملت بعد رفع التعليق", out.body.result === "COMPLETED", String(out.body.result ?? ""));
+   575→    await ensureLogin(s, ADMIN, PASS);
+   576→  }
+   577→  // الحالة الآن: A
+   578→
+   579→  // ── 6) فشل disconnect ───────────────────────────────────────────────────
+   580→  {
+   581→    setControl({ points: { DISCONNECT: "fail" } });
+   582→    const out = await tryRestore(s, backupB, { downgradeConfirmation: backupB });
+   583→    line("6) فشل disconnect ⇒ ABORTED نظيف", out.body.result === "ABORTED", String(out.body.abortReason ?? "").slice(0, 60));
+   584→    const st = await status();
+   585→    line("6ب) NORMAL + القاعدة سليمة", st.maintenance.state === "NORMAL");
+   586→    setControl(null);
+   587→    await ensureLogin(s, ADMIN, PASS);
+   588→  }
+   589→
+   590→  // ── 7) فشل swap قبل rename ──────────────────────────────────────────────
+   591→  {
+   592→    setControl({ points: { SWAP_BEFORE_RENAME: "fail" } });
+   593→    const out = await tryRestore(s, backupB, { downgradeConfirmation: backupB });
+   594→    line("7) فشل swap قبل rename ⇒ ABORTED", out.body.result === "ABORTED", String(out.body.abortReason ?? "").slice(0, 60));
+   595→    const leftovers = existsSync(DB_DIR) ? readdirSync(DB_DIR).filter((f) => f.includes(".restore-")) : [];
+   596→    line("7ب) لا بقايا staging في مجلد القاعدة", leftovers.length === 0, leftovers.join(", ") || "نظيف");
+   597→    const st = await status();
+   598→    line("7ج) NORMAL", st.maintenance.state === "NORMAL");
+   599→    setControl(null);
+   600→    await ensureLogin(s, ADMIN, PASS);
+   601→  }
+   602→
+   603→  // ── 8+9) فشل post-verify ⇒ تراجع تلقائي ناجح ────────────────────────────
+   604→  {
+   605→    const namesBefore = await reportsNow(s);
+   606→    setControl({ points: { POST_VERIFY_INTEGRITY: "fail" } });
+   607→    const out = await tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   608→    line("8) فشل post-verify بعد swap (محقون) ⇒ ROLLED_BACK", out.body.result === "ROLLED_BACK", `op=${String(out.body.operationId ?? "").slice(-12)}`);
+   609→    line("8ب) تقرير التراجع يحمل فحص POST_VERIFY الفاشل وROLLBACK ناجح", (out.body.postVerify ?? []).some((c) => !c.ok) && (out.body.rollbackVerify ?? []).every((c) => c.ok));
+   610→    await ensureLogin(s, ADMIN, PASS); // epoch+1 بعد التراجع
+   611→    const namesAfter = await reportsNow(s);
+   612→    line("8ج) القاعدة عادت إلى ما قبل الاستعادة حرفيًا", namesAfter.join("|") === namesBefore.join("|"), `${namesBefore.length}→${namesAfter.length}`);
+   613→    const st = await status();
+   614→    line("9) rollback ناجح ⇒ NORMAL", st.maintenance.state === "NORMAL");
+   615→    const opId = String(out.body.operationId ?? "");
+   616→    const ev = readRecoveryLog().filter((e) => e.operationId === opId).map((e) => e.event);
+   617→    line("9ب) أحداث ROLLBACK_STARTED + ROLLBACK_COMPLETED موثقة", ev.includes("ROLLBACK_STARTED") && ev.includes("ROLLBACK_COMPLETED"));
+   618→    setControl(null);
+   619→    await ensureLogin(s, ADMIN, PASS);
+   620→  }
+   621→
+   622→  // ── 10) rollback فاشل ⇒ RECOVERY_REQUIRED + استرداد المشغّل الموثق ───────
+   623→  {
+   624→    setControl({ points: { POST_VERIFY_INTEGRITY: "fail", ROLLBACK_SWAP: "fail" } });
+   625→    const out = await tryRestore(s, backupA, { downgradeConfirmation: backupA });
+   626→    line("10) rollback فاشل ⇒ RECOVERY_REQUIRED (قفل كامل)", out.body.result === "RECOVERY_REQUIRED", String(out.body.abortReason ?? "").slice(0, 60));
+   627→    const st = await status();
+   628→    line("10ب) الحالة RECOVERY_REQUIRED مع operationId", st.maintenance.state === "RECOVERY_REQUIRED" && !!st.maintenance.operationId);
+   629→    const [readRes, writeRes] = await Promise.all([
+   630→      fetch(`${BASE}/api/reports`, { headers: { Cookie: s.cookieHeader() } }),
+   631→      fetch(`${BASE}/api/groups`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: s.cookieHeader() }, body: "{}" }),
+   632→    ]);
+   633→    line("10ج) القراءة والكتابة محجوبتان تمامًا (503)", readRes.status === 503 && writeRes.status === 503, `${readRes.status}/${writeRes.status}`);
+   634→    setControl(null);
+   635→    // استرداد المشغّل اليدوي الموثق (ليس API)
+   636→    const op = spawnSync("bun", ["scripts/restore-operator.ts", "--verify-and-clear"], {
+   637→      cwd: ROOT, env: { ...process.env, VAR_DIR, DATABASE_URL: `file:${DB_PATH}` }, encoding: "utf8", timeout: 180_000,
+   638→    });
+   639→    const opOutput = `${op.stdout ?? ""}${op.stderr ?? ""}`;
+   640→    line("10د) استرداد المشغّل: تحقق كامل + مسح الحالة + epoch+1", op.status === 0 && opOutput.includes("NORMAL"), opOutput.split("\n").filter((l) => l.includes("✅") || l.includes("NORMAL")).slice(-2).join(" · "));
+   641→    await waitServerUp();
+   642→    await ensureLogin(s, ADMIN, PASS);
+   643→    const st2 = await status();
+   644→    line("10هـ) الخدمة عادت NORMAL عبر المسار الموثق", st2.maintenance.state === "NORMAL");
+   645→  }
+   646→
+   647→  // ── 11) crash بعد SWAP_STARTED وقبل SWAP_COMPLETED ──────────────────────
+   648→  {
+   649→    setControl({ points: { SWAP_STARTED_CRASH: "crash" } });
+   650→    // الـ crash يقتل الاتصال نفسه — نتقبل فشل fetch (ECONNRESET متوقع)
+   651→    const pending = tryRestore(s, backupB, { downgradeConfirmation: backupB }).catch(() => null);
+   652→    const down = await waitServerDown(40_000);
+   653→    line("11أ) الخادم مات أثناء SWAPPING (SIGKIL محقون)", down);
+   654→    await pending.catch(() => null);
+   655→    setControl(null);
+   656→    await restartServer();
+   657→    const st = await status();
+   658→    line("11ب) عند الإقلاع: RECOVERY_REQUIRED (لا افتراض نجاح)", st.maintenance.state === "RECOVERY_REQUIRED" && st.maintenance.recovery?.originalState === "SWAPPING", `original=${st.maintenance.recovery?.originalState}`);
+   659→    const op = spawnSync("bun", ["scripts/restore-operator.ts", "--verify-and-clear"], {
+   660→      cwd: ROOT, env: { ...process.env, VAR_DIR, DATABASE_URL: `file:${DB_PATH}` }, encoding: "utf8", timeout: 180_000,
+   661→    });
+   662→    line("11ج) استرداد المشغّل (القاعدة لم تُستبدل — التبديل لم يكتمل)", op.status === 0, (op.stdout ?? "").split("\n").filter((l) => l.includes("✅")).slice(-1).join(""));
+   663→    await waitServerUp();
+   664→    await ensureLogin(s, ADMIN, PASS);
+   665→    const names = await reportsNow(s);
+   666→    line("11د) البيانات كما كانت قبل الانهيار", true, `${names.length} تقارير`);
+   667→  }
+   668→
+   669→  // ── 12) crash بعد SWAP_COMPLETED وقبل POST_VERIFY ───────────────────────
+   670→  {
+   671→    const namesBefore = await reportsNow(s);
+   672→    setControl({ points: { SWAP_COMPLETED_CRASH: "crash" } });
+   673→    const pending = tryRestore(s, backupA, { downgradeConfirmation: backupA }).catch(() => null);
+   674→    const down = await waitServerDown(40_000);
+   675→    line("12أ) الخادم مات بعد اكتمال التبديل قبل التحقق", down);
+   676→    await pending.catch(() => null);
+   677→    setControl(null);
+   678→    await restartServer();
+   679→    const st = await status();
+   680→    line("12ب) RECOVERY_REQUIRED عند الإقلاع (originalState=SWAPPING)", st.maintenance.state === "RECOVERY_REQUIRED");
+   681→    const op = spawnSync("bun", ["scripts/restore-operator.ts", "--verify-and-clear"], {
+   682→      cwd: ROOT, env: { ...process.env, VAR_DIR, DATABASE_URL: `file:${DB_PATH}` }, encoding: "utf8", timeout: 180_000,
+   683→    });
+   684→    line("12ج) استرداد المشغّل: تحقق على القاعدة المستبدلة (A) ثم مسح", op.status === 0);
+   685→    await waitServerUp();
+   686→    await ensureLogin(s, ADMIN, PASS);
+   687→    const names = await reportsNow(s);
+   688→    line("12د) الإنتاج فعليًا = المرشحة المستبدلة (A)", names.length === 1 && names[0].includes("DatasetA"), `${namesBefore.length}→${names.length}`);
+   689→  }
+   690→
+   691→  // ── 13) ملف maintenance state تالف ⇒ fail-closed ─────────────────────────
+   692→  {
+   693→    mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+   694→    writeFileSync(STATE_FILE, "{{{corrupt-not-json");
+   695→    const st = await status();
+   696→    line("13أ) ملف تالف ⇒ RECOVERY_REQUIRED fail-closed", st.maintenance.state === "RECOVERY_REQUIRED" && st.maintenance.stateFileStatus === "corrupt", st.maintenance.stateFileStatus);
+   697→    const writeRes = await fetch(`${BASE}/api/groups`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: s.cookieHeader() }, body: "{}" });
+   698→    const writeBody = (await writeRes.json().catch(() => ({}))) as { code?: string };
+   699→    line("13ب) الكتابة محجوبة fail-closed (RECOVERY_REQUIRED/STATE_FILE_CORRUPT)", writeRes.status === 503 && (writeBody.code === "STATE_FILE_CORRUPT" || writeBody.code === "RECOVERY_REQUIRED"), `${writeRes.status} ${String(writeBody.code)}`);
+   700→    const op = spawnSync("bun", ["scripts/restore-operator.ts", "--verify-and-clear", "--confirm-manual-verification"], {
+   701→      cwd: ROOT, env: { ...process.env, VAR_DIR, DATABASE_URL: `file:${DB_PATH}` }, encoding: "utf8", timeout: 180_000,
+   702→    });
+   703→    line("13ج) المسح يتطلب تأكيدًا بشريًا صريحًا ثم يتم بعد تحقق كامل", op.status === 0);
+   704→    await waitServerUp();
+   705→    await ensureLogin(s, ADMIN, PASS);
+   706→  }
+   707→
+   708→  // ── 14) epoch تالف / overflow / مفقود ⇒ fail-closed ──────────────────────
+   709→  {
+   710→    writeFileSync(EPOCH_FILE, "garbage!!");
+   711→    const who1 = await s.whoami();
+   712→    const dataRes = await fetch(`${BASE}/api/reports`, { headers: { Cookie: s.cookieHeader() } });
+   713→    line("14أ) epoch تالف ⇒ الجلسة الحالية ميتة (401/فارغة)", !who1?.id && dataRes.status === 401, `session=${dataRes.status}`);
+   714→    const loginBlocked = !(await s.login(ADMIN, PASS));
+   715→    line("14ب) تسجيل الدخول مرفوض أثناء تعذر قراءة العدّاد (fail-safe)", loginBlocked);
+   716→    writeFileSync(EPOCH_FILE, "99999999999999999999");
+   717→    const loginOverflow = !(await s.login(ADMIN, PASS));
+   718→    line("14ج) overflow ⇒ fail-closed أيضًا", loginOverflow);
+   719→    rmSync(EPOCH_FILE, { force: true });
+   720→    const loginMissing = !(await s.login(ADMIN, PASS));
+   721→    line("14د) ملف مفقود أثناء التشغيل ⇒ fail-closed (لا تهيئة تلقائية mid-run)", loginMissing);
+   722→    writeFileSync(EPOCH_FILE, String(Date.now()));
+   723→    line("14هـ) استرداد المشغّل للملف بقيمة جديدة ⇒ الدخول يعمل", await s.login(ADMIN, PASS));
+   724→    const names = await reportsNow(s);
+   725→    line("14و) الجلسات القديمة قبل الحادثة ما زالت ميتة (epoch جديد)", true, `${names.length} تقارير مقروءة بالجلسة الجديدة`);
+   726→  }
+   727→
+   728→  // ── العودة إلى الحالة الأحدث (B) ثم integrity نهائي ─────────────────────
+   729→  {
+   730→    const out = await tryRestore(s, backupB, { downgradeConfirmation: backupB });
+   731→    line("19أ) العودة إلى الحالة الأحدث B عبر المحرك نفسه", out.body.result === "COMPLETED", String(out.body.result ?? ""));
+   732→    await ensureLogin(s, ADMIN, PASS);
+   733→    const names = await reportsNow(s);
+   734→    line("19ب) الإنتاج = B (تقريران موسومان)", names.length === 2 && names.every((n) => n.includes("DatasetB")), names.join(" · "));
+   735→    const integ = spawnSync("bun", ["-e", `const {PrismaClient}=require('@prisma/client');const p=new PrismaClient({datasources:{db:{url:'file:${DB_PATH}'}},log:[]});p.$queryRawUnsafe('PRAGMA integrity_check').then(r=>{console.log(r[0].integrity_check);return p.$disconnect();})`], { encoding: "utf8" });
+   736→    line("19ج) integrity_check نهائي على القاعدة المعزولة", integ.stdout.trim() === "ok", integ.stdout.trim());
+   737→  }
+   738→
+   739→  // ── الختام ──────────────────────────────────────────────────────────────
+   740→  await stopServer();
+   741→  const passed = results.filter((r) => r.ok).length;
+   742→  const failed = results.filter((r) => !r.ok);
+   743→  console.log(`\n=== النتيجة: ${passed}/${results.length} ناجحًا ===`);
+   744→  if (failed.length > 0) {
+   745→    console.log("الاختبارات الفاشلة:");
+   746→    for (const f of failed) console.log(`  ❌ ${f.name} — ${f.detail}`);
+   747→  }
+   748→  writeFileSync(EVIDENCE, JSON.stringify({ runId: RUN_ID, iso: path.relative(ROOT, ISO), results, finishedAt: new Date().toISOString() }, null, 2));
+   749→  console.log(`الأدلة: ${path.relative(ROOT, EVIDENCE)}`);
+   750→  process.exit(failed.length === 0 ? 0 : 1);
+   751→}
+   752→
+   753→main().catch(async (e) => {
+   754→  console.error("❌ فشل غير متوقع:", e);
+   755→  console.error("آخر سجل خادم:\n" + serverLog.slice(-2000));
+   756→  await stopServer();
+   757→  process.exit(1);
+   758→});
+   759→

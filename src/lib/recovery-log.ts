@@ -12,6 +12,17 @@
 // الأحداث في 4A (نص المستخدم): BACKUP_STARTED / BACKUP_CREATED /
 // BACKUP_VALIDATED / BACKUP_FAILED / DRILL_STARTED / DRILL_VERIFIED /
 // DRILL_FAILED / UPLOAD_RECEIVED / UPLOAD_REJECTED
+//
+// أحداث 4B.1 لعملية الاستعادة (قائمة المستخدم الحرفية — operationId واحد
+// يربط تسلسل العملية كاملًا): RESTORE_STARTED، CANDIDATE_VERIFIED،
+// PRE_RESTORE_STARTED، PRE_RESTORE_VERIFIED، MAINTENANCE_ENTERED،
+// DRAIN_COMPLETED، DB_DISCONNECTED، SWAP_STARTED، SWAP_COMPLETED،
+// POST_VERIFY_STARTED، ثم إما RESTORE_COMPLETED أو ROLLBACK_STARTED +
+// ROLLBACK_COMPLETED أو RECOVERY_REQUIRED. إضافات موثقة داخل نفس روح
+// القائمة: RESTORE_ABORTED (إلغاء منظم قبل التبديل)، RESTORE_REJECTED
+// (رفض قبل دخول الصيانة إطلاقًا)، MANUAL_RECOVERY_COMPLETED (استرداد
+// يدوي موثق من حالة RECOVERY_REQUIRED — سكربت المشغّل لا API).
+// لا بيانات مالية ولا أسرار في أي حدث — التفاصيل عبر الـ Sanitizer المركزي.
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -27,7 +38,25 @@ export type RecoveryEvent =
   | "DRILL_VERIFIED"
   | "DRILL_FAILED"
   | "UPLOAD_RECEIVED"
-  | "UPLOAD_REJECTED";
+  | "UPLOAD_REJECTED"
+  // Phase 4B.1 — تسلسل الاستعادة بـ operationId واحد (قائمة المستخدم)
+  | "RESTORE_STARTED"
+  | "CANDIDATE_VERIFIED"
+  | "PRE_RESTORE_STARTED"
+  | "PRE_RESTORE_VERIFIED"
+  | "MAINTENANCE_ENTERED"
+  | "DRAIN_COMPLETED"
+  | "DB_DISCONNECTED"
+  | "SWAP_STARTED"
+  | "SWAP_COMPLETED"
+  | "POST_VERIFY_STARTED"
+  | "RESTORE_COMPLETED"
+  | "RESTORE_REJECTED"
+  | "RESTORE_ABORTED"
+  | "ROLLBACK_STARTED"
+  | "ROLLBACK_COMPLETED"
+  | "RECOVERY_REQUIRED"
+  | "MANUAL_RECOVERY_COMPLETED";
 
 export const RECOVERY_EVENT_LABELS: Record<RecoveryEvent, string> = {
   BACKUP_STARTED: "بدء إنشاء نسخة",
@@ -39,6 +68,23 @@ export const RECOVERY_EVENT_LABELS: Record<RecoveryEvent, string> = {
   DRILL_FAILED: "فشل Drill",
   UPLOAD_RECEIVED: "استلام ملف مرفوع",
   UPLOAD_REJECTED: "رفض ملف مرفوع",
+  RESTORE_STARTED: "بدء عملية الاستعادة",
+  CANDIDATE_VERIFIED: "التحقق الفعلي من النسخة المرشحة",
+  PRE_RESTORE_STARTED: "بدء إنشاء نسخة الأمان قبل الاستعادة",
+  PRE_RESTORE_VERIFIED: "نسخة الأمان RESTORE_VERIFIED",
+  MAINTENANCE_ENTERED: "دخول وضع الصيانة",
+  DRAIN_COMPLETED: "اكتمال تصريف الكتابات الجارية",
+  DB_DISCONNECTED: "قطع اتصال Prisma عن قاعدة التشغيل",
+  SWAP_STARTED: "بدء التبديل الذري",
+  SWAP_COMPLETED: "اكتمال التبديل الذري",
+  POST_VERIFY_STARTED: "بدء التحقق البعدي",
+  RESTORE_COMPLETED: "اكتملت الاستعادة بنجاح",
+  RESTORE_REJECTED: "رفض استعادة قبل دخول الصيانة",
+  RESTORE_ABORTED: "إلغاء منظم قبل التبديل — قاعدة التشغيل لم تُلمس",
+  ROLLBACK_STARTED: "بدء التراجع التلقائي",
+  ROLLBACK_COMPLETED: "اكتمل التراجع بنجاح",
+  RECOVERY_REQUIRED: "تدخل تشغيلي يدوي مطلوب — الخدمة مقفلة",
+  MANUAL_RECOVERY_COMPLETED: "اكتمل الاسترداد اليدوي الموثق",
 };
 
 export type RecoveryResult = "success" | "failure" | "aborted" | "info";

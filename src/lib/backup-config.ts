@@ -48,6 +48,42 @@ export function resolveRecoveryLogDir(): string {
   return path.join(resolveVarDir(), "recovery");
 }
 
+/* ──────────────────────────────────────────────────────────────────────── */
+/*  Phase 4B.1 — الحالة التشغيلية للصيانة والاستعادة (كلها خارج القاعدة)     */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+/** ملف آلة حالة الصيانة — خارج قاعدة البيانات المستبدلة (قرار المستخدم حرفيًا). */
+export function resolveMaintenanceStateFilePath(): string {
+  return path.join(resolveVarDir(), "maintenance", "state.json");
+}
+
+/** ملف Session Epoch — خارج قاعدة البيانات المستبدلة (D-7 المعدل). */
+export function resolveSessionEpochFilePath(): string {
+  return path.join(resolveVarDir(), "auth", "session-epoch");
+}
+
+/** قفل عمليات الاسترجاع الخارجي (O_EXCL) — لا استعادتان في وقت واحد. */
+export function resolveOperationLockFilePath(): string {
+  return path.join(resolveRecoveryLogDir(), "operation.lock");
+}
+
+/** مجلد التبديل داخل مجلد القاعدة نفسه — rename ذري يتطلب نفس filesystem. */
+export function resolveSwapDir(): string {
+  // مشتق دائمًا من مسار قاعدة التشغيل الفعلي (وليس مجلد ثابت) — كي يعمل
+  // صحيحًا في أي بيئة (تشغيل/اختبار معزول بقاعدة في مكان آخر).
+  return path.dirname(resolveDatabaseFilePath());
+}
+
+/** مجلد حقن الأعطال للاختبار — غير متاح في الإنتاج إطلاقًا (بوابة بيئية مزدوجة). */
+export function resolveFaultInjectionControlPath(): string {
+  return path.join(resolveVarDir(), "test", "fault-injection.json");
+}
+
+/** مجلد أدلة اختبارات 4B.1 المعزولة. */
+export function resolveTestRunsDir(): string {
+  return path.join(resolveVarDir(), "test", "4b1");
+}
+
 export function recoveryLogFilePath(): string {
   return path.join(resolveRecoveryLogDir(), "recovery-log.jsonl");
 }
@@ -106,7 +142,7 @@ export function appVersion(): string {
   } catch {
     cachedAppVersion = "1.0.0";
   }
-  return cachedAppVersion;
+  return cachedAppVersion ?? "1.0.0";
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -219,8 +255,48 @@ export function newBackupId(): string {
 }
 
 /** معرف عملية يربط كل أحداثها في سجل الاسترجاع من البداية للنهاية. */
-export function newOperationId(prefix: "backup" | "validate" | "drill" | "upload"): string {
+export function newOperationId(
+  prefix: "backup" | "validate" | "drill" | "upload" | "restore" | "manual-recovery"
+): string {
   return `op-${prefix}-${utcCompact()}-${rand6()}`;
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/*  4B.1 — ثوابت الصيانة والاستعادة                                          */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+function intEnvB(name: string, fallback: number): number {
+  const v = parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+/** مهلة انتظار تصريف الكتابات (DRAINING) قبل الإلغاء قبل التبديل — 30 ثانية. */
+export const MAINTENANCE_DRAIN_TIMEOUT_MS = intEnvB("MAINTENANCE_DRAIN_TIMEOUT_MS", 30_000);
+
+/** تصريف القراءات بعد رفع الحجب الكامل — أفضل جهد قصير قبل disconnect. */
+export const MAINTENANCE_READ_DRAIN_MS = 3_000;
+
+/** مهلة إجمالية لعملية الاستعادة من الدخول حتى الخروج (وثيقة التصميم — القسم 9). */
+export const RESTORE_TOTAL_TIMEOUT_MS = intEnvB("RESTORE_TOTAL_TIMEOUT_MS", 120_000);
+
+/**
+ * بوابة تفعيل محرك الاستعادة الفعلية (استبدال قاعدة التشغيل).
+ * 4B.1: معطلة في بيئة التشغيل (3000) — تُفعّل حصرًا في بيئة الاختبار المعزولة
+ * وفي 4B.2 عند الموافقة الصريحة. غياب المتغير = معطلة (أمان افتراضي).
+ */
+export function isRestoreEngineEnabled(): boolean {
+  return process.env.RESTORE_ENGINE_ENABLED === "1";
+}
+
+/** مسار قاعدة التشغيل الفعلي من DATABASE_URL (file:) — للتبديل الذري في نفس filesystem. */
+export function resolveDatabaseFilePath(): string {
+  const url = process.env.DATABASE_URL?.trim() ?? "";
+  if (url.startsWith("file:")) {
+    const p = url.slice(5);
+    if (path.isAbsolute(p)) return p;
+    return path.join(PROJECT_ROOT, p);
+  }
+  return path.join(PROJECT_ROOT, "db", "custom.db");
 }
 
 /** معرف رفع (يُستخدم اسم ملف على القرص — لا يُستخدم للتحقق). */

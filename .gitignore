@@ -59,3 +59,4 @@ server.log
 *.db.tmp
 *.tmp-*.zip
 drill-*.json
+/.next-iso/

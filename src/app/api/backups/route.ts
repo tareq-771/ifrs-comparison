@@ -5,7 +5,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireManageBackups } from "@/lib/session";
 import { getClientIp } from "@/lib/audit";
 import { createBackup, listBackups, BackupError } from "@/lib/backup-server";
-import { BACKUP_CREATE_COOLDOWN_MS, UPLOAD_LIMITS } from "@/lib/backup-config";
+import {
+  BACKUP_CREATE_COOLDOWN_MS,
+  UPLOAD_LIMITS,
+  isRestoreEngineEnabled,
+} from "@/lib/backup-config";
+import { guardWrite } from "@/lib/api-guard";
 
 function authError(error: unknown) {
   const msg = error instanceof Error ? error.message : "خطأ";
@@ -24,6 +29,8 @@ export async function GET() {
         maxUncompressedMB: UPLOAD_LIMITS.maxUncompressedMB,
         cooldownSeconds: BACKUP_CREATE_COOLDOWN_MS / 1000,
         allowedZipEntries: ["database.db", "manifest.json"],
+        // 4B.1 — محرك الاستعادة الفعلية معطّل على الإنتاج حتى موافقة 4B.2
+        restoreEngineEnabled: isRestoreEngineEnabled(),
       },
       policy: {
         // بطاقة السياسة — نصوص موثقة (لا مسارات قرص ولا أسرار)
@@ -49,22 +56,24 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const user = await requireManageBackups();
-    const result = await createBackup({ id: user.id || null, username: user.username });
-    void getClientIp(req);
-    return NextResponse.json(result, { status: 201 });
-  } catch (error) {
-    if (error instanceof BackupError) {
+  return guardWrite("/api/backups", async () => {
+    try {
+      const user = await requireManageBackups();
+      const result = await createBackup({ id: user.id || null, username: user.username });
+      void getClientIp(req);
+      return NextResponse.json(result, { status: 201 });
+    } catch (error) {
+      if (error instanceof BackupError) {
+        return NextResponse.json(
+          { error: error.message, code: error.code, ...(error.extra ?? {}) },
+          { status: error.httpStatus }
+        );
+      }
+      const { status, msg } = authError(error);
       return NextResponse.json(
-        { error: error.message, code: error.code, ...(error.extra ?? {}) },
-        { status: error.httpStatus }
+        { error: status === 500 ? "فشل إنشاء النسخة: " + msg : msg },
+        { status }
       );
     }
-    const { status, msg } = authError(error);
-    return NextResponse.json(
-      { error: status === 500 ? "فشل إنشاء النسخة: " + msg : msg },
-      { status }
-    );
-  }
+  });
 }

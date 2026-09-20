@@ -38,6 +38,13 @@ export const AUDIT_ACTIONS = {
   BACKUP_UPLOADED: "BACKUP_UPLOADED",
   BACKUP_DOWNLOADED: "BACKUP_DOWNLOADED",
   BACKUP_DRILLED: "BACKUP_DRILLED",
+  // Phase 4B.1 — الاستعادة الفعلية (أكواد تُكتب داخل قاعدة التشغيل في مراحلها
+  // الآمنة فقط — سياسة محاسبة موثقة: الدليل الحاكم لأحداث الاستعادة هو سجل
+  // عمليات الاسترجاع الخارجي لأن AuditLog نفسه يرجع تاريخيًا مع القاعدة المستبدلة)
+  DATABASE_RESTORE_INITIATED: "DATABASE_RESTORE_INITIATED",
+  DATABASE_RESTORE_ABORTED: "DATABASE_RESTORE_ABORTED",
+  DATABASE_RESTORE_COMPLETED: "DATABASE_RESTORE_COMPLETED",
+  DATABASE_RESTORE_ROLLED_BACK: "DATABASE_RESTORE_ROLLED_BACK",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -75,6 +82,10 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   BACKUP_UPLOADED: "رفع نسخة احتياطية للتحقق",
   BACKUP_DOWNLOADED: "تنزيل نسخة احتياطية",
   BACKUP_DRILLED: "تشغيل Restore Drill (قاعدة مؤقتة معزولة)",
+  DATABASE_RESTORE_INITIATED: "بدء عملية استعادة قاعدة البيانات (قبل أي تبديل)",
+  DATABASE_RESTORE_ABORTED: "إلغاء منظم لعملية الاستعادة قبل التبديل — القاعدة لم تُلمس",
+  DATABASE_RESTORE_COMPLETED: "اكتمال استعادة قاعدة البيانات (استبدال ذري + تحقق بعدي)",
+  DATABASE_RESTORE_ROLLED_BACK: "اكتمال التراجع التلقائي إلى نسخة الأمان قبل الاستعادة",
 };
 
 export const AUDIT_ENTITY_TYPES = {

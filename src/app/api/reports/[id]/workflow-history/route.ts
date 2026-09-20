@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireAuth } from "@/lib/session";
 import { canViewReportRow } from "@/lib/workflow-server";
+import { guardRead } from "@/lib/api-guard";
 
 function authError(error: unknown) {
   const msg = error instanceof Error ? error.message : "خطأ";
@@ -20,45 +21,47 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const user = await requireAuth();
-    const { id } = await params;
-    const report = await db.report.findUnique({
-      where: { id },
-      select: {
-        id: true, userId: true, groupId: true,
-        preparedById: true, reviewedById: true, approvedById: true,
-      },
-    });
-    if (!report || !canViewReportRow(report, user)) {
-      return NextResponse.json({ error: "التقرير غير موجود" }, { status: 404 });
+  return guardRead("/api/reports/[id]/workflow-history", async () => {
+    try {
+      const user = await requireAuth();
+      const { id } = await params;
+      const report = await db.report.findUnique({
+        where: { id },
+        select: {
+          id: true, userId: true, groupId: true,
+          preparedById: true, reviewedById: true, approvedById: true,
+        },
+      });
+      if (!report || !canViewReportRow(report, user)) {
+        return NextResponse.json({ error: "التقرير غير موجود" }, { status: 404 });
+      }
+      const rows = await db.workflowHistory.findMany({
+        where: { reportId: id },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 500, // سقف أمان — سجل تقرير واحد صغير عمليًا
+      });
+      return NextResponse.json(
+        rows.map((r) => ({
+          id: r.id,
+          reportId: r.reportId,
+          cycle: r.cycle,
+          action: r.action,
+          fromStatus: r.fromStatus,
+          toStatus: r.toStatus,
+          actorId: r.actorId,
+          actorUsername: r.actorUsername,
+          reason: r.reason,
+          comment: r.comment,
+          roleSnapshot: r.roleSnapshot,
+          createdAt: r.createdAt.toISOString(),
+        }))
+      );
+    } catch (error) {
+      const { status, msg } = authError(error);
+      return NextResponse.json(
+        { error: status === 500 ? "فشل جلب سجل الدورات: " + msg : msg },
+        { status }
+      );
     }
-    const rows = await db.workflowHistory.findMany({
-      where: { reportId: id },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: 500, // سقف أمان — سجل تقرير واحد صغير عمليًا
-    });
-    return NextResponse.json(
-      rows.map((r) => ({
-        id: r.id,
-        reportId: r.reportId,
-        cycle: r.cycle,
-        action: r.action,
-        fromStatus: r.fromStatus,
-        toStatus: r.toStatus,
-        actorId: r.actorId,
-        actorUsername: r.actorUsername,
-        reason: r.reason,
-        comment: r.comment,
-        roleSnapshot: r.roleSnapshot,
-        createdAt: r.createdAt.toISOString(),
-      }))
-    );
-  } catch (error) {
-    const { status, msg } = authError(error);
-    return NextResponse.json(
-      { error: status === 500 ? "فشل جلب سجل الدورات: " + msg : msg },
-      { status }
-    );
-  }
+  });
 }

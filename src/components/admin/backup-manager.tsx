@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   ShieldQuestion,
   Upload,
+  ArchiveRestore,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { RestoreDialog } from "@/components/admin/restore-dialog";
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /*  Types (مرآة الـ API)                                                    */
@@ -66,7 +68,7 @@ interface ListEntry {
 interface ListResponse {
   local: ListEntry[];
   uploads: ListEntry[];
-  config: { maxUploadMB: number; maxUncompressedMB: number; cooldownSeconds: number; allowedZipEntries: string[] };
+  config: { maxUploadMB: number; maxUncompressedMB: number; cooldownSeconds: number; allowedZipEntries: string[]; restoreEngineEnabled?: boolean };
   policy: Record<string, string>;
 }
 
@@ -134,6 +136,24 @@ const RECOVERY_EVENT_LABELS: Record<string, string> = {
   DRILL_FAILED: "فشل Drill",
   UPLOAD_RECEIVED: "استلام ملف مرفوع",
   UPLOAD_REJECTED: "رفض ملف مرفوع",
+  // Phase 4B.1 — أحداث الاستعادة (نفس قائمة المحرك)
+  RESTORE_STARTED: "بدء عملية الاستعادة",
+  CANDIDATE_VERIFIED: "التحقق الفعلي من المرشحة",
+  PRE_RESTORE_STARTED: "بدء نسخة الأمان قبل الاستعادة",
+  PRE_RESTORE_VERIFIED: "نسخة الأمان RESTORE_VERIFIED",
+  MAINTENANCE_ENTERED: "دخول وضع الصيانة",
+  DRAIN_COMPLETED: "اكتمال تصريف الكتابات",
+  DB_DISCONNECTED: "قطع اتصال Prisma",
+  SWAP_STARTED: "بدء التبديل الذري",
+  SWAP_COMPLETED: "اكتمال التبديل الذري",
+  POST_VERIFY_STARTED: "بدء التحقق البعدي",
+  RESTORE_COMPLETED: "اكتملت الاستعادة بنجاح",
+  RESTORE_REJECTED: "رفض استعادة قبل الصيانة",
+  RESTORE_ABORTED: "إلغاء منظم قبل التبديل",
+  ROLLBACK_STARTED: "بدء التراجع التلقائي",
+  ROLLBACK_COMPLETED: "اكتمل التراجع بنجاح",
+  RECOVERY_REQUIRED: "تدخل يدوي مطلوب — الخدمة مقفلة",
+  MANUAL_RECOVERY_COMPLETED: "اكتمل الاسترداد اليدوي الموثق",
 };
 
 const LEVEL_LABELS: Record<Level, string> = {
@@ -193,6 +213,9 @@ export function BackupManagerTab() {
 
   const [recovery, setRecovery] = React.useState<RecoveryEventRow[]>([]);
   const [recoveryLoading, setRecoveryLoading] = React.useState(true);
+  // Phase 4B.1 — حالة محرك الاستعادة + حوار الاستعادة
+  const [engineEnabled, setEngineEnabled] = React.useState(false);
+  const [restoreId, setRestoreId] = React.useState<string | null>(null);
 
   const fetchAll = React.useCallback(async () => {
     setLoading(true);
@@ -203,7 +226,9 @@ export function BackupManagerTab() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "فشل جلب قائمة النسخ");
       }
-      setData((await res.json()) as ListResponse);
+      const j = (await res.json()) as ListResponse;
+      setEngineEnabled(Boolean((j.config as Record<string, unknown>)?.restoreEngineEnabled));
+      setData(j);
     } catch (e) {
       toast({ title: "خطأ", description: e instanceof Error ? e.message : "خطأ", variant: "destructive" });
     } finally {
@@ -385,6 +410,17 @@ export function BackupManagerTab() {
             حدود الرفع: {data.config.maxUploadMB}MB مضغوط · {data.config.maxUncompressedMB}MB غير مضغوط · المحتوى المقبول: {data.config.allowedZipEntries.join(" + ")}
           </span>
         )}
+        <span
+          className={cn(
+            "ms-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px]",
+            engineEnabled
+              ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+              : "border-slate-300 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+          )}
+        >
+          <ArchiveRestore className="size-3" />
+          محرك الاستعادة الفعلية: {engineEnabled ? "مفعّل" : "معطّل — التفعيل في 4B.2"}
+        </span>
       </div>
 
       {/* الجدول */}
@@ -489,6 +525,26 @@ export function BackupManagerTab() {
                         >
                           <PlayCircle className="size-3.5" />
                           Drill
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={cn(
+                            "h-8 gap-1 px-2 text-[11px]",
+                            e.level === "RESTORE_VERIFIED" && "border-rose-300 text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                          )}
+                          disabled={e.level !== "RESTORE_VERIFIED" || !engineEnabled}
+                          title={
+                            e.level !== "RESTORE_VERIFIED"
+                              ? "الاستعادة الفعلية تقبل RESTORE_VERIFIED فقط"
+                              : engineEnabled
+                                ? "استعادة فعلية لقاعدة التشغيل"
+                                : "محرك الاستعادة معطّل — يُفعّل في 4B.2"
+                          }
+                          onClick={() => setRestoreId(e.backupId)}
+                        >
+                          <ArchiveRestore className="size-3.5" />
+                          استعادة
                         </Button>
                         <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-[11px]" disabled={!!e.invalidReason} asChild>
                           <a href={`/api/backups/${e.backupId}/download`} download>
@@ -739,6 +795,9 @@ export function BackupManagerTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Phase 4B.1 — حوار الاستعادة الفعلية */}
+      <RestoreDialog backupId={restoreId} onOpenChange={(o) => !o && setRestoreId(null)} />
     </div>
   );
 }

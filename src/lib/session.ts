@@ -1,6 +1,11 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { canManageBackups, parsePermissions, type Permissions } from "@/lib/permissions";
+import {
+  canManageBackups,
+  canRestoreDatabase,
+  parsePermissions,
+  type Permissions,
+} from "@/lib/permissions";
 
 export interface SessionUser {
   id: string;
@@ -14,6 +19,9 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await getServerSession(authOptions);
   if (!session?.user) return null;
   const su = session.user as any;
+  // 4B.1 — دفاع إضافي: جلسة بلا معرف مستخدم فعلي (توكن ميت epoch/قديم)
+  // لا تُعد مستخدمًا — يمنع "المستخدم الشبح" بمعرف فارغ وصلاحيات افتراضية.
+  if (!su.id) return null;
   return {
     id: su.id || "",
     username: su.username || session.user.name || "",
@@ -53,5 +61,18 @@ export async function requireManageBackups(): Promise<SessionUser> {
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireAuth();
   if (user.role !== "admin") throw new Error("Forbidden: admin only");
+  return user;
+}
+
+/**
+ * Phase 4B.1 — بوابة تنفيذ الاستعادة الفعلية (استبدال قاعدة التشغيل).
+ * منفصلة تمامًا عن manageBackups وsettings (فصل صارم منذ 4A).
+ * المدير ضمنيًا بالدور؛ غيره بمفتاح restoreDatabase الصريح حصرًا.
+ */
+export async function requireRestoreDatabase(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canRestoreDatabase(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
   return user;
 }

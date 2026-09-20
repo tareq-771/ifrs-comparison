@@ -1,0 +1,1274 @@
+     1→// Phase 4B.1 — محرك الاستعادة الفعلية (Production Restore Engine) — خادم فقط.
+     2→//
+     3→// التزامات ثابتة في هذا الملف (نص المستخدم):
+     4→//   1. تسلسل التبديل الحرفي: صيانة حجب كامل → قطع Prisma → تعامل آمن مع
+     5→//      WAL/SHM → وضع المرشحة في نفس filesystem → rename ذري → معالجة
+     6→//      WAL/SHM القديمة → إعادة الاتصال → تفعيل WAL → التحقق.
+     7→//   2. نسخة أمان pre-restore إلزامية قبل أي تبديل: تُنشأ backupType=pre-restore
+     8→//      ثم VALIDATED ثم RESTORE_VERIFIED — إن لم تصل ⇒ إلغاء. لا bypass حتى للمدير.
+     9→//   3. المرشحة تقبل RESTORE_VERIFIED فقط + توافق canonical — أقدم معروفة تحتاج
+    10→//      migrations تُطبق على مؤقتة أولًا ثم يُعاد Drill عليها (لا migration تجريبية
+    11→//      على Production — المسار خاملاً اليوم: لا توجد مخططات أقدم مسجلة).
+    12→//   4. DRAINING: لا كتابة جديدة + انتظار صفر كتابات جارية بمهلة — تجاوزها ⇒
+    13→//      إلغاء قبل التبديل. لا نقتل كتابة جارية ثم نستبدل القاعدة تحتها أبدًا.
+    14→//   5. Post-Verify على القاعدة الجديدة مباشرة (fs + Prisma حقيقي + prisma CLI)
+    15→//      — لا اعتماد على HTTP APIs وهي في الصيانة.
+    16→//   6. فشل أي فحص بعدي ⇒ بقاء في الصيانة + تراجع تلقائي من pre-restore
+    17→//      (المسحوبة Drill لها مسبقًا) + إعادة نفس التحقق. نجاحه ⇒ epoch+1 →
+    18→//      ROLLED_BACK → NORMAL. فشله ⇒ RECOVERY_REQUIRED (قفل كامل، لا reset تلقائي).
+    19→//   7. epoch+1 بعد كل تبديل ناجح (استعادة أو تراجع) — فشل الرفع المستمر ⇒
+    20→//      RECOVERY_REQUIRED (fail-closed — جلسات قديمة فوق صلاحيات قديمة لا تُقبل).
+    21→//   8. الحالة التشغيلية خارج القاعدة في VAR_DIR بكتابة ذرية — وCrash Recovery:
+    22→//      أي حالة غير NORMAL عند الإقلاع ⇒ RECOVERY_REQUIRED (لا افتراض نجاح).
+    23→//   9. سياسة المحاسبة الموثقة: الدليل الحاكم لأحداث الاستعادة هو سجل عمليات
+    24→//      الاسترجاع الخارجي (يعيش خارج القاعدة المستبدلة). AuditLog يُكتب فيه فقط
+    25→//      في المراحل الآمنة قبل التبديل (INITIATED/ABORTED) وصف واحد append-only
+    26→//      بعد نجاح العملية داخل القاعدة الجديدة بطابعها الزمني الحالي (لا صفوف
+    27→//      مصطنعة ولا إعادة ترتيب تاريخي أبدًا).
+    28→//  10. لا أسرار ولا بيانات مالية في أي سجل/تقرير — Sanitizer مركزي.
+    29→
+    30→import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+    31→import path from "node:path";
+    32→import { spawnSync } from "node:child_process";
+    33→import { createHash } from "node:crypto";
+    34→import { PrismaClient } from "@prisma/client";
+    35→
+    36→import { db as liveDb, reconnectDb } from "@/lib/db";
+    37→import {
+    38→  MAINTENANCE_READ_DRAIN_MS,
+    39→  RESTORE_TOTAL_TIMEOUT_MS,
+    40→  ensurePrivateDir,
+    41→  getCurrentCanonicalSchemaFingerprint,
+    42→  isRestoreEngineEnabled,
+    43→  newOperationId,
+    44→  resolveBackupDir,
+    45→  resolveDatabaseFilePath,
+    46→  resolveSwapDir,
+    47→} from "@/lib/backup-config";
+    48→import {
+    49→  activeReadCount,
+    50→  clearMaintenanceStateFile,
+    51→  clearPhantomWrites,
+    52→  drainActiveReadsBestEffort,
+    53→  drainActiveWrites,
+    54→  enterRecoveryRequired,
+    55→  readMaintenanceStateFile,
+    56→  transitionMaintenanceState,
+    57→  type MaintenanceStateFile,
+    58→} from "@/lib/maintenance";
+    59→import { bumpSessionEpoch, readSessionEpoch } from "@/lib/session-epoch";
+    60→import { acquireOperationLock, OperationLockBusyError } from "@/lib/recovery-lock";
+    61→import { appendRecoveryEvent } from "@/lib/recovery-log";
+    62→import {
+    63→  BackupError,
+    64→  createBackup,
+    65→  findArtifactById,
+    66→  runRestoreDrillById,
+    67→  validateBackupArtifact,
+    68→  type ActorInfo,
+    69→  type CheckResult,
+    70→} from "@/lib/backup-server";
+    71→import {
+    72→  collectCounts,
+    73→  collectPeriodRange,
+    74→  type AnyBackupManifest,
+    75→} from "@/lib/backup-manifest";
+    76→import { canonicalSchemaFingerprint as computeCanonicalFingerprint } from "@/lib/schema-fingerprint";
+    77→import { inspectZipBuffer, readZipEntry } from "@/lib/zip-secure";
+    78→import {
+    79→  faultInjectionEnabled,
+    80→  maybeCrash,
+    81→  maybeStall,
+    82→  shouldFail,
+    83→  testDrainTimeoutMs,
+    84→  testPhantomWriteCount,
+    85→  testTotalTimeoutMs,
+    86→} from "@/lib/fault-injection";
+    87→import { writeAuditSafe } from "@/lib/audit";
+    88→import { AUDIT_ACTIONS, AUDIT_ENTITY_TYPES } from "@/lib/audit-actions";
+    89→
+    90→/* ──────────────────────────────────────────────────────────────────────── */
+    91→/*  الأخطاء المنظمة                                                          */
+    92→/* ──────────────────────────────────────────────────────────────────────── */
+    93→
+    94→export class RestoreError extends Error {
+    95→  code: string;
+    96→  httpStatus: number;
+    97→  extra?: Record<string, unknown>;
+    98→  constructor(code: string, message: string, httpStatus = 400, extra?: Record<string, unknown>) {
+    99→    super(message);
+   100→    this.code = code;
+   101→    this.httpStatus = httpStatus;
+   102→    this.extra = extra;
+   103→  }
+   104→}
+   105→
+   106→/* ──────────────────────────────────────────────────────────────────────── */
+   107→/*  الأنواع العامة                                                           */
+   108→/* ──────────────────────────────────────────────────────────────────────── */
+   109→
+   110→export interface RestorePhaseRecord {
+   111→  phase: string;
+   112→  state: string;
+   113→  ms: number;
+   114→  detail?: string;
+   115→}
+   116→
+   117→export interface RestoreOutcome {
+   118→  ok: boolean;
+   119→  operationId: string;
+   120→  backupId: string;
+   121→  /** COMPLETED | ROLLED_BACK | ABORTED | RECOVERY_REQUIRED */
+   122→  result: "COMPLETED" | "ROLLED_BACK" | "ABORTED" | "RECOVERY_REQUIRED";
+   123→  preRestoreBackupId: string | null;
+   124→  epochBumped: boolean;
+   125→  newEpoch: number | null;
+   126→  phases: RestorePhaseRecord[];
+   127→  postVerify: CheckResult[] | null;
+   128→  rollbackVerify: CheckResult[] | null;
+   129→  abortReason: string | null;
+   130→  warnings: string[];
+   131→  startedAt: string;
+   132→  finishedAt: string;
+   133→  durationMs: number;
+   134→}
+   135→
+   136→interface EngineContext {
+   137→  opId: string;
+   138→  actor: ActorInfo;
+   139→  backupId: string;
+   140→  artifactZipPath: string;
+   141→  manifest: AnyBackupManifest;
+   142→  deadline: number;
+   143→  startedAtIso: string;
+   144→  phases: RestorePhaseRecord[];
+   145→  warnings: string[];
+   146→  preRestoreBackupId: string | null;
+   147→  swapCompleted: boolean;
+   148→  disconnected: boolean;
+   149→  stagingCandidatePath: string | null;
+   150→  replacedPath: string | null;
+   151→}
+   152→
+   153→function phase<T>(ctx: EngineContext, phaseName: string, state: string, fn: () => Promise<T>, detail?: () => string): Promise<T> {
+   154→  return (async () => {
+   155→    const t0 = Date.now();
+   156→    try {
+   157→      const result = await fn();
+   158→      ctx.phases.push({ phase: phaseName, state, ms: Date.now() - t0, ...(detail ? { detail: detail() } : {}) });
+   159→      return result;
+   160→    } catch (e) {
+   161→      ctx.phases.push({
+   162→        phase: phaseName,
+   163→        state: `${state}:FAILED`,
+   164→        ms: Date.now() - t0,
+   165→        detail: e instanceof Error ? e.message : String(e),
+   166→      });
+   167→      throw e;
+   168→    }
+   169→  })();
+   170→}
+   171→
+   172→function checkDeadline(ctx: EngineContext): boolean {
+   173→  return Date.now() < ctx.deadline;
+   174→}
+   175→
+   176→function shortFp(fp: string): string {
+   177→  return fp.replace(/^(c)?sha256:/, "").slice(0, 12);
+   178→}
+   179→
+   180→function hashFileSync(p: string): string {
+   181→  return createHash("sha256").update(readFileSync(p)).digest("hex");
+   182→}
+   183→
+   184→/* ──────────────────────────────────────────────────────────────────────── */
+   185→/*  مؤشر نضارة حالة الإنتاج — heuristic موثق (آخر حدث AuditLog)              */
+   186→/* ──────────────────────────────────────────────────────────────────────── */
+   187→
+   188→async function productionFreshnessMarker(): Promise<string | null> {
+   189→  const rows = await liveDb.auditLog.findMany({
+   190→    orderBy: { createdAt: "desc" },
+   191→    take: 1,
+   192→    select: { createdAt: true },
+   193→  });
+   194→  return rows[0]?.createdAt?.toISOString() ?? null;
+   195→}
+   196→
+   197→/* ──────────────────────────────────────────────────────────────────────── */
+   198→/*  المعاينة — بنود التأكيد القوية قبل التنفيذ (القسم 14 من وثيقة التصميم)   */
+   199→/* ──────────────────────────────────────────────────────────────────────── */
+   200→
+   201→export interface RestorePreview {
+   202→  engineEnabled: boolean;
+   203→  candidate: {
+   204→    backupId: string;
+   205→    createdAt: string;
+   206→    backupType: string;
+   207→    level: string;
+   208→    schemaVersion: string;
+   209→    checksumShort: string;
+   210→    canonicalFingerprintShort: string;
+   211→    dbBytes: number;
+   212→    counts: AnyBackupManifest["counts"] | null;
+   213→    periodRange: AnyBackupManifest["periodRange"] | null;
+   214→    source: string;
+   215→  } | null;
+   216→  current: {
+   217→    counts: AnyBackupManifest["counts"] | null;
+   218→    freshnessMarker: string | null;
+   219→  } | null;
+   220→  downgradeRequired: boolean;
+   221→  downgradeReasons: string[];
+   222→  requiredConfirmations: { primary: "RESTORE"; secondary: string | null };
+   223→  error: { code: string; message: string } | null;
+   224→}
+   225→
+   226→export async function buildRestorePreview(backupId: string): Promise<RestorePreview> {
+   227→  const base: RestorePreview = {
+   228→    engineEnabled: isRestoreEngineEnabled(),
+   229→    candidate: null,
+   230→    current: null,
+   231→    downgradeRequired: false,
+   232→    downgradeReasons: [],
+   233→    requiredConfirmations: { primary: "RESTORE", secondary: null },
+   234→    error: null,
+   235→  };
+   236→  const artifact = findArtifactById(backupId);
+   237→  if (!artifact) {
+   238→    return { ...base, error: { code: "NOT_FOUND", message: "لا توجد نسخة بهذا المعرف" } };
+   239→  }
+   240→  const m = artifact.manifest;
+   241→  base.candidate = {
+   242→    backupId: m.backupId,
+   243→    createdAt: m.createdAt,
+   244→    backupType: m.backupType,
+   245→    level: m.verification.level,
+   246→    schemaVersion: m.schemaVersion,
+   247→    checksumShort: m.database.sha256.slice(0, 12),
+   248→    canonicalFingerprintShort: m.formatVersion === 3 ? shortFp(m.canonicalSchemaFingerprint) : "(legacy-v2)",
+   249→    dbBytes: m.database.bytes,
+   250→    counts: m.counts,
+   251→    periodRange: m.periodRange,
+   252→    source: artifact.source,
+   253→  };
+   254→  try {
+   255→    const currentCounts = await collectCounts(liveDb);
+   256→    const freshness = await productionFreshnessMarker();
+   257→    base.current = {
+   258→      counts: currentCounts.ok ? currentCounts.counts : null,
+   259→      freshnessMarker: freshness,
+   260→    };
+   261→    if (currentCounts.ok) {
+   262→      const reasons: string[] = [];
+   263→      if (m.counts.reports < currentCounts.counts.reports) {
+   264→        reasons.push(
+   265→          `ستقلل عدد التقارير: النسخة ${m.counts.reports} مقابل الحالي ${currentCounts.counts.reports}`
+   266→        );
+   267→      }
+   268→      if (freshness && m.createdAt < freshness) {
+   269→        reasons.push("النسخة أقدم من آخر نشاط مسجل في قاعدة التشغيل الحالية");
+   270→      }
+   271→      base.downgradeRequired = reasons.length > 0;
+   272→      base.downgradeReasons = reasons;
+   273→      base.requiredConfirmations.secondary = reasons.length > 0 ? m.backupId : null;
+   274→    }
+   275→  } catch (e) {
+   276→    base.error = { code: "PROBE_FAILED", message: `تعذر قراءة حالة الإنتاج الحالية: ${String(e)}` };
+   277→  }
+   278→  return base;
+   279→}
+   280→
+   281→/* ──────────────────────────────────────────────────────────────────────── */
+   282→/*  التحقق البعدي — مباشرة على القاعدة (fs + Prisma + prisma CLI) بلا HTTP    */
+   283→/* ──────────────────────────────────────────────────────────────────────── */
+   284→
+   285→async function runPostVerification(args: {
+   286→  client: PrismaClient;
+   287→  dbPath: string;
+   288→  manifest: AnyBackupManifest;
+   289→  label: string;
+   290→}): Promise<CheckResult[]> {
+   291→  const { client, dbPath, manifest, label } = args;
+   292→  const checks: CheckResult[] = [];
+   293→  const t = (name: string, code: string, ok: boolean, detail?: string, faultPoint?: string): boolean => {
+   294→    if (faultPoint && shouldFail(faultPoint)) {
+   295→      checks.push({ name, code: `${code}_INJECTED_FAIL`, ok: false, detail: "فشل محقون للاختبار (بيئة معزولة حصرًا)" });
+   296→      return false;
+   297→    }
+   298→    checks.push({ name, code, ok, ...(detail ? { detail } : {}) });
+   299→    return ok;
+   300→  };
+   301→
+   302→  // 1) ترويسة SQLite من القرص مباشرة
+   303→  const t0 = Date.now();
+   304→  try {
+   305→    const fd = readFileSync(dbPath);
+   306→    const magic = Buffer.from("SQLite format 3\0");
+   307→    const headerOk = fd.length >= 16 && fd.subarray(0, 16).equals(magic);
+   308→    if (!t("ترويسة SQLite على الملف المستبدل", "SQLITE_HEADER_OK", headerOk, undefined, `${label}_HEADER`)) {
+   309→      return checks;
+   310→    }
+   311→  } catch (e) {
+   312→    checks.push({ name: "ترويسة SQLite على الملف المستبدل", code: "SQLITE_HEADER_FAIL", ok: false, detail: String(e) });
+   313→    return checks;
+   314→  }
+   315→  void t0;
+   316→
+   317→  // 2) integrity_check
+   318→  try {
+   319→    const integ = await client.$queryRawUnsafe<{ integrity_check: string }[]>(`PRAGMA integrity_check`);
+   320→    const ok = (integ[0]?.integrity_check ?? "") === "ok";
+   321→    if (!t("integrity_check على القاعدة المستبدلة", "INTEGRITY_OK", ok, integ[0]?.integrity_check, `${label}_INTEGRITY`)) {
+   322→      return checks;
+   323→    }
+   324→  } catch (e) {
+   325→    checks.push({ name: "integrity_check على القاعدة المستبدلة", code: "INTEGRITY_FAIL", ok: false, detail: String(e) });
+   326→    return checks;
+   327→  }
+   328→
+   329→  // 3) canonical fingerprint == الثابت المثبّت/الحالي
+   330→  try {
+   331→    const canonical = await computeCanonicalFingerprint(client);
+   332→    const expected = getCurrentCanonicalSchemaFingerprint();
+   333→    const ok = !!expected && canonical === expected;
+   334→    if (
+   335→      !t(
+   336→        "تطابق البصمة القاعدية الدلالية (canonical)",
+   337→        "CANONICAL_FINGERPRINT_OK",
+   338→        ok,
+   339→        `actual=${shortFp(canonical)} expected=${expected ? shortFp(expected) : "unpinned"}`,
+   340→        `${label}_FINGERPRINT`
+   341→      )
+   342→    ) {
+   343→      return checks;
+   344→    }
+   345→  } catch (e) {
+   346→    checks.push({ name: "تطابق البصمة القاعدية الدلالية (canonical)", code: "CANONICAL_FINGERPRINT_FAIL", ok: false, detail: String(e) });
+   347→    return checks;
+   348→  }
+   349→
+   350→  // 4) prisma migrate status (عملية فرعية — بلا HTTP)
+   351→  try {
+   352→    const res = spawnSync("bunx", ["prisma", "migrate", "status"], {
+   353→      cwd: process.cwd(),
+   354→      env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
+   355→      encoding: "utf8",
+   356→      timeout: 30_000,
+   357→    });
+   358→    const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+   359→    const upToDate = /up to date/i.test(out) || /Database schema is up to date/i.test(out);
+   360→    const ok = res.status === 0 && upToDate;
+   361→    if (
+   362→      !t(
+   363→        "prisma migrate status — المخطط محدّث",
+   364→        "MIGRATE_STATUS_OK",
+   365→        ok,
+   366→        upToDate ? "up to date" : out.slice(0, 200),
+   367→        `${label}_MIGRATE`
+   368→      )
+   369→    ) {
+   370→      return checks;
+   371→    }
+   372→  } catch (e) {
+   373→    checks.push({ name: "prisma migrate status — المخطط محدّث", code: "MIGRATE_STATUS_FAIL", ok: false, detail: String(e) });
+   374→    return checks;
+   375→  }
+   376→
+   377→  // 5) اتصال Prigma حقيقي + قراءة الجداول الخمسة + مطابقة counts مع Manifest
+   378→  try {
+   379→    const countsRes = await collectCounts(client);
+   380→    if (!countsRes.ok) {
+   381→      checks.push({ name: "قراءة الجداول الإلزامية عبر Prisma", code: "TABLES_FAIL", ok: false, detail: "أحد الجداول غير متوافق" });
+   382→      return checks;
+   383→    }
+   384→    const countsMatched =
+   385→      countsRes.counts.users === manifest.counts.users &&
+   386→      countsRes.counts.groups === manifest.counts.groups &&
+   387→      countsRes.counts.reports === manifest.counts.reports &&
+   388→      countsRes.counts.workflowHistory === manifest.counts.workflowHistory &&
+   389→      countsRes.counts.auditLog === manifest.counts.auditLog;
+   390→    if (
+   391→      !t(
+   392→        "قراءة الجداول الأساسية + مطابقة counts مع Manifest المرشحة",
+   393→        "COUNTS_OK",
+   394→        countsMatched,
+   395→        JSON.stringify({ manifest: manifest.counts, actual: countsRes.counts }),
+   396→        `${label}_COUNTS`
+   397→      )
+   398→    ) {
+   399→      return checks;
+   400→    }
+   401→  } catch (e) {
+   402→    checks.push({ name: "قراءة الجداول الأساسية + مطابقة counts مع Manifest المرشحة", code: "COUNTS_FAIL", ok: false, detail: String(e) });
+   403→    return checks;
+   404→  }
+   405→
+   406→  // 6) periodRange مقابل Manifest
+   407→  try {
+   408→    const periodRange = await collectPeriodRange(client);
+   409→    const matched =
+   410→      periodRange.minPeriodEnd === manifest.periodRange.minPeriodEnd &&
+   411→      periodRange.maxPeriodEnd === manifest.periodRange.maxPeriodEnd;
+   412→    if (!t("مطابقة periodRange مع Manifest", "PERIOD_OK", matched, undefined, `${label}_PERIOD`)) {
+   413→      return checks;
+   414→    }
+   415→  } catch (e) {
+   416→    checks.push({ name: "مطابقة periodRange مع Manifest", code: "PERIOD_FAIL", ok: false, detail: String(e) });
+   417→    return checks;
+   418→  }
+   419→
+   420→  // 7) وجود مستخدم صالح واحد على الأقل
+   421→  try {
+   422→    const activeUsers = await client.user.count({ where: { active: true } });
+   423→    if (!t("وجود مستخدم صالح واحد على الأقل", "ACTIVE_USER_OK", activeUsers >= 1, `active=${activeUsers}`, `${label}_USERS`)) {
+   424→      return checks;
+   425→    }
+   426→  } catch (e) {
+   427→    checks.push({ name: "وجود مستخدم صالح واحد على الأقل", code: "ACTIVE_USER_FAIL", ok: false, detail: String(e) });
+   428→    return checks;
+   429→  }
+   430→
+   431→  return checks;
+   432→}
+   433→
+   434→/* ──────────────────────────────────────────────────────────────────────── */
+   435→/*  التعامل الآمن مع WAL/SHM + التبديل الذري                                 */
+   436→/* ──────────────────────────────────────────────────────────────────────── */
+   437→
+   438→async function checkpointAndRemoveWal(dbPath: string): Promise<void> {
+   439→  const walPath = `${dbPath}-wal`;
+   440→  const shmPath = `${dbPath}-shm`;
+   441→  let walBytes = 0;
+   442→  try {
+   443→    if (existsSync(walPath)) walBytes = statSync(walPath).size;
+   444→  } catch {
+   445→    /* ignore */
+   446→  }
+   447→  if (walBytes > 0) {
+   448→    // نقطة تفتيش آمنة عبر اتصال قصير — كل بيانات WAL تُدمج في الملف الرئيسي
+   449→    let probe: PrismaClient | null = null;
+   450→    try {
+   451→      probe = new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } }, log: [] });
+   452→      await probe.$queryRawUnsafe(`PRAGMA wal_checkpoint(TRUNCATE)`);
+   453→      await probe.$disconnect();
+   454→      probe = null;
+   455→    } catch {
+   456→      try {
+   457→        await probe?.$disconnect();
+   458→      } catch {
+   459→        /* ignore */
+   460→      }
+   461→    }
+   462→  }
+   463→  // بعد التفتيش/الإغلاق النظيف: أي -wal/-shm متبقية فارغة وتُزال بأمان
+   464→  for (const p of [walPath, shmPath]) {
+   465→    try {
+   466→      if (existsSync(p)) rmSync(p, { force: true });
+   467→    } catch {
+   468→      /* ignore */
+   469→    }
+   470→  }
+   471→}
+   472→
+   473→function assertSameFilesystem(a: string, b: string): boolean {
+   474→  // كلاهما داخل مجلد قاعدة التشغيل نفسه — بنيويًا نفس filesystem (تصميم ثابت)
+   475→  return path.dirname(a) === path.dirname(b);
+   476→}
+   477→
+   478→/**
+   479→ * التبديل الذري: قديمة → staging (نفس المجلد)، المرشحة → مسار القاعدة.
+   480→ * عند فشل rename الثاني يُعاد الأول فورًا (لا حالة وسيطة نصف مكتملة).
+   481→ */
+   482→function atomicSwapFiles(args: { dbPath: string; candidatePath: string; replacedPath: string }): void {
+   483→  const { dbPath, candidatePath, replacedPath } = args;
+   484→  if (!assertSameFilesystem(candidatePath, dbPath)) {
+   485→    throw new RestoreError("CROSS_FILESYSTEM", "المرشحة ليست في نفس filesystem القاعدة — يجب staging داخل مجلد القاعدة", 500);
+   486→  }
+   487→  renameSync(dbPath, replacedPath); // القديمة جانبًا (نفس fs — ذري)
+   488→  try {
+   489→    renameSync(candidatePath, dbPath); // المرشحة مكانها (نفس fs — ذري)
+   490→  } catch (e) {
+   491→    // إعادة الترتيب: القديمة تعود مكانها — القاعدة كما كانت حرفيًا
+   492→    try {
+   493→      renameSync(replacedPath, dbPath);
+   494→    } catch {
+   495→      /* لا شيء أفضل — يُكتشف في post-verify أو crash recovery */
+   496→    }
+   497→    throw e;
+   498→  }
+   499→}
+   500→
+   501→/** استخراج database.db من ZIP المرشحة إلى staging داخل مجلد القاعدة + تحقق checksum. */
+   502→async function stageCandidateDb(args: {
+   503→  zipPath: string;
+   504→  manifest: AnyBackupManifest;
+   505→  targetPath: string;
+   506→}): Promise<void> {
+   507→  const { zipPath, manifest, targetPath } = args;
+   508→  const zipBuf = readFileSync(zipPath);
+   509→  const inspected = inspectZipBuffer(zipBuf, {
+   510→    maxUncompressedBytes: 2_000_000_000,
+   511→    maxEntries: 4,
+   512→    allowedNames: ["database.db", "manifest.json"],
+   513→    maxRatio: 2000,
+   514→  });
+   515→  if (!inspected.ok) {
+   516→    throw new RestoreError("CANDIDATE_PACKAGE_BAD", `حزمة المرشحة مرفوضة: ${inspected.code}`, 422);
+   517→  }
+   518→  const dbBytes = await readZipEntry(zipBuf, "database.db", 2_000_000_000);
+   519→  if ("ok" in dbBytes && !dbBytes.ok) {
+   520→    throw new RestoreError("CANDIDATE_PACKAGE_BAD", "database.db داخل حزمة المرشحة غير قابل للقراءة", 422);
+   521→  }
+   522→  const buf = dbBytes as Buffer;
+   523→  const magic = Buffer.from("SQLite format 3\0");
+   524→  if (buf.length < 16 || !buf.subarray(0, 16).equals(magic)) {
+   525→    throw new RestoreError("NOT_SQLITE", "database.db داخل المرشحة ليس SQLite", 422);
+   526→  }
+   527→  const actualSha = createHash("sha256").update(buf).digest("hex");
+   528→  if (actualSha !== manifest.database.sha256) {
+   529→    throw new RestoreError("CHECKSUM_MISMATCH", "checksum المرشحة لا يطابق Manifest — رفض قاطع", 422);
+   530→  }
+   531→  ensurePrivateDir(path.dirname(targetPath));
+   532→  writeFileSync(targetPath, buf, { mode: 0o600 });
+   533→  // إعادة تحقق من القرص بعد الكتابة (نفس filesystem الهدف — rename ذري لاحقًا)
+   534→  const onDiskSha = hashFileSync(targetPath);
+   535→  if (onDiskSha !== manifest.database.sha256) {
+   536→    throw new RestoreError("CHECKSUM_MISMATCH", "checksum المرشحة على القرص لا يطابق Manifest", 422);
+   537→  }
+   538→}
+   539→
+   540→/* ──────────────────────────────────────────────────────────────────────── */
+   541→/*  رفع epoch بعد كل تبديل ناجح — فشل مستمر ⇒ RECOVERY_REQUIRED (fail-closed) */
+   542→/* ──────────────────────────────────────────────────────────────────────── */
+   543→
+   544→async function bumpEpochWithRetry(): Promise<number | null> {
+   545→  for (let i = 0; i < 3; i++) {
+   546→    if (shouldFail("EPOCH_BUMP")) return null;
+   547→    const next = bumpSessionEpoch();
+   548→    if (next !== null) return next;
+   549→    await new Promise((r) => setTimeout(r, 150));
+   550→  }
+   551→  return null;
+   552→}
+   553→
+   554→/* ──────────────────────────────────────────────────────────────────────── */
+   555→/*  التنفيذ الكامل                                                            */
+   556→/* ──────────────────────────────────────────────────────────────────────── */
+   557→
+   558→export async function executeRestore(args: {
+   559→  backupId: string;
+   560→  actor: ActorInfo;
+   561→  confirmationText: string;
+   562→  downgradeConfirmation?: string | null;
+   563→}): Promise<RestoreOutcome> {
+   564→  const startedAt = new Date().toISOString();
+   565→  const t0 = Date.now();
+   566→
+   567→  // ── Phase 0: شروط مسبقة قبل أي تغيير حالة ──────────────────────────────
+   568→  if (!isRestoreEngineEnabled()) {
+   569→    throw new RestoreError(
+   570→      "RESTORE_ENGINE_DISABLED",
+   571→      "محرك الاستعادة الفعلية معطّل في هذه البيئة — التفعيل يجري في 4B.2 بموافقة صريحة",
+   572→      409
+   573→    );
+   574→  }
+   575→  if (readSessionEpoch() === null) {
+   576→    throw new RestoreError(
+   577→      "EPOCH_UNAVAILABLE",
+   578→      "عدّاد الجلسات غير قابل للقراءة — لا استعادة قبل استرداد العدّاد (fail-safe)",
+   579→      503
+   580→    );
+   581→  }
+   582→
+   583→  const preState = readMaintenanceStateFile();
+   584→  if (preState && preState.state !== "NORMAL") {
+   585→    throw new RestoreError(
+   586→      "RECOVERY_OPERATION_IN_PROGRESS",
+   587→      `لا يمكن بدء استعادة — الحالة التشغيلية الحالية: ${preState.state}${preState.operationId ? ` (${preState.operationId})` : ""}`,
+   588→      409,
+   589→      { currentState: preState.state, currentOperationId: preState.operationId }
+   590→    );
+   591→  }
+   592→
+   593→  const artifact = findArtifactById(args.backupId);
+   594→  if (!artifact) throw new RestoreError("NOT_FOUND", "لا توجد نسخة بهذا المعرف", 404);
+   595→  if (artifact.manifest.verification.level !== "RESTORE_VERIFIED") {
+   596→    const opId = newOperationId("restore");
+   597→    await appendRecoveryEvent({
+   598→      operationId: opId,
+   599→      event: "RESTORE_REJECTED",
+   600→      actor: args.actor,
+   601→      backupId: args.backupId,
+   602→      result: "failure",
+   603→      details: { reason: "CANDIDATE_NOT_RESTORE_VERIFIED", level: artifact.manifest.verification.level },
+   604→    });
+   605→    throw new RestoreError(
+   606→      "CANDIDATE_NOT_RESTORE_VERIFIED",
+   607→      `المرشحة بمستوى ${artifact.manifest.verification.level} — الاستعادة الفعلية تقبل RESTORE_VERIFIED فقط`,
+   608→      409
+   609→    );
+   610→  }
+   611→
+   612→  // قفل الاسترجاع الخارجي — ثاني عملية ⇒ 409
+   613→  let lock;
+   614→  try {
+   615→    lock = await acquireOperationLock({ kind: "restore", username: args.actor.username });
+   616→  } catch (e) {
+   617→    if (e instanceof OperationLockBusyError) {
+   618→      throw new RestoreError(
+   619→        "RECOVERY_OPERATION_IN_PROGRESS",
+   620→        e.holder
+   621→          ? `عملية استرجاع قيد التنفيذ (${e.holder.kind}) — المحاولة الثانية مرفوضة`
+   622→          : "عملية استرجاع قيد التنفيذ — المحاولة الثانية مرفوضة",
+   623→        409,
+   624→        { holderOperationId: e.holder?.operationId ?? null }
+   625→      );
+   626→    }
+   627→    throw e;
+   628→  }
+   629→
+   630→  const ctx: EngineContext = {
+   631→    opId: newOperationId("restore"),
+   632→    actor: args.actor,
+   633→    backupId: args.backupId,
+   634→    artifactZipPath: artifact.zipPath,
+   635→    manifest: artifact.manifest,
+   636→    deadline: Date.now() + testTotalTimeoutMs(RESTORE_TOTAL_TIMEOUT_MS),
+   637→    startedAtIso: startedAt,
+   638→    phases: [],
+   639→    warnings: [],
+   640→    preRestoreBackupId: null,
+   641→    swapCompleted: false,
+   642→    disconnected: false,
+   643→    stagingCandidatePath: null,
+   644→    replacedPath: null,
+   645→  };
+   646→
+   647→  try {
+   648→    await appendRecoveryEvent({
+   649→      operationId: ctx.opId,
+   650→      event: "RESTORE_STARTED",
+   651→      actor: ctx.actor,
+   652→      backupId: ctx.backupId,
+   653→      result: "info",
+   654→      details: {
+   655→        candidateLevel: ctx.manifest.verification.level,
+   656→        ...(lock.stoleFrom ? { staleLockStolenFrom: lock.stoleFrom.operationId } : {}),
+   657→      },
+   658→    });
+   659→
+   660→    // ── شروط التأكيد القوية (server-side حصرًا — لا ثقة بالعميل) ──────────
+   661→    if (args.confirmationText !== "RESTORE") {
+   662→      await appendRecoveryEvent({
+   663→        operationId: ctx.opId,
+   664→        event: "RESTORE_REJECTED",
+   665→        actor: ctx.actor,
+   666→        backupId: ctx.backupId,
+   667→        result: "failure",
+   668→        details: { reason: "CONFIRMATION_INVALID" },
+   669→      });
+   670→      throw new RestoreError("CONFIRMATION_INVALID", "التأكيد الأول غير صحيح — يجب كتابة RESTORE حرفيًا", 400);
+   671→    }
+   672→    const currentCounts = await collectCounts(liveDb);
+   673→    const freshness = await productionFreshnessMarker();
+   674→    const downgradeReasons: string[] = [];
+   675→    if (currentCounts.ok && ctx.manifest.counts.reports < currentCounts.counts.reports) {
+   676→      downgradeReasons.push("reports_reduction");
+   677→    }
+   678→    if (freshness && ctx.manifest.createdAt < freshness) {
+   679→      downgradeReasons.push("older_than_current_activity");
+   680→    }
+   681→    if (downgradeReasons.length > 0 && args.downgradeConfirmation !== args.backupId) {
+   682→      await appendRecoveryEvent({
+   683→        operationId: ctx.opId,
+   684→        event: "RESTORE_REJECTED",
+   685→        actor: ctx.actor,
+   686→        backupId: ctx.backupId,
+   687→        result: "failure",
+   688→        details: { reason: "SECOND_CONFIRMATION_REQUIRED", downgradeReasons },
+   689→      });
+   690→      throw new RestoreError(
+   691→        "SECOND_CONFIRMATION_REQUIRED",
+   692→        "تأكيد ثانٍ إلزامي: النسخة أقدم من الحالة الحالية أو ستقلل عدد التقارير — اكتب معرف النسخة كاملًا",
+   693→        409,
+   694→        { downgradeReasons, requiredText: args.backupId }
+   695→      );
+   696→    }
+   697→
+   698→    // صف AuditLog قبل أي تبديل — القاعدة ما زالت الحالية (سياسة موثقة)
+   699→    await writeAuditSafe({
+   700→      user: { id: ctx.actor.id, username: ctx.actor.username },
+   701→      action: AUDIT_ACTIONS.DATABASE_RESTORE_INITIATED,
+   702→      entityType: AUDIT_ENTITY_TYPES.Backup,
+   703→      entityId: ctx.backupId,
+   704→      description: `بدء عملية استعادة إلى النسخة «${ctx.backupId}» — عملية ${ctx.opId}`,
+   705→      metadata: { backupId: ctx.backupId, operationId: ctx.opId, downgradeReasons },
+   706→    });
+   707→
+   708→    // ── VALIDATING (write-block): إعادة تحقق فعلي من محتوى المرشحة ────────
+   709→    await phase(ctx, "VALIDATING", "VALIDATING", async () => {
+   710→      transitionMaintenanceState({
+   711→        operationId: ctx.opId,
+   712→        state: "VALIDATING",
+   713→        startedBy: { id: ctx.actor.id, username: ctx.actor.username },
+   714→        message: "إعادة تحقق فعلي من النسخة المرشحة قبل أي إجراء تدميري",
+   715→        flags: { candidateBackupId: ctx.backupId, swapCompleted: false },
+   716→      });
+   717→      await appendRecoveryEvent({
+   718→        operationId: ctx.opId,
+   719→        event: "MAINTENANCE_ENTERED",
+   720→        actor: ctx.actor,
+   721→        backupId: ctx.backupId,
+   722→        result: "info",
+   723→        details: { state: "VALIDATING", level: "write-block" },
+   724→      });
+   725→      await maybeStall("VALIDATING_STALL");
+   726→      maybeCrash("VALIDATING_CRASH");
+   727→      if (shouldFail("CANDIDATE_VALIDATION")) {
+   728→        throw new RestoreError("CANDIDATE_VALIDATION_FAILED", "فشل محقون في إعادة تحقق المرشحة (اختبار معزول)", 500);
+   729→      }
+   730→      const report = await validateBackupArtifact({
+   731→        zipPath: ctx.artifactZipPath,
+   732→        actor: ctx.actor,
+   733→        source: "local",
+   734→        operationId: newOperationId("validate"),
+   735→      });
+   736→      await appendRecoveryEvent({
+   737→        operationId: ctx.opId,
+   738→        event: "CANDIDATE_VERIFIED",
+   739→        actor: ctx.actor,
+   740→        backupId: ctx.backupId,
+   741→        result: "success",
+   742→        details: {
+   743→          level: report.level,
+   744→          canonical: report.canonicalSchemaFingerprint ? shortFp(report.canonicalSchemaFingerprint) : null,
+   745→          durationMs: report.durationMs,
+   746→        },
+   747→      });
+   748→      return report;
+   749→    });
+   750→
+   751→    // ── PREPARING (write-block): نسخة الأمان الإلزامية بلا bypass ─────────
+   752→    await phase(ctx, "PREPARING", "PREPARING", async () => {
+   753→      if (!checkDeadline(ctx)) throw new RestoreError("TIMEOUT", "تجاوز المهلة الإجمالية قبل نسخة الأمان", 504);
+   754→      transitionMaintenanceState({
+   755→        operationId: ctx.opId,
+   756→        state: "PREPARING",
+   757→        message: "إنشاء نسخة أمان pre-restore والتحقق منها بالDrill — إلزامية بلا bypass",
+   758→      });
+   759→      await appendRecoveryEvent({
+   760→        operationId: ctx.opId,
+   761→        event: "PRE_RESTORE_STARTED",
+   762→        actor: ctx.actor,
+   763→        backupId: ctx.backupId,
+   764→        result: "info",
+   765→        details: { backupType: "pre-restore" },
+   766→      });
+   767→      if (shouldFail("PRE_RESTORE_BACKUP")) {
+   768→        throw new RestoreError("PRE_RESTORE_BACKUP_FAILED", "فشل محقون في إنشاء نسخة الأمان (اختبار معزول)", 500);
+   769→      }
+   770→      const pre = await createBackup(ctx.actor, {
+   771→        backupType: "pre-restore",
+   772→        bypassCooldown: true,
+   773→        trigger: `restore:${ctx.opId}`,
+   774→      });
+   775→      ctx.preRestoreBackupId = pre.backupId;
+   776→      if (shouldFail("PRE_RESTORE_DRILL")) {
+   777→        throw new RestoreError("PRE_RESTORE_DRILL_FAILED", "فشل محقون في Drill نسخة الأمان (اختبار معزول)", 500);
+   778→      }
+   779→      const preLevel = pre.level;
+   780→      if (preLevel !== "VALIDATED") {
+   781→        throw new RestoreError("PRE_RESTORE_NOT_VALIDATED", `نسخة الأمان بمستوى ${preLevel} — الإلزام VALIDATED فأعلى`, 500);
+   782→      }
+   783→      await runRestoreDrillById(pre.backupId, ctx.actor);
+   784→      transitionMaintenanceState({
+   785→        operationId: ctx.opId,
+   786→        state: "PREPARING",
+   787→        message: "نسخة الأمان وصلت RESTORE_VERIFIED",
+   788→        flags: { preRestoreBackupId: pre.backupId },
+   789→      });
+   790→      await appendRecoveryEvent({
+   791→        operationId: ctx.opId,
+   792→        event: "PRE_RESTORE_VERIFIED",
+   793→        actor: ctx.actor,
+   794→        backupId: pre.backupId,
+   795→        result: "success",
+   796→        details: { candidateBackupId: ctx.backupId, level: "RESTORE_VERIFIED" },
+   797→      });
+   798→    });
+   799→
+   800→    // ── DRAINING (write-block): لا كتابة جديدة + انتظار الصفر بمهلة ───────
+   801→    await phase(ctx, "DRAINING", "DRAINING", async () => {
+   802→      transitionMaintenanceState({
+   803→        operationId: ctx.opId,
+   804→        state: "DRAINING",
+   805→        message: "حجب كتابات جديدة وانتظار انتهاء الكتابات الجارية — لا قتل لكتابة جارية",
+   806→      });
+   807→      const phantom = faultInjectionEnabled() ? testPhantomWriteCount() : 0;
+   808→      if (phantom > 0) {
+   809→        const { addPhantomWrite } = await import("@/lib/maintenance");
+   810→        for (let i = 0; i < phantom; i++) addPhantomWrite("fault-injection:phantom-write");
+   811→      }
+   812→      const drained = await drainActiveWrites(testDrainTimeoutMs(30_000));
+   813→      clearPhantomWrites();
+   814→      if (!drained) {
+   815→        throw new RestoreError("DRAIN_TIMEOUT", "انتهت مهلة تصريف الكتابات الجارية — إلغاء قبل التبديل", 504);
+   816→      }
+   817→      await appendRecoveryEvent({
+   818→        operationId: ctx.opId,
+   819→        event: "DRAIN_COMPLETED",
+   820→        actor: ctx.actor,
+   821→        backupId: ctx.backupId,
+   822→        result: "success",
+   823→        details: { activeWrites: 0 },
+   824→      });
+   825→    });
+   826→
+   827→    // ── SWAPPING (full-block): القراءة محجوبة أيضًا ────────────────────────
+   828→    await phase(ctx, "SWAPPING", "SWAPPING", async () => {
+   829→      if (!checkDeadline(ctx)) throw new RestoreError("TIMEOUT", "تجاوز المهلة الإجمالية عند التبديل", 504);
+   830→      transitionMaintenanceState({
+   831→        operationId: ctx.opId,
+   832→        state: "SWAPPING",
+   833→        message: "حجب كامل — قطع Prisma ثم تبديل ذري",
+   834→      });
+   835→      await appendRecoveryEvent({
+   836→        operationId: ctx.opId,
+   837→        event: "SWAP_STARTED",
+   838→        actor: ctx.actor,
+   839→        backupId: ctx.backupId,
+   840→        result: "info",
+   841→        details: { level: "full-block" },
+   842→      });
+   843→      // نافذة فحص سلوكية للاختبار: قراءة/كتابة أثناء SWAPPING ⇒ 503
+   844→      await maybeStall("SWAP_BEGIN_STALL");
+   845→      maybeCrash("SWAP_STARTED_CRASH"); // crash بعد SWAP_STARTED وقبل SWAP_COMPLETED
+   846→
+   847→      if (shouldFail("DISCONNECT")) {
+   848→        throw new RestoreError("DISCONNECT_FAILED", "فشل محقون في قطع الاتصال (اختبار معزول)", 500);
+   849→      }
+   850→      // تصريف القراءات بأفضل جهد ثم قطع Prisma
+   851→      await drainActiveReadsBestEffort(MAINTENANCE_READ_DRAIN_MS);
+   852→      await liveDb.$disconnect();
+   853→      ctx.disconnected = true;
+   854→      await appendRecoveryEvent({
+   855→        operationId: ctx.opId,
+   856→        event: "DB_DISCONNECTED",
+   857→        actor: ctx.actor,
+   858→        backupId: ctx.backupId,
+   859→        result: "success",
+   860→        details: { pendingReads: activeReadCount() },
+   861→      });
+   862→
+   863→      // تعامل آمن مع WAL/SHM القديمة (تفتيش ثم إزالة — البيانات في الملف الرئيسي)
+   864→      const dbPath = resolveDatabaseFilePath();
+   865→      await checkpointAndRemoveWal(dbPath);
+   866→
+   867→      // المرشحة داخل نفس filesystem القاعدة (staging في مجلد القاعدة نفسه) ثم rename ذري
+   868→      const swapDir = resolveSwapDir();
+   869→      const stagingCandidate = path.join(swapDir, `.restore-${ctx.opId}.candidate.db`);
+   870→      const replacedPath = path.join(swapDir, `.restore-${ctx.opId}.replaced.db`);
+   871→      ctx.stagingCandidatePath = stagingCandidate;
+   872→      ctx.replacedPath = replacedPath;
+   873→      if (shouldFail("SWAP_BEFORE_RENAME")) {
+   874→        throw new RestoreError("SWAP_BEFORE_RENAME_FAILED", "فشل محقون قبل rename (اختبار معزول)", 500);
+   875→      }
+   876→      await stageCandidateDb({
+   877→        zipPath: ctx.artifactZipPath,
+   878→        manifest: ctx.manifest,
+   879→        targetPath: stagingCandidate,
+   880→      });
+   881→      if (shouldFail("SWAP_MID_RENAME")) {
+   882→        throw new RestoreError("SWAP_MID_RENAME_FAILED", "فشل محقون بين rename الأول والثاني (اختبار معزول)", 500);
+   883→      }
+   884→      atomicSwapFiles({ dbPath, candidatePath: stagingCandidate, replacedPath });
+   885→      ctx.swapCompleted = true;
+   886→      ctx.stagingCandidatePath = null;
+   887→      transitionMaintenanceState({
+   888→        operationId: ctx.opId,
+   889→        state: "SWAPPING",
+   890→        message: "اكتمل التبديل الذري — القاعدة المستبدلة في مكانها",
+   891→        flags: { swapCompleted: true },
+   892→      });
+   893→      await appendRecoveryEvent({
+   894→        operationId: ctx.opId,
+   895→        event: "SWAP_COMPLETED",
+   896→        actor: ctx.actor,
+   897→        backupId: ctx.backupId,
+   898→        result: "success",
+   899→        details: { sameFilesystem: true },
+   900→      });
+   901→      maybeCrash("SWAP_COMPLETED_CRASH"); // crash بعد SWAP_COMPLETED وقبل POST_VERIFY
+   902→    });
+   903→
+   904→    // ── VERIFYING (full-block): تحقق بعدي مباشر بلا HTTP ───────────────────
+   905→    return await phase(ctx, "VERIFYING", "VERIFYING", async () => {
+   906→      if (!checkDeadline(ctx)) throw new RestoreError("TIMEOUT", "تجاوز المهلة الإجمالية عند التحقق البعدي", 504);
+   907→      transitionMaintenanceState({
+   908→        operationId: ctx.opId,
+   909→        state: "VERIFYING",
+   910→        message: "إعادة الاتصال ثم التحقق البعدي الشامل",
+   911→        flags: { postVerifyStarted: true },
+   912→      });
+   913→      await appendRecoveryEvent({
+   914→        operationId: ctx.opId,
+   915→        event: "POST_VERIFY_STARTED",
+   916→        actor: ctx.actor,
+   917→        backupId: ctx.backupId,
+   918→        result: "info",
+   919→        details: {},
+   920→      });
+   921→      const fresh = await reconnectDb();
+   922→      ctx.disconnected = false;
+   923→      let jm: string = "unknown";
+   924→      try {
+   925→        const rows = await fresh.$queryRawUnsafe<{ journal_mode: string }[]>(`PRAGMA journal_mode=WAL`);
+   926→        jm = rows[0]?.journal_mode ?? "unknown";
+   927→      } catch {
+   928→        /* يُفحص أدناه */
+   929→      }
+   930→      if (jm.toLowerCase() !== "wal") {
+   931→        ctx.warnings.push(`journal_mode بعد التبديل = ${jm} (المتوقع wal)`);
+   932→      }
+   933→
+   934→      const checks = await runPostVerification({
+   935→        client: fresh,
+   936→        dbPath: resolveDatabaseFilePath(),
+   937→        manifest: ctx.manifest,
+   938→        label: "POST_VERIFY",
+   939→      });
+   940→      const allOk = checks.length > 0 && checks.every((c) => c.ok);
+   941→
+   942→      if (!allOk) {
+   943→        // ── فشل التحقق البعدي ⇒ تراجع تلقائي من نسخة الأمان ────────────────
+   944→        const rolled = await rollbackToPreRestore(ctx, checks);
+   945→        return rolled;
+   946→      }
+   947→
+   948→      // ── نجاح: epoch+1 ثم الخروج من الصيانة ─────────────────────────────
+   949→      const newEpoch = await bumpEpochWithRetry();
+   950→      if (newEpoch === null) {
+   951→        await failClosedRecovery(ctx, "epoch_bump_failed", "VERIFYING", checks);
+   952→        return buildOutcome(ctx, {
+   953→          ok: false,
+   954→          result: "RECOVERY_REQUIRED",
+   955→          preRestoreBackupId: ctx.preRestoreBackupId,
+   956→          epochBumped: false,
+   957→          newEpoch: null,
+   958→          postVerify: checks,
+   959→          rollbackVerify: null,
+   960→          abortReason: "epoch_bump_failed",
+   961→
+   962→
+   963→        }, t0);
+   964→      }
+   965→      await appendRecoveryEvent({
+   966→        operationId: ctx.opId,
+   967→        event: "RESTORE_COMPLETED",
+   968→        actor: ctx.actor,
+   969→        backupId: ctx.backupId,
+   970→        result: "success",
+   971→        details: { epochBumped: true, phases: ctx.phases.length },
+   972→      });
+   973→      // صف واحد append-only في القاعدة الجديدة بطابعها الزمني الحالي (سياسة موثقة)
+   974→      await writeAuditSafe({
+   975→        user: { id: ctx.actor.id, username: ctx.actor.username },
+   976→        action: AUDIT_ACTIONS.DATABASE_RESTORE_COMPLETED,
+   977→        entityType: AUDIT_ENTITY_TYPES.Backup,
+   978→        entityId: ctx.backupId,
+   979→        description: `اكتملت استعادة قاعدة البيانات إلى «${ctx.backupId}» — عملية ${ctx.opId} (epoch+1)`,
+   980→        metadata: { backupId: ctx.backupId, operationId: ctx.opId, epochBumped: true },
+   981→      });
+   982→      cleanupSwapArtifacts(ctx);
+   983→      clearMaintenanceStateFile(); // → NORMAL
+   984→      return buildOutcome(ctx, {
+   985→        ok: true,
+   986→        result: "COMPLETED",
+   987→        preRestoreBackupId: ctx.preRestoreBackupId,
+   988→        epochBumped: true,
+   989→        newEpoch,
+   990→        postVerify: checks,
+   991→        rollbackVerify: null,
+   992→        abortReason: null,
+   993→
+   994→
+   995→      }, t0);
+   996→    });
+   997→  } catch (e) {
+   998→    // ── مسارات الفشل المنظمة: قبل التبديل ⇒ إلغاء نظيف؛ بعده ⇒ تراجع/قفل ──
+   999→    const isTimeout = e instanceof RestoreError && e.code === "TIMEOUT";
+  1000→    const reason = e instanceof Error ? e.message : String(e);
+  1001→    try {
+  1002→      if (ctx.swapCompleted) {
+  1003→        const rolled = await rollbackToPreRestore(ctx, [
+  1004→          { name: "الاستمرار بعد التبديل", code: "TRIGGER", ok: false, detail: reason },
+  1005→        ]);
+  1006→        return rolled;
+  1007→      }
+  1008→      // قبل التبديل: القاعدة لم تُلمس — إلغاء نظيف
+  1009→      await abortPreSwap(ctx, isTimeout ? "TIMEOUT" : reason);
+  1010→      return buildOutcome(ctx, {
+  1011→        ok: false,
+  1012→        result: "ABORTED",
+  1013→        preRestoreBackupId: ctx.preRestoreBackupId,
+  1014→        epochBumped: false,
+  1015→        newEpoch: null,
+  1016→        postVerify: null,
+  1017→        rollbackVerify: null,
+  1018→        abortReason: reason,
+  1019→
+  1020→
+  1021→      }, t0);
+  1022→    } catch (secondary) {
+  1023→      // فشل حتى مسار الطوارئ ⇒ قفل كامل
+  1024→      await failClosedRecovery(ctx, `secondary_failure: ${String(secondary)}`, ctx.swapCompleted ? "VERIFYING" : "PREPARING", null);
+  1025→      return buildOutcome(ctx, {
+  1026→        ok: false,
+  1027→        result: "RECOVERY_REQUIRED",
+  1028→        preRestoreBackupId: ctx.preRestoreBackupId,
+  1029→        epochBumped: false,
+  1030→        newEpoch: null,
+  1031→        postVerify: null,
+  1032→        rollbackVerify: null,
+  1033→        abortReason: `primary: ${reason} · secondary: ${String(secondary)}`,
+  1034→
+  1035→
+  1036→      }, t0);
+  1037→    }
+  1038→  } finally {
+  1039→    clearPhantomWrites();
+  1040→    lock.release();
+  1041→  }
+  1042→}
+  1043→
+  1044→/* ──────────────────────────────────────────────────────────────────────── */
+  1045→/*  التراجع التلقائي — نفس آلية التبديل من نسخة الأمان المسحوبة Drill لها     */
+  1046→/* ──────────────────────────────────────────────────────────────────────── */
+  1047→
+  1048→async function rollbackToPreRestore(ctx: EngineContext, failedChecks: CheckResult[]): Promise<RestoreOutcome> {
+  1049→  transitionMaintenanceState({
+  1050→    operationId: ctx.opId,
+  1051→    state: "ROLLING_BACK",
+  1052→    message: "فشل التحقق البعدي — تراجع تلقائي إلى نسخة الأمان (البقاء في الصيانة الكاملة)",
+  1053→  });
+  1054→  await appendRecoveryEvent({
+  1055→    operationId: ctx.opId,
+  1056→    event: "ROLLBACK_STARTED",
+  1057→    actor: ctx.actor,
+  1058→    backupId: ctx.preRestoreBackupId ?? ctx.backupId,
+  1059→    result: "info",
+  1060→    details: { trigger: failedChecks.filter((c) => !c.ok).map((c) => c.code).slice(0, 5) },
+  1061→  });
+  1062→
+  1063→  const doRollback = async (): Promise<{ checks: CheckResult[] }> => {
+  1064→    if (!ctx.preRestoreBackupId) {
+  1065→      throw new RestoreError("NO_PRE_RESTORE", "لا توجد نسخة أمان للتراجع — خطأ بنيوي غير متوقع", 500);
+  1066→    }
+  1067→    const pre = findArtifactById(ctx.preRestoreBackupId);
+  1068→    if (!pre) throw new RestoreError("NOT_FOUND", "نسخة الأمان اختفت أثناء التراجع", 500);
+  1069→    const dbPath = resolveDatabaseFilePath();
+  1070→    const swapDir = resolveSwapDir();
+  1071→    const stagingRollback = path.join(swapDir, `.restore-${ctx.opId}.rollback.db`);
+  1072→    const replacedCandidate = path.join(swapDir, `.restore-${ctx.opId}.replaced-candidate.db`);
+  1073→
+  1074→    // قطع العميل الحالي (المتصلاً بالقاعدة الفاشلة) ثم تبديل ذري
+  1075→    await liveDb.$disconnect().catch(() => undefined);
+  1076→    ctx.disconnected = true;
+  1077→    if (shouldFail("ROLLBACK_SWAP")) {
+  1078→      throw new RestoreError("ROLLBACK_SWAP_FAILED", "فشل محقون في تبديل التراجع (اختبار معزول)", 500);
+  1079→    }
+  1080→    await stageCandidateDb({ zipPath: pre.zipPath, manifest: pre.manifest, targetPath: stagingRollback });
+  1081→    atomicSwapFiles({ dbPath, candidatePath: stagingRollback, replacedPath: replacedCandidate });
+  1082→    ctx.swapCompleted = true; // القاعدة استُبدلت (بالنسخة الأمان) ⇒ epoch+1 إلزامي
+  1083→    ctx.replacedPath = replacedCandidate;
+  1084→
+  1085→    const fresh = await reconnectDb();
+  1086→    ctx.disconnected = false;
+  1087→    try {
+  1088→      await fresh.$queryRawUnsafe(`PRAGMA journal_mode=WAL`);
+  1089→    } catch {
+  1090→      /* يُفحص في التحقق */
+  1091→    }
+  1092→    const checks = await runPostVerification({
+  1093→      client: fresh,
+  1094→      dbPath,
+  1095→      manifest: pre.manifest,
+  1096→      label: "ROLLBACK_VERIFY",
+  1097→    });
+  1098→    return { checks };
+  1099→  };
+  1100→
+  1101→  try {
+  1102→    if (shouldFail("ROLLBACK_VERIFY")) {
+  1103→      throw new RestoreError("ROLLBACK_VERIFY_FAILED", "فشل محقون في تحقق التراجع (اختبار معزول)", 500);
+  1104→    }
+  1105→    const { checks } = await doRollback();
+  1106→    const allOk = checks.length > 0 && checks.every((c) => c.ok);
+  1107→    if (!allOk) {
+  1108→      await failClosedRecovery(ctx, "rollback_verification_failed", "ROLLING_BACK", checks);
+  1109→      return buildOutcome(ctx, {
+  1110→        ok: false,
+  1111→        result: "RECOVERY_REQUIRED",
+  1112→        preRestoreBackupId: ctx.preRestoreBackupId,
+  1113→        epochBumped: false,
+  1114→        newEpoch: null,
+  1115→        postVerify: failedChecks,
+  1116→        rollbackVerify: checks,
+  1117→        abortReason: "rollback_verification_failed",
+  1118→
+  1119→
+  1120→      }, Date.now());
+  1121→    }
+  1122→    const newEpoch = await bumpEpochWithRetry();
+  1123→    if (newEpoch === null) {
+  1124→      await failClosedRecovery(ctx, "epoch_bump_failed_after_rollback", "ROLLING_BACK", checks);
+  1125→      return buildOutcome(ctx, {
+  1126→        ok: false,
+  1127→        result: "RECOVERY_REQUIRED",
+  1128→        preRestoreBackupId: ctx.preRestoreBackupId,
+  1129→        epochBumped: false,
+  1130→        newEpoch: null,
+  1131→        postVerify: failedChecks,
+  1132→        rollbackVerify: checks,
+  1133→        abortReason: "epoch_bump_failed_after_rollback",
+  1134→
+  1135→
+  1136→      }, Date.now());
+  1137→    }
+  1138→    await appendRecoveryEvent({
+  1139→      operationId: ctx.opId,
+  1140→      event: "ROLLBACK_COMPLETED",
+  1141→      actor: ctx.actor,
+  1142→      backupId: ctx.preRestoreBackupId,
+  1143→      result: "success",
+  1144→      details: { epochBumped: true },
+  1145→    });
+  1146→    await writeAuditSafe({
+  1147→      user: { id: ctx.actor.id, username: ctx.actor.username },
+  1148→      action: AUDIT_ACTIONS.DATABASE_RESTORE_ROLLED_BACK,
+  1149→      entityType: AUDIT_ENTITY_TYPES.Backup,
+  1150→      entityId: ctx.preRestoreBackupId,
+  1151→      description: `اكتمل التراجع التلقائي إلى نسخة الأمان «${ctx.preRestoreBackupId}» — عملية ${ctx.opId} (epoch+1)`,
+  1152→      metadata: { backupId: ctx.preRestoreBackupId, operationId: ctx.opId, epochBumped: true },
+  1153→    });
+  1154→    cleanupSwapArtifacts(ctx);
+  1155→    clearMaintenanceStateFile(); // → NORMAL (بعد تراجع ناجح حصرًا)
+  1156→    return buildOutcome(ctx, {
+  1157→      ok: true,
+  1158→      result: "ROLLED_BACK",
+  1159→      preRestoreBackupId: ctx.preRestoreBackupId,
+  1160→      epochBumped: true,
+  1161→      newEpoch,
+  1162→      postVerify: failedChecks,
+  1163→      rollbackVerify: checks,
+  1164→      abortReason: null,
+  1165→
+  1166→
+  1167→    }, Date.now());
+  1168→  } catch (e) {
+  1169→    await failClosedRecovery(ctx, `rollback_failed: ${e instanceof Error ? e.message : String(e)}`, "ROLLING_BACK", null);
+  1170→    return buildOutcome(ctx, {
+  1171→      ok: false,
+  1172→      result: "RECOVERY_REQUIRED",
+  1173→      preRestoreBackupId: ctx.preRestoreBackupId,
+  1174→      epochBumped: false,
+  1175→      newEpoch: null,
+  1176→      postVerify: failedChecks,
+  1177→      rollbackVerify: null,
+  1178→      abortReason: e instanceof Error ? e.message : String(e),
+  1179→
+  1180→
+  1181→    }, Date.now());
+  1182→  }
+  1183→}
+  1184→
+  1185→/* ──────────────────────────────────────────────────────────────────────── */
+  1186→/*  الإلغاء النظيف قبل التبديل + القفل المغلق                                 */
+  1187→/* ──────────────────────────────────────────────────────────────────────── */
+  1188→
+  1189→async function abortPreSwap(ctx: EngineContext, reason: string): Promise<void> {
+  1190→  if (ctx.disconnected) {
+  1191→    // القاعدة لم تُستبدل — إعادة الاتصال تعيد الخدمة بأمان
+  1192→    await reconnectDb();
+  1193→    ctx.disconnected = false;
+  1194→    try {
+  1195→      await liveDb.$queryRawUnsafe(`PRAGMA journal_mode=WAL`);
+  1196→    } catch {
+  1197→      /* ignore */
+  1198→    }
+  1199→  }
+  1200→  cleanupSwapArtifacts(ctx);
+  1201→  clearMaintenanceStateFile(); // → NORMAL
+  1202→  await appendRecoveryEvent({
+  1203→    operationId: ctx.opId,
+  1204→    event: "RESTORE_ABORTED",
+  1205→    actor: ctx.actor,
+  1206→    backupId: ctx.backupId,
+  1207→    result: "aborted",
+  1208→    details: { reason, productionUntouched: true },
+  1209→  });
+  1210→  await writeAuditSafe({
+  1211→    user: { id: ctx.actor.id, username: ctx.actor.username },
+  1212→    action: AUDIT_ACTIONS.DATABASE_RESTORE_ABORTED,
+  1213→    entityType: AUDIT_ENTITY_TYPES.Backup,
+  1214→    entityId: ctx.backupId,
+  1215→    description: `إلغاء منظم لعملية الاستعادة قبل التبديل — القاعدة لم تُلمس (${reason.slice(0, 120)})`,
+  1216→    metadata: { backupId: ctx.backupId, operationId: ctx.opId, reason: reason.slice(0, 200) },
+  1217→  });
+  1218→}
+  1219→
+  1220→async function failClosedRecovery(
+  1221→  ctx: EngineContext,
+  1222→  reason: string,
+  1223→  originalState: string,
+  1224→  checks: CheckResult[] | null
+  1225→): Promise<void> {
+  1226→  enterRecoveryRequired({
+  1227→    operationId: ctx.opId,
+  1228→    reason,
+  1229→    originalState: originalState as MaintenanceStateFile["state"],
+  1230→    message: "فشل مسار الاستعادة/التراجع — الخدمة مقفلة حتى استرداد يدوي موثق (RECOVERY_REQUIRED)",
+  1231→  });
+  1232→  await appendRecoveryEvent({
+  1233→    operationId: ctx.opId,
+  1234→    event: "RECOVERY_REQUIRED",
+  1235→    actor: ctx.actor,
+  1236→    backupId: ctx.backupId ?? ctx.preRestoreBackupId,
+  1237→    result: "failure",
+  1238→    details: { reason, originalState, failedChecks: checks?.filter((c) => !c.ok).map((c) => c.code) ?? null },
+  1239→  });
+  1240→  console.error(`[restore-engine] RECOVERY_REQUIRED — operation=${ctx.opId} reason=${reason}`);
+  1241→}
+  1242→
+  1243→function cleanupSwapArtifacts(ctx: EngineContext): void {
+  1244→  for (const p of [ctx.stagingCandidatePath, ctx.replacedPath]) {
+  1245→    try {
+  1246→      if (p && existsSync(p)) rmSync(p, { force: true });
+  1247→    } catch {
+  1248→      /* ignore — ملفات staging لا تؤثر على القاعدة */
+  1249→    }
+  1250→  }
+  1251→  ctx.stagingCandidatePath = null;
+  1252→  ctx.replacedPath = null;
+  1253→}
+  1254→
+  1255→function buildOutcome(
+  1256→  ctx: EngineContext,
+  1257→  data: Omit<
+  1258→    RestoreOutcome,
+  1259→    "operationId" | "backupId" | "phases" | "warnings" | "startedAt" | "finishedAt" | "durationMs"
+  1260→  >,
+  1261→  t0: number
+  1262→): RestoreOutcome {
+  1263→  return {
+  1264→    ...data,
+  1265→    operationId: ctx.opId,
+  1266→    backupId: ctx.backupId,
+  1267→    phases: ctx.phases,
+  1268→    warnings: ctx.warnings,
+  1269→    startedAt: ctx.startedAtIso,
+  1270→    finishedAt: new Date().toISOString(),
+  1271→    durationMs: Date.now() - t0,
+  1272→  };
+  1273→}
+  1274→

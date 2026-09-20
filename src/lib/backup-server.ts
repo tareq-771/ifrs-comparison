@@ -328,15 +328,26 @@ export interface ActorInfo {
   username: string;
 }
 
-export async function createBackup(actor: ActorInfo): Promise<{
+export async function createBackup(
+  actor: ActorInfo,
+  options?: {
+    /** 4B.1 — نوع النسخة (manual افتراضيًا؛ pre-restore من محرك الاستعادة). */
+    backupType?: "manual" | "pre-restore";
+    /** 4B.1 — نسخة الأمان قبل الاستعادة لا تلتزم فترة التهدئة (إلزامية بلا bypass). */
+    bypassCooldown?: boolean;
+    /** وصف تشغيلي في أحداث السجل — لا مسارات ولا أسرار. */
+    trigger?: string;
+  }
+): Promise<{
   backupId: string;
   level: VerificationLevel;
   manifest: BackupManifestV2;
   validationReport: ValidationReport | null;
   validationError: string | null;
 }> {
+  const backupType = options?.backupType ?? "manual";
   const now = Date.now();
-  if (now - lastCreateAt < BACKUP_CREATE_COOLDOWN_MS) {
+  if (!options?.bypassCooldown && now - lastCreateAt < BACKUP_CREATE_COOLDOWN_MS) {
     throw new BackupError(
       "COOLDOWN",
       `فترة تهدئة بين النسخ (${BACKUP_CREATE_COOLDOWN_MS / 1000} ثانية) — أعد المحاولة لاحقًا`,
@@ -359,7 +370,7 @@ export async function createBackup(actor: ActorInfo): Promise<{
       actor,
       backupId,
       result: "info",
-      details: { backupType: "manual", trigger: "manual" },
+      details: { backupType, trigger: options?.trigger ?? "manual" },
     });
 
     try {
@@ -398,7 +409,7 @@ export async function createBackup(actor: ActorInfo): Promise<{
       // 4) Manifest v3 — يحمل البصمتين: الحاكمة canonical + التشخيصية physical
       const manifest = buildManifest({
         backupId,
-        backupType: "manual",
+        backupType,
         createdBy: { id: actor.id, username: actor.username },
         schemaVersion: CURRENT_SCHEMA_LABEL,
         schemaFingerprint: physicalFp,
@@ -1327,6 +1338,11 @@ interface Artifact {
   zipPath: string;
   manifest: AnyBackupManifest;
   sizeBytes: number;
+}
+
+/** 4B.1 — مُصدَّر لمحرك الاستعادة: العثور على أثر نسخة (ZIP + Manifest) للقراءة حصرًا. */
+export function findArtifactById(id: string): Artifact | null {
+  return findArtifact(id);
 }
 
 function findArtifact(id: string): Artifact | null {

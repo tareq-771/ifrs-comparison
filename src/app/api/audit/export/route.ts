@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/session";
+import { guardRead } from "@/lib/api-guard";
 
 // GET /api/audit/export — تصدير سجل التدقيق CSV (مدير فقط) وفق نفس فلاتر القائمة.
 // - CSV مع BOM لدعم العربية في Excel، واقتباس RFC4180.
 // - حد أقصى 5000 صف لكل عملية تصدير (حماية الذاكرة) — مرتب زمنيًا تصاعديًا.
 export async function GET(req: NextRequest) {
+  return guardRead("/api/audit/export", async () => {
   try {
     await requireAdmin();
     const { searchParams } = new URL(req.url);
@@ -109,4 +111,5 @@ export async function GET(req: NextRequest) {
       { status }
     );
   }
+  });
 }

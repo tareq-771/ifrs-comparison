@@ -1,0 +1,155 @@
+Stage Summary:
+- البيئة مستعادة بالكامل: مشروع IFRS بمرحلته 3 المنفذة يعمل على المنفذ 3000 بقاعدة بيانات نظيفة، وworklog موحد في /home/z/my-project/worklog.md — جاهز لمتابعة المراحل من هنا
+
+---
+Task ID: 3.5-design
+Agent: main (Z.ai Code)
+Task: المرحلة 3.5 — لوحة متابعة المطابقات: تصميم فقط دون أي تنفيذ (بعد موافقة المستخدم على المرحلة 3 وطلبه مرحلة وسيطة قبل المرحلة 4)
+
+Work Log:
+- تأكيد حالة المرحلة 3 المنفذة (Task 16) وقراءة مصادر الحقيقة: prisma/schema.prisma (حقول workflow الـ20 + WorkflowHistory + الفهارس القائمة)، src/lib/workflow.ts (الحالات/الانتقالات/myActions/SoD)، src/lib/workflow-server.ts (canViewReportRow = قاعدة الرؤية)، src/lib/permissions.ts (مفتاحا assignWorkflow/reopenReport)، src/app/api/reports/route.ts (baseVisibility + غياب pagination في القائمة الحالية)، بنية ترويسة page.tsx (زر /admin)
+- كتابة وثيقة التصميم الكاملة docs/phase3.5-dashboard-design.md (16 قسمًا) تغطي بنود المستخدم الاثني عشر حرفيًا:
+  * dueDate على مستوى Report (نص date-only مثل periodEnd) مع مسار تطوير Group/سياسة إقفال يكتب في نفس العمود، وطريقان لضبطه: المعد عبر PUT (حالات قابلة للتعديل) + حائز assignWorkflow عبر PUT assignments (أي حالة عدا APPROVED) — بلا endpoint جديد
+  * تعريف «متأخر» الخادمي الصارم: dueDate≠null ∧ status≠APPROVED ∧ today>dueDate، بحد يومي (يوم الاستحقاق نفسه ليس متأخرًا)، و«اليوم» من الخادم بإزاحة أعمال قابلة للتهيئة (افتراضي UTC+3) ولا قبول بتوقيت العميل
+  * دالة deriveStage نقية (7 مراحل حصرية متبادلة من حقول Report وحدها بلا استعلامات تاريخ، مستغلة بقاء returned*/reopened* في المسودات البعدية) = تعريف خادمي واحد للبطاقات والفلاتر والصفوف (خاصية تكافؤ إلزامية بالاختبار)، مع فصل صريح بين حالة Workflow ومرحلة الأعمال، و«متأخرة» كعلم متراكب خارج التقسيم الحصري
+  * تحليل فجوة UNDER_REVIEW (المراجع والمعتمد كلاهما يملك إجراءً) وتحليل كامل لاعتماد PENDING_APPROVAL عبر COMPLETE_REVIEW: الأثر على آلة الحالات وWorkflowHistory وAuditLog (REVIEW_COMPLETED + صمامات) وmyActions والقفل والإسناد وSoD والتقارير الحالية (صفر ترحيل) والتقارير الزمنية المستقبلية — مع توصية بالتبني وقرار D-4/D-5 للمستخدم
+  * قواعد المسؤولية الحالية deriveOwnerRole لكل حالة + تعريف APPROVED = مقفول بلا مسؤولية إنجاز
+  * مصفوفة الرؤية لست شخصيات بإعادة استخدام baseVisibility حرفيًا + facets مبنية من التقارير المرئية فقط (منع تسريب الأسماء والمعرفات بلا 404)
+  * API قراءة فقط: GET /api/dashboard/summary + /reconciliations (ترقيم 20/50/100 + قائمة بيضاء للترتيب + 400 DASHBOARD_INVALID_PARAM) + /facets مع أشكال استجابة JSON كاملة وأمثلة
+  * Wireframe نصي RTL: مفتاح ترويسة «مساحة العمل | لوحة المتابعة» بلا route جديد، 9-10 بطاقات KPI قابلة للنقر، شريط فلاتر chips، جدول 16 عمودًا بالمطلوبة حرفيًا + إجراءات من myActions حصرًا، ترقيم خادمي
+  * فهارس مقترحة إضافية: periodEnd, dueDate, (groupId,status), updatedAt, cycle — كلها إضافية صرفة + ملاحظات الأداء (GROUP BY واحد للبطاقات، count+findMany متوازيان، بلا N+1)
+  * دلالات القيم المفقودة (لا اختلاق تواريخ): periodEnd/dueDate/preparedAt/reviewedAt/approvedAt null تظهر «—» وخيار «بدون فترة/استحقاق» و«المتأخرة» تستثنيها
+  * خطة تنفيذ واختبار: احتياطي VACUUM INTO → schema إضافية → (تعديل المرحلة 3 المكمّل إن اعتُمد) → dashboard.ts نقية → API → واجهة → مصفوفة اختبار إلزامية (تكافؤ البطاقات، حدود المتأخر، 6 شخصيات رؤية، فلاتر غير صالحة 400، التقارير القديمة، إثبات قراءة فقط بعدّ الصفوف قبل/بعد، سيناريو PENDING_APPROVAL الكامل) → تنظيف كامل
+  * 8 نقاط قرار D-1..D-8 بتوصيات جاهزة (موضع dueDate، من يضبطه، توقيت اليوم، تبني PENDING_APPROVAL، صماماته، دلالة «أعيد فتحها»، facets منفصلة، نطاق البطاقات)
+- لم يُعدَّل أي ملف Schema أو كود (الالتزام بـ«التصميم فقط») — الإنتاج الوحيد: وثيقة التصميم + هذا المدخل + لقطة git أمان
+
+Stage Summary:
+- تصميم المرحلة 3.5 مكتمل وموثق في docs/phase3.5-dashboard-design.md: لوحة قراءة فقط خادمية البطاقات والفلاتر والترقيم ضمن نطاق الرؤية الحالي، مع استحقاق dueDate قابل للتوسع، وتعريف «متأخر» صارم، واشتقاق مرحلة أعمال ومسؤولية حالية بدوال نقية، وتحليل معمق لفجوة UNDER_REVIEW وتوصية باعتماد PENDING_APPROVAL كتعديل مكمّل للمرحلة 3. بانتظار موافقة المستخدم وحسم D-1..D-8 قبل أي تنفيذ — ولن تبدأ المرحلة 4 (Backup/Restore) قبل إنجاز هذه المرحلة وموافقته.
+
+---
+Task ID: 3.5A
+Agent: main (Z.ai Code)
+Task: تنفيذ المرحلة 3.5A — إضافة حالة PENDING_APPROVAL وانتقال COMPLETE_REVIEW + فصل reviewStartedAt/reviewedAt + dueDate وحوكمة الرقابية (وفق قرار المستخدم D-1 حتى D-9)
+
+Work Log:
+- نسخة احتياطية قبل التغيير: backups/pre-3.5A-2026-09-20T04-07-58.db (VACUUM INTO + integrity ok) — لم يُحذف أي نسخة قائمة ولم يُعاد كتابة تاريخ Git
+- Schema: Report.dueDate (نص date-only)، Report.reviewStartedAt، فهارس (periodEnd, dueDate, updatedAt, cycle, groupId+status) — db push بلا فقد
+- ترحيل الدلالة (قرار D-5): scripts/migrate-reviewed-at-3.5a.ts — نقل reviewedAt القديم (بدلالة البدء) إلى reviewStartedAt ثم تصفير reviewedAt (صفر صفوف — القاعدة نظيفة، موثق ومكرر التشغيل)
+- src/lib/workflow.ts: +PENDING_APPROVAL (شارة rose، تسمية «بانتظار الاعتماد»)، +WORKFLOW_ACTION.COMPLETE_REVIEW، +WORKFLOW_HISTORY_ACTION.REVIEW_COMPLETED، مصفوفة الانتقالات: APPROVE لم يعد يعمل إلا من PENDING_APPROVAL، RETURN من UNDER_REVIEW (مراجع) أو PENDING_APPROVAL (معتمد بسبب إلزامي)، +deriveOwnerRole القاعدة الخادمية الواحدة (DRAFT/RETURNED/REOPENED→المعد، SUBMITTED/UNDER_REVIEW→المراجع، PENDING_APPROVAL→المعتمد، APPROVED→لا أحد)، +normalizeDueDateStrict، computeMyActions: +canCompleteReview، canApprove => PENDING_APPROVAL حصرًا، canReturn للحالتين
+- src/lib/business-time.ts: إزاحة توقيت الأعمال المركزية BUSINESS_TZ_OFFSET_MINUTES (افتراضي 180، غير مثبتة بالكود) + businessToday + calendarDaysBetween (أيام تقويمية)
+- src/lib/audit-actions.ts: +REVIEW_COMPLETED، +DUE_DATE_CHANGED
+- workflow route: START_REVIEW يثبت reviewStartedAt؛ COMPLETE_REVIEW (مراجع فقط) يثبت reviewedAt=التوقيع وينتقل PENDING_APPROVAL؛ SUBMIT/REOPEN يمسحان أدلة المراجعة (بعد الأرشفة في REOPEN)؛ RETURN يتحقق من الفاعل حسب الحالة + metadata returnedFromPendingApproval؛ APPROVE metadata.pendingSince=reviewedAt
+- assignments route: استبدال المراجع في PENDING_APPROVAL يبطل التوقيع ويعيد SUBMITTED؛ PENDING_APPROVAL أُضيف لبوابة «استبدال فقط لا تفريغ»؛ resetReview يمسح reviewStartedAt أيضًا
+- POST /api/reports: dueDate عند الإنشاء لحائز assignWorkflow فقط (DUE_DATE_FORBIDDEN/DUE_DATE_INVALID)
+- PATCH /api/reports/[id]/due-date (جديد): الحوكمة — assignWorkflow + الرؤية أولًا (404 لغير المرئي) + كل الحالات عدا APPROVED + قفل تفاؤلي version + تدقيق DUE_DATE_CHANGED (oldDueDate,newDueDate,changedBy,cycle) بلا صف WorkflowHistory
+- UI: workflow-panel زر «إتمام المراجعة (توقيع المراجع)» + شارة الاستحقاق + حوار حوكمة الاستحقاق + بطاقة المراجع تعرض البدء والإتمام؛ page.tsx handleDueDate + عنوان COMPLETE_REVIEW + حقل الاستحقاق عند إنشاء نسخة جديدة (للحوكمة فقط)
+- اختبارات 3.5A الإلزامية: scripts/verify-3.5a.ts (HTTP حقيقي + 6 مستخدمين) — 64/64 PASS (الدورة الكاملة، الإرجاع من PENDING_APPROVAL، القفل على المعد والمعتمد، رفض APPROVE من UNDER_REVIEW، رفض COMPLETE_REVIEW لغير المراجع، تعارض النسخ في COMPLETE_REVIEW/APPROVE/due-date، حوكمة الاستحقاق بالصلاحية وبدونها، SoD regression، بطلان التوقيع عند استبدال المراجع، REOPEN يمسح الأدلة مع الأرشفة، تسلسل السجل) ثم تنظيف كامل: users=1 reports=0 groups=0 audit=0 workflowHistory=0 + integrity ok
+- Commit: 07f7873 (append-only فوق 821156e — بلا أي إعادة كتابة تاريخ)
+
+Stage Summary:
+- 3.5A مكتملة ومجازة بالاختبار: آلة الحالات أصبحت DRAFT→SUBMITTED→UNDER_REVIEW→PENDING_APPROVAL→APPROVED مع توقيع مراجع مستقل، والاستحقاق حقل رقابي محوكَم بالتدقيق الكامل
+- ملاحظة معمارية: الحوكمة غير الإدارية (assignWorkflow) تعمل ضمن نطاق رؤية المستخدم فقط (404 لغير المرئي) — نفس قواعد الإسناد في المرحلة 3
+- فهارس الجديدة ستُدقّق بـ EXPLAIN QUERY PLAN على بيانات اختبار معقولة في 3.5B وقد تُقلّص
+
+---
+Task ID: 3.5B
+Agent: main (Z.ai Code)
+Task: تنفيذ المرحلة 3.5B — لوحة متابعة المطابقات (قراءة فقط): APIs + KPIs + فلاتر + جدول RTL (بعد نجاح 3.5A كاملًا)
+
+Work Log:
+- src/lib/reconciliation.ts (نقية مشتركة): deriveStage بسبع مراحل حصرية + stageToWhere (ترجمة حرفية مطابقة)، deriveOwner فوق deriveOwnerRole (القاعدة الواحدة)، computeOverdue/buildOverdueWhere (dueDate≠null ∧ status≠APPROVED ∧ today>dueDate — أيام تقويمية، الحد: يوم الاستحقاق ليس متأخرًا)، تعريفات البطاقات وقائمة بيضاء للترتيب، نوع DashboardRow
+- src/lib/dashboard-server.ts: buildDashboardVisibility (نفس predicate حشو GET /api/reports) يُعاد استخدامه في الثلاثة endpoints حرفيًا؛ تحقق صارم للباراميترات (400 DASHBOARD_INVALID_PARAM)؛ بحث الاسم برموز % _ حرفيًا عبر مسار SQL مع ESCAPE (Prisma contains لا يهرب LIKE في SQLite)
+- APIs (GET فقط — الكتابة 405): /api/dashboard/summary (بطاقات من نفس الرؤية والدوال النقية — فلاتر النطاق فقط قرار D-8)، /api/dashboard/reconciliations (count+findMany بنفس WHERE بالتوازي + pagination {20,50,100} + sort whitelist + myActions لكل صف من computeMyActions)، /api/dashboard/facets (periods/groups/users ضمن الرؤية — لا تسريب أسماء خارجها)
+- UI: مفتاح الترويسة «مساحة العمل | لوحة المتابعة» (بلا route جديد — حالة مساحة العمل محفوظة)؛ kpi-cards (نقر = فلتر خادمي ثابت؛ «متأخرة» و«أعيد فتحها» علمان متراكبان خارج التقسيم)؛ filters-bar (chips + مسح الكل + ownerMe)؛ reconciliations-table (18 عمودًا incl. المسؤول الحالي/الاستحقاق/أيام التأخير + شارة د² + تظليل المتأخر؛ إجراءات الصفوف تستدعي endpoint الانتقالات الحالي بـ myActions الخادمية؛ «الإسناد» يفتح التقرير — انحراف موثق عن القسم 7)؛ ترقيم/ترتيب خادمي بالكامل
+- الفهارس (قرار الفحص): EQP على 2500 صف + ANALYZE — updatedAt (الترتيب الافتراضي)، dueDate (المتأخر)، status (OR المراحل)، groupId+status، cycle>1، periodEnd (covering لـ DISTINCT facets) — كلها مستخدمة فعلًا بلا تكرار، لم يُحذف شيء
+- اختبارات 3.5B الإلزامية: scripts/verify-3.5b.ts — 87/87 PASS (تكافؤ بطاقة↔فلتر↔صفوف لكل مرحلة، مجموع الحصري = الإجمالي 27، مصفوفة المتأخر أمس/اليوم/غد/null × معتمد/غير معتمد مع daysOverdue 1 و2، ownerRole/ownerMe، الرؤية لستة أدوار incl. عضو مجموعة قراءة فقط وoutsider أصفار، facets بلا تسريب + فلتر غير مرئي 200 فارغ لا 404، ترقيم 20+7 وصفحة خارج النطاق، ترتيب بالاسم/الدورة، فلاتر مركبة، 10 باراميترات غير صالحة ⇒ 400، بحث % _ حرفي، فلاتر النطاق على البطاقات، إثبات قراءة فقط: لا تغيير في Report/WorkflowHistory/AuditLog/versions بعد جلسة كاملة + كل أفعال الكتابة 405)
+- تحقق متصفح E2E (agent-browser): لوحة المستخدم المدير تعرض البطاقات بأعداد مطابقة، نقر بطاقة «بانتظار الاعتماد» ⇒ فلتر + صف واحد، مسح الكل، جدول 20 صفًا، فتح تقرير من اللوحة ⇒ مساحة العمل بلوحة دورة الاعتماد، تجاوب موبايل (بطاقتان/صف)، تذييل مثبت يُدفع طبيعيًا مع المحتوى الطويل، لا أخطاء console
+- تنظيف كامل بعد الاختبار: users=1 reports=0 groups=0 audit=0 workflowHistory=0 + integrity ok
+- Commit: append-only بعد 3.5A (لا إعادة كتابة تاريخ)، النسخ الاحتياطية قائمة
+
+Stage Summary:
+- Phase 3.5 (A+B) مكتملة: آلة الحالات مع PENDING_APPROVAL + حوكمة dueDate + لوحة متابعة قراءة-فقط بمصدر رؤية واشتقاق واحد لا تتباين أرقامه مع صفوفه أبدًا
+- الفرق الموثق الوحيد عن التصميم: زر «تغيير الإسناد» في صف اللوحة يفتح التقرير في مساحة العمل (حوار الإسناد الكامل هناك) بدل تكرار الحوار — الإجراءات الأخرى كاملة
+- JWT يخبز الصلاحيات وقت الدخول: تغيير groupIds يتطلب إعادة دخول (اكتُشف أثناء الاختبار — سلوك NextAuth المعتمد)
+
+---
+Task ID: 4-design (Phase 4 — Backup, Restore & Operational Recovery)
+Agent: main (Z.ai Code)
+Task: المرحلة 4 — تصميم فقط دون أي تنفيذ (بعد موافقة المستخدم على Phase 3.5A/3.5B المنفذتين والمختبرتين)
+
+Work Log:
+- تأكيد حالة المشروع: المراحل 0/1/2/3/3.5A/3.5B منجزة (64/64 و87/87 PASS، commits 821156e→07f7873→ede4838، append-only)
+- جرد فعلي شامل لتحديد نطاق النسخ (لا افتراض): db/custom.db (1.4MB، WAL، 5 جداول، integrity ok) — صفر استدعاءات fs.write في src كاملة وصفر معالجات multipart ⇒ كل بيانات المستخدمين والمرفوعات JSON داخل DB حصرًا — .env يحوي DATABASE_URL فقط (لا NEXTAUTH_SECRET مثبت!) — BUSINESS_TZ_OFFSET_MINUTES الإعداد المركزي الوحيد — لا مجلد prisma/migrations إطلاقًا (db push فقط) — backups/pre-3.5A داخل المشروع بينما نسخة pre-phase3 في /home/z/backups فُقدت نهائيًا مع نقل البيئة (دليل واقعي لمسألة off-device DR)
+- كتابة وثيقة التصميم الكاملة docs/phase4-backup-restore-design.md (24 قسمًا) تغطي بنود المستخدم العشرين حرفيًا: جرد ما يُنسخ/لا يُنسخ بالأدلة، VACUUM INTO مقابل Backup API (القرار: VACUUM INTO — النمط المجرَّب، بلا تصادم checkpoint مع Prisma)، المعمارية والمسارات (خارج public، 0600، أسماء خادمية، معرفات مغلاقة ضد traversal)، صيغة Manifest الكاملة (schemaFingerprint + counts + dataRange + configFingerprint)، أكواد AuditLog الستة الجديدة + السجل التشغيلي الخارجي JSONL var/recovery/recovery-log.jsonl الذي يحل مشكلة «AuditLog يعود للماضي عند استعادة قاعدة أقدم»، نموذج الصلاحيات (مفتاحان manageBackups + restoreDatabase — لا اشتقاق ضمني من settings)، خط التحقق الثماني على staging حصرًا، تسلسل الاستعادة العشري (Upload→Validate→Preview→Confirm→Pre-Restore→Maintenance→Restore→Integrity→Restart/Reconnect→Completion) برسم ASCII، Maintenance Mode (علم ملفي + assertWritable في كل endpoints الكتابة + عداد in-flight + 503 + شريط استطلاع)، التحقق البعدي بالقراءة Prisma الفعلية + Rollback التلقائي للـ pre-restore، إبطال الجلسات بتدوير NEXTAUTH_SECRET عند مرحلة Restart (تحليل خطر JWT المخبوز الذي يمر عبر Edge بلا DB)، Retention بلا أي حذف تلقائي (عرض فقط)، التنزيل ZIP + الرفع بلا ثقة بالاسم وبحد 200MB، جدول تهديدات/تخفيف عشري + نقاش التشفير at rest (توصية التأجيل)، خطة Prisma migrations baseline كاملة (diff→init على نسخة مؤقتة→resolve --applied→فحص drift) بمخاطرها المعلنة قبل التنفيذ، DR خارج الجهاز بالدليل الواقعي للمشروع نفسه، RPO 24h/RTO 30 دقيقة كتوصيات قابلة للتغيير، خطة اختبارات 4 محاور (نسخ أثناء كتابة متزامنة، مصفوفة ملفات فاسدة/غريبة، استعادة ذهبية + rollback + صيانة + جلسات + بقاء JSONL، migrations)، 10 نقاط قرار D-1..D-10 بتوصيات جاهزة، وتقسيم تنفيذي مقترح 4A (أساس النسخ)/4B (الاستعادة)
+- لم يُعدَّل أي ملف Schema أو Prisma أو API أو UI أو accounts.ts أو Workflow أو Dashboard — الإنتاج الوحيد: وثيقة التصميم + هذا المدخل + commit انتقائي append-only للوثيقة والمدخل فقط
+
+Stage Summary:
+- تصميم Phase 4 مكتمل وموثق: نطاق النسخ أثبت فحصًا أنه قاعدة البيانات كاملة بلا أي حالة خارجية عدا الإعدادات، النسخ بـ VACUUM INTO المجرَّب، كل استعادة خلف خط تحقق ثماني + pre-restore إلزامي + صيانة + Rollback، وأدلة الاسترجاع في سجل خارجي لا يمحوه الاستبدال — بانتظار موافقة المستخدم على الوثيقة وحسم D-1..D-10 قبل أي كود، ولن يبدأ أي تنفيذ (4A أو 4B) قبل ذلك
+
+---
+Task ID: 4-design-v2 (Phase 4 — Final Design Addendum)
+Agent: main (Z.ai Code)
+Task: مراجعة تصميم Phase 4 وفق القرارات المعدلة من المستخدم (D-2/D-3/D-7/D-9 معدلة + إضافات إلزامية: Restore Drill، مستويات التحقق الثلاثة، آلة حالات الاستعادة، RECOVERY_REQUIRED، Session Epoch، أمن ZIP، Recovery Test) — تصميم فقط بلا تنفيذ
+
+Work Log:
+- إعادة كتابة docs/phase4-backup-restore-design.md إلى v2 (25 قسمًا) بدمج كل القرارات:
+  * D-2: فصل BACKUP_DIR القابل للتهيئة عن مجلد التطبيق (افتراضي var/backups داخل مساحة العمل الدائمة بسبب درس فقدان /home/z — لكن بلا افتراض معماري لوجوده في source tree) + .gitignore للأمام فقط
+  * D-3: منع ترحيل أي نسخة على قاعدة التشغيل — Restore Drill يرحّل نسخة مؤقتة في staging (integrity + Prisma read tests + counts sanity) والناتج يصبح Candidate؛ الأحدث/غير المعروف: رفض قاطع (SCHEMA_NEWER/SCHEMA_UNKNOWN)
+  * D-7: Session Epoch — ملف var/auth/session-epoch خارج DB المستبدلة؛ jwt callback يوقع epoch عند الدخول ويفحصه في كل استدعاء؛ التوكن المخالف يُقتل (بلا user) فترفضه كل مصادر البيانات Node-runtime؛ حدوثة Edge proxy موثقة صراحة (غلاف صفحات فقط بلا وصول بيانات)؛ فصل كامل عن NEXTAUTH_SECRET الثابت (D-10: يثبت قويًا ولا يدخل ZIP/Manifest/API/سجلات)
+  * D-9: مستويا صيانة (write-block أثناء التحقق/العرض، full-block من disconnect حتى التحقق البعدي+الإبطال) + تسلسل الثماني المراحل الحرفي + reconnectDb عبر export let db (ESM live bindings) مع بديل restart مضمون + PRAGMA journal_mode=WAL بعد التبديل (VACUUM INTO يخرج بوضع rollback)
+  * إضافات المستخدم: مستويات CREATED/VALIDATED/RESTORE_VERIFIED في manifest.verification (لا كلمة «متحقق» لمجرد integrity) — Restore Drill وظيفة أساسية بزر UI وAPI لا اختبار يدوي — آلة حالات الاستعادة الكاملة بحالات نهائية ثلاث (COMPLETED/ROLLED_BACK/RECOVERY_REQUIRED) وقاعدة «لا خروج من الصيانة إلا بنجاح الاستعادة أو التراجع» — مصفوفة فشل/تراجع بثمانية صفوف مع إجراء الطوارئ اليدوي — سجل الاسترجاع بـ eventId/timestamp/operationId/event/actor/backupId/result/details + append-only بلا أي update/delete endpoint — Manifest v2 بحقول formatVersion/appVersion/schemaVersion/createdAt/createdBy (وصفي لا أمني)/backupType/databaseSha256/databaseBytes/integrityCheck/counts/periodRange — أمن ZIP: حدود مضغوط/غير مضغوط/نسبة/عدد مداخل + رفض zip-slip/symlinks/متداخلات + مقبول v1 حصرًا database.db+manifest.json — Recovery Test سيناريو التسعة خطوات إلزامي — RPO/RTO مع التصريح «اليدوي لا يضمن 24h» — off-device interface مستقبلية فقط مع اشتراط التشفير
+  * D-4: إجراء baseline الآمن بست خطوات (diff بلا لمس أي قاعدة → بناء فارغ من migrations → مقارنة ثنائية incl. fingerprint → اختبار سكربتات التحقق على المبنية → فقط بعدها migrate resolve --applied على الأصلية → status clean) مع خطوة drift منفصلة
+  * قوائم ملفات 4A (14 ملفًا: 8 جديدة) و4B (15 ملفًا: 5 جديدة + 13 مسارًا كتابيًا يضاف له assertWritable) مع «لا يُعدل إطلاقًا» صريح
+- تحقق تقني قبل التصميم: getServerSession في session.ts يعمل Node runtime ⇒ فحص epoch في jwt/session callbacks يغطي كل مسارات API — jszip موجود أصلًا في dependencies للحزم والفك المضبوط
+- لم يُعدَّل أي ملف كود/Schema/API/UI — الإنتاج: الوثيقة v2 + هذا المدخل + commit انتقائي append-only
+
+Stage Summary:
+- تصميم Phase 4 v2 جاهز: النسخ بـ VACUUM INTO في BACKUP_DIR منفصل، كل استعادة خلف خط تحقق ثماني + Drill للمخططات الأقدم على نسخ مؤقتة + pre-restore مدقق إلزامي + صيانة بمستويين + آلة حالات لا تخرج إلا بنجاح أو تراجع صحيح وإلا RECOVERY_REQUIRED، وإبطال الجلسات بـ Session Epoch خارج القاعدة، وأدلة الاسترجاع في سجل خارجي append-only بعناوين operationId — بانتظار الموافقة النهائية على الملخص المرسل قبل كتابة أي كود (4A أو 4B)
+
+---
+Task ID: 4A (Phase 4A — أساس النسخ الاحتياطي)
+Agent: main (Z.ai Code)
+Task: تنفيذ Phase 4A المعتمدة حصرًا: إنشاء النسخ (VACUUM INTO) + Manifest v2 + مستويات التحقق الثلاثة + Restore Drill على قاعدة مؤقتة معزولة + سجل استرجاع خارجي append-only + أمن ZIP + واجهة إدارة + Migration Baseline (تحضير/اختبار فقط بلا resolve على الإنتاج) — ثم توقف قبل 4B
+
+Work Log:
+- مكتبات جديدة: backup-config.ts (BACKUP_DIR قابل للتهيئة افتراضي var/backups خارج public/ وGit — لا افتراض معماري لـ source tree؛ حدود الرفع؛ سجل المخططات المعروفة؛ مولدات backupId/operationId)، zip-secure.ts (قارئ Central Directory يدوي صارم: رفض ZIP64/تشفير/symlink/مجلدات/تكرار/أسماء خارج database.db+manifest.json/حدود مضغوط-غير مضغوط/نسبة bomb)، backup-manifest.ts (Manifest v2 بكل الحقول الإلزامية + periodRange + authenticity.note الموثق «VALIDATED ≠ أصالة تشفيرية» + حقل manifestHmac محجوز null)، recovery-log.ts (JSONL append-only بـ eventId/timestamp/operationId/event/actor/backupId/result/details عبر Sanitizer مركزي — لا توجد أي دالة تعديل/حذف بنيويًا)، backup-server.ts (createBackup: VACUUM INTO عبر $executeRawUnsafe + integrity + fingerprint + counts/periodRange/dataRange + SHA-256 بثّ + ZIP database.db+manifest.json + sidecar متزامن + تحقق تلقائي فوري؛ validateBackupArtifact خط ثماني بـ CHECKSUM قاطع + COUNTS_MISMATCH؛ runRestoreDrillById: فك معزول→checksum→integrity→مخطط→اتصال Prisma حقيقي على مؤقتة→قراءة 5 جداول→مطابقة counts/period→sanity→RESTORE_VERIFIED؛ uploadBackupZip staging فقط؛ listBackups من Manifestات مع INVALID للمتلف/الناقص)
+- الصلاحيات: manageBackups + restoreDatabase (محجوز 4B بلا أي API يشير إليه) + canManageBackups/canRestoreDatabase — settings لا تمنح شيئًا (D-5) + requireManageBackups في session.ts + 6 أكواد AuditLog (BACKUP_CREATED/FAILED/VALIDATED/UPLOADED/DOWNLOADED/DRILLED) + Backup entity
+- APIs سبعة: GET/POST /api/backups، [id] details، [id]/download (stream بفحص صلاحية)، [id]/validate، [id]/drill، upload (base64 بحد مضغوط قبل الفك)، recovery-log (قراءة فقط) — كلها خلف manageBackups حصرًا
+- واجهة: backup-manager.tsx (بطاقات ملخص + إنشاء حي + رفع للتحقق + جدول من Manifestات بشارات CREATED/VALIDATED/RESTORE_VERIFIED/INVALID + تفاصيل Manifest مع SHA-256 كامل + تقارير فحوص بالمدد + سجل استرجاع مرئي بـ operationId + بطاقة سياسة: RPO يدوي لا يضمن 24h / 0600≠تشفير / لا حذف تلقائي / قيد أصالة Manifest) + تبويب ثالث محصور بـ canManageBackups + خانة manageBackups في محرر المستخدمين
+- .gitignore: /var/ و/backups/ للأمام فقط (الملف القديم المتتبع دون مساس)
+- Migration Baseline (D-4 خطوات 0-4 حصرًا): prisma/migrations/0_init/migration.sql (5,353 بايت من migrate diff --from-empty) + migration_lock.toml + سكربت تحقق: نسخة أمان VACUUM INTO → بناء قاعدة فارغة كاملة بمigrate deploy → migrate diff (built→schema) و(built→production) فارغان دلاليًا → مطابقة بصمة sqlite_master بنفس خوارزمية الـ Manifest → كشف drift نصي حقيقي: جدول Report فقط (dueDate/reviewStartedAt أُضيفا تاريخيًا بـ ALTER TABLE فجاءا بنهاية ترتيب الأعمدة) — عرضه على المستخدم لتقرير 4B (resolve --applied يقبل drift دلاليًا متطابقًا أو إعادة بناء لاحقة) → Prisma CRUD على المبنية → ⛔ لم يُنفذ resolve على الإنتاج عمدًا (بانتظار موافقة منفصلة) — الإنتاج بلا _prisma_migrations وعدّه لم يتغير
+- سكربتات التحقق الأربعة (كلها نجاح كامل):
+  * isolation (19/19): Dataset موسوم → Backup A VALIDATED → تعديل التشغيل (تقرير ثالث + اسم معدل) → Drill ثانٍ → ⭐ المؤقتة تحوي Dataset A حرفيًا (الاسم الأصلي + بيانات موسومة، لا A3 ولا المعدل) والتشغيل بقيت على الحالة الجديدة → Audit (CREATED/VALIDATED/DRILLED) + Recovery (7 أحداث بتسلسل كامل) → تنظيف كامل وعودة العدّ للأصل + integrity ok
+  * zip-security (15/15): zip-slip/مطلق/symlink/ملف ثالث/تكرار/متداخل/حد مضغوط 2MB>1MB/حجم CD مزيّف 4GB/10 مداخل/SQLite مزيفة/checksum كاذب/Manifest مكسور/Manifest مفقود/مخطط غريب MISSING_TABLES/جدول مستقبلي SCHEMA_UNKNOWN — كل رفض = صف Audit + حدث Recovery واحدًا بالضبط + صفر بقايا staging + جداول البيانات لم تُلمس
+  * consistency: كاتب كعملية bun منفصلة (محاولة Worker أسقطت Bun نفسه — علة بيئة موثقة) 20,050 دفعة، اللقطة التقطت منتصف الكتابة (19,379/20,050 · counter=rows=96,895 بالضبط = معاملة مكتملة وحيدة) والكتابة استمرت بعدها لـ100,250 — integrity ok في كل ملف — الإنتاج لم يُستخدم
+  * permissions (HTTP فعلي ضد الخادم): بلا manageBackups: 403 على الثمانية كلها؛ settings:true فقط: 403 (D-5 مثبت)؛ حامل غير مدير: 200 قائمة+سجل و404 لغير الموجود؛ مدير بالدور: 200 ضمني؛ غير مصدق: 401 — مستخدمو الاختبار حُذفوا
+- انحراف موثق (سلف بند 4B بضرورة): تثبيت NEXTAUTH_SECRET قوي في .env الآن — الدليل: JWEDecryptionFailed بين chunks Next 16+Turbopack مع الغياب (أثبت بـ /api/auth/session=200 مقابل كل API=401 بعد إعادة تشغيل نظيف) — بند D-10 إلزامي قبل التشغيل الفعلي وشرط ضروري لاختبارات 4A الإلزامية عبر HTTP — السر خارج أي كود للنسخ/السجلات ولا يقرؤه أي مسار جديد، و.env خارج Git
+- إصلاحات أثناء التحقق: BigInt من PRAGMA page_size (Number())، حدث BACKUP_VALIDATED للتحقق التلقائي (Audit+Recovery)، توحيد أثر الرفض (كل رفض = Audit+Recovery مرة واحدة)، تقفية In-flight: POST أول من واجهة الرفع رجع 403 لحظة إعادة تجميع dev — أعيد إثباته 201 (وHTTP مستقل 201 كامل الفحوص)
+- تحقق متصفح E2E (Agent Browser): دخول→تبويب→إنشاء حي (نسخة جديدة VALIDATED بالشارة)→Drill (تقرير 8 مراحل بالمدد + قراءات Prisma 5/5 + RESTORE_VERIFIED)→تفاصيل Manifest (SHA-256 كامل + تنبيه الأصالة)→سجل الاسترجاع بـ operationId→رفع صالح (201 بالخادم)→تذييل ثابت سطح المكتب وأسفل الصفحة على الموبايل (844=844)→لا أخطاء console/page
+- نظافة النهاية: production integrity ok، مستخدم وحيد (admin)، staging نظيف من الرفوض، نسخ الاختبار الرسمية محفوظة كأدلة (3 نسخ bk-* + 2 مرفوعات staging + 7 نسخ أمان pre-4A-* بأذونات 600) — لا حذف لأي نسخة قائمة
+
+Stage Summary:
+- 4A مكتملة ومثبتة: نسخ متسقة بـ VACUUM INTO في BACKUP_DIR منفصل (افتراضي var/backups)، Manifest v2 بلا أسرار/هاشات/مسارات، ثلاثة مستويات تحقق لا تُمنح مجانًا، Drill وظيفة أساسية تعمل عبر Prisma حقيقي على مؤقتة معزولة (فشل أي خطوة = لا RESTORE_VERIFIED)، سجل استرجاع خارجي append-only بلا أي update/delete endpoint، أمن ZIP فشل كل الهجمات الخمسة عشر قبل لمس الإنتاج، baseline جاهز بنتيجة صادقة (تطابق دلالي كامل + drift نصي موثق بقرار 4B مؤجل)، صلاحية manageBackups منفصلة تمامًا عن settings — قاعدة التشغيل لم تُستبدل ولم يُلمس سلوك أي نظام قائم — **توقف هنا: لا 4B (استبدال الإنتاج/الصيانة/الEpoch/التراجع) إلا بموافقة صريحة**
+
+---
+Task ID: 4A.1 (Phase 4A.1 — إغلاق Migration Baseline & Canonical Schema Identity)
+Agent: main (Z.ai Code)
+Task: تنفيذ Phase 4A.1 المعتمدة حصرًا: قرار Drift الموثق + canonicalSchemaFingerprint من metadata دلالية + Manifest v3 بتوافق legacy-v2 بلا كسر + إثبات التكافؤ الثلاثي + migrate resolve --applied 0_init على قاعدة التشغيل خلف بوابة صارمة + Fresh-DB E2E إلزامي + Production regression عبر HTTP + إعادة فحص النسخ القديمة + استقلال operationId لكل تشغيل Drill — ثم التوقف قبل 4B
+
+Work Log:
+- قرار الـDrift (بند 1): أُعيد إثبات فارغية prisma migrate diff الثلاثة (Production↔schema.prisma، Fresh-migrated↔schema.prisma، Production↔Fresh) كلها «لا فرق دلالي» — وُثق الـdrift الفيزيائي بمواقع الأعمدة الحرفية (Report.dueDate: production=45/fresh=25 · Report.reviewStartedAt: production=46/fresh=31) ولم يُعَد بناء أي جدول
+- src/lib/schema-fingerprint.ts (جديد): canonicalSchemaFingerprint (canonical-v1) من metadata دلالية normalized عبر PRAGMA table_info/index_list/index_info/foreign_key_list — جداول/أعمدة مرتبة بالاسم (إبطال الترتيب الفيزيائي عمدًا)، types uppercase، nullability دلالية (notnull∨pk)، defaults مطبعة (lit/kw/num/expr مع CURRENT_TIMESTAMP/true/false)، PK بترتيب ordinal، unique constraints من origin='u' كمجموعات أعمدة بلا أسماء autoindex، فهارس origin='c' مسماة، FKs مجمعة بالمعرف — بادئة csha256: — وphysicalSchemaFingerprint (نفس خوارزمية v2 حرفيًا كي تبقى قيم النسخ القديمة قابلة للمقارنة) تشخيصية فقط — _prisma_migrations وsqlite_% مستثناة من الاثنتين، وقيود CHECK غير معروضة بPRAGMA (لا يوجد أي) — قيود الخوارزمية موثقة في الترويسة
+- Manifest v3 (backup-manifest.ts): BackupManifestV3 يضيف canonicalSchemaFingerprint إلزاميًا مع بقاء كل حقول v2 (schemaFingerprint = الفيزيائية بدلالتها القديمة) — القارئ يقبل 2 و3 معًا (SUPPORTED_MANIFEST_FORMAT_VERSIONS=[2,3]) — النسخ القديمة تُصنف legacy-v2 ولا تُرقى أبدًا (روح append-only)، وبصمتها القاعدية تُستخرج من database.db نفسها عند كل تحقق (لا ثقة بقيمة مكتوبة) — verification.drillRuns اختياري إضافي
+- backup-config.ts: PINNED_CURRENT_CANONICAL_FINGERPRINT = csha256:bffa026102bcb2419b68af50654ce806c22dc08e069dd3a1203b184db4b4af3f (الثابت المثبّت بعد إثبات التطابق) — أي خلاف بين قاعدة التشغيل الحية والثابت ⇒ فشل مغلق SCHEMA_UNKNOWN — setCurrentSchemaIdentity/{canonical,physical} بدل الكاش القديم
+- backup-server.ts: التصنيف والتوافق على canonical حصرًا في الإنشاء/التحقق/الDrill — فحص MANIFEST_INCONSISTENT جديد: v3 بcanonical مزيف أو أي manifest بphysical مزيف ⇒ رفض قبل أي اعتماد (مثبت بلتلعيب فعلي) — Drill: DRILL_STARTED يحمّل details.drillRun.sequence (من عدّاد قراءة فقط countRecoveryEvents) وDRILL_VERIFIED يحمل التسلسل وoperationId، وverification.drillRuns يزداد مع كل نجاح — تقارير Validation/Drill تضيف manifestFormat/manifestClass/canonicalMatchesManifest/البصمتين — واجهة الإدارة: شارة Legacy v2 كهرمانية / Manifest v3 خضراء + c:<short> + تفاصيل canonical كاملة وdrillRuns وملاحظة الإرث
+- النتائج الحية: canonical(fresh من migrations) == canonical(production) == الثابت = csha256:bffa0261… بينما physical مختلف (production=dbce1ce3… vs fresh=fa9b014d…) — بالضبط الحالة التي أرادها المستخدم: هوية دلالية واحدة رغم drift فيزيائي موثق
+- migrate resolve خلف البوابة (scripts/phase41-resolve-baseline.ts): 3 محاولات سابقة فشلت fail-closed بلا أي أثر («database is locked») — السبب: أي اتصال Prisma حي بقاعدة التشغيل حتى الخامل (عميل lib/db العام القادم عبر backup-server) يمنع schema engine — الدرس موثق: قطع كل الاتصالات قبل resolve — النجاح: «Migration 0_init marked as applied.» ثم «Database schema is up to date!» (exit=0) — _prisma_migrations: صف واحد 0_init بـapplied_steps_count=0 (صفر خطوات DDL — صف علامة حصرًا) — البصمة الفيزيائية قبل/بعد متطابقة (لا أي DDL على جداول الأعمال) — canonical لم تتغير — integrity ok — الأدلة: var/recovery/baseline-resolution-2026-09-20T08-48-34.json — بوابة النجاح شملت نسخة v3 جديدة (bk-20260920T084831Z-z4t3l5) VALIDATED + Drill RESTORE_VERIFIED + canonical equality
+- Fresh-DB E2E (بند 6، scripts/phase41-fresh-e2e.ts): قاعدة فارغة ← migrate deploy ← خادم مؤقت على 3100 بDATABASE_URL وVAR_DIR معزولين ← setup(مدير) ← login HTTP ← مراجع+معتمد ← مجموعة ← تقرير ← إسناد ← SUBMIT→START_REVIEW→COMPLETE_REVIEW→APPROVE (APPROVED دورة 1) ← Dashboard read ← Backup v3 VALIDATED ← Drill RESTORE_VERIFIED — 15/15 ✅ — القاعدة المبنية من migrations تدير التطبيق كاملًا لا CRUD بسيط
+- Production regression (بند 7، scripts/phase41-prod-regression.ts): عبر HTTP فعلي على 3000 بعد resolve: 3 دخولات NextAuth (مدير/مراجع/معتمد مؤقتون) ← مستخدمون/مجموعة عبر APIs ← مسودة T1 create/read/update/delete كاملة بقفل تفاؤلي ← دورة كاملة على T2 حتى APPROVED ← Dashboard summary+reconciliations ← Backup v3+VALIDATED ← Drill RESTORE_VERIFIED ← تنظيف شرعي بلا أي حذف مباشر للأدلة: REOPEN(سبب إلزامي)→RESUME_EDIT→DELETE→حذف المجموعة والمستخدمين المؤقتين (21/21 ✅) — الحالة النهائية: users=1/groups=0/reports=0 (الصافي)، WorkflowHistory+11 وAuditLog+138 بقيت كأدلة append-only حسب التصميم — integrity ok
+- إعادة فحص النسخ القديمة (بند 8): النسخ الثلاث من 4A (formatVersion 2) أعيد تحققها: ok=true، manifestClass=legacy-v2، canonicalMatchesManifest=null (لا قيمة مضمّنة)، canonical المستخرجة من database.db = الثابت المثبّت، المستويات لم تهبط (RESTORE_VERIFIED باقية)، sidecars بقيت formatVersion=2 على القرص (لا ترقية صامتة) — النسخة الجديدة v3 (bk-20260920T084227Z-iswqjq) Drill مزدوج: تشغيلان بoperationId مختلفين (op-…-bwju5e ≠ op-…-xs7orw) وdrillRun.sequence=1,2 وdrillRuns=2 — لا يبدوان حدثين مكررين (ملاحظة المستخدم محققة)
+- التحقق المرئي (Agent Browser): دخول بحقن كوكي الجلسة ← /admin ← تبويب النسخ: شارات Legacy v2 ×3 وManifest v3 ×7 وc:bffa026102bc بكل صف v3 ← سجل الاسترجاع بـ17 operationId مميزًا ← حوار التفاصيل لنسخة v3: canonical كامل + «3 (canonical مضمّن)» + drillRuns «1 تشغيل ناجح» + SHA-256 كامل ← صفر أخطاء console/page بعد التفاعل
+- إصلاحات أثناء العمل: BigInt من نتائج PRAGMA (تحويل دفاعي شامل)، تصدير مزدوج computeSchemaFingerprint، مسار assignments هو PUT لا POST، غياب عمود rolled_back في Prisma 6 (الصحيح rolled_back_at)، مستخدمو اختبار بقوا من محاولة فاشلة (نُظفوا)، عمليات الخلفية تُقتل عند حدود استدعاء الأوامر (كل اختبار خادم-معتمد صار استدعاء واحد مغلق)
+- لم يُعدَّل: accounts.ts، Workflow، Dashboard، session.ts، permissions.ts، أي schema.prisma أو migration.sql — لا 4B إطلاقًا: لا استعادة إنتاج، لا swap، لا Maintenance Mode، لا Session Epoch، لا Rollback
+
+Stage Summary:
+- 4A.1 مكتملة ومثبتة بالأدلة الحية: الهوية الحاكمة للمخطط أصبحت canonical fingerprint دلالية مثبتة التطابق بين الإنتاج والمبنية من migrations رغم drift فيزيائي موثق (بصمتان منفصلتان بغرضين منفصلين)، Manifest v3 خلف توافق legacy-v2 صريح بلا كسر ولا ترقية صامتة، الثابت المثبّت يجعل أي انحراف مخطط غير معلن يفشل مغلقًا، baseline مغلق رسميًا (migrate status: Database schema is up to date! بصفر DDL)، القاعدة المبنية من migrations تدير التطبيق كاملًا حتى RESTORE_VERIFIED، والإنتاج اجتاز regression كاملًا مع بقاء الأدلة — **توقف هنا: 4B (استبدال الإنتاج/الصيانة/Session Epoch/التراجع) بانتظار موافقة صريحة منفصلة**

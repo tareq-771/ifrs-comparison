@@ -1,0 +1,1383 @@
+     1→// Phase 4A — محرك النسخ الاحتياطي (خادم فقط).
+     2→//
+     3→// التزامات ثابتة في هذا الملف:
+     4→//  1. قاعدة التشغيل تُقرأ عبر VACUUM INTO حصرًا (snapshot متسق بلا مساس) —
+     5→//     كل التحقق والـ Drill يقع على نسخ مؤقتة معزولة في staging.
+     6→//  2. الصلاحية من المحتوى والـ Manifest — لا من اسم ZIP أو الملف المرفوع (D-1).
+     7→//  3. لا ترحيل على قاعدة التشغيل إطلاقًا — Drill يعمل على مؤقتة فقط (D-3).
+     8→//  4. لا أسرار ولا password hashes ولا مسارات قرص داخلية في أي Manifest أو
+     9→//     سجل أو Audit (Sanitizer مركزي).
+    10→//  5. لا حذف تلقائي لأي نسخة رسمية — الفشل ينظف الملفات الجزئية في staging حصرًا.
+    11→
+    12→import { createHash, randomBytes } from "node:crypto";
+    13→import { createReadStream } from "node:fs";
+    14→import {
+    15→  existsSync,
+    16→  readdirSync,
+    17→  readFileSync,
+    18→  renameSync,
+    19→  rmSync,
+    20→  statSync,
+    21→  writeFileSync,
+    22→} from "node:fs";
+    23→import path from "node:path";
+    24→import JSZip from "jszip";
+    25→import { PrismaClient } from "@prisma/client";
+    26→
+    27→import { db as liveDb } from "@/lib/db";
+    28→import {
+    29→  ALLOWED_ZIP_ENTRIES,
+    30→  BACKUP_CREATE_COOLDOWN_MS,
+    31→  UPLOAD_LIMITS,
+    32→  classifySchemaFingerprint,
+    33→  ensurePrivateDir,
+    34→  newBackupId,
+    35→  newOperationId,
+    36→  newUploadId,
+    37→  resolveBackupDir,
+    38→  resolveStagingDir,
+    39→  sanitizeDisplayName,
+    40→  setCurrentSchemaIdentity,
+    41→} from "@/lib/backup-config";
+    42→import {
+    43→  buildManifest,
+    44→  collectCounts,
+    45→  collectDataRange,
+    46→  collectPeriodRange,
+    47→  CURRENT_SCHEMA_LABEL,
+    48→  manifestClassOf,
+    49→  parseManifest,
+    50→  type AnyBackupManifest,
+    51→  type VerificationLevel,
+    52→} from "@/lib/backup-manifest";
+    53→import {
+    54→  canonicalSchemaFingerprint as computeCanonicalFingerprint,
+    55→  physicalSchemaFingerprint as computePhysicalFingerprint,
+    56→} from "@/lib/schema-fingerprint";
+    57→import { inspectZipBuffer, readZipEntry, type ZipInspectFail } from "@/lib/zip-secure";
+    58→import { appendRecoveryEvent, countRecoveryEvents } from "@/lib/recovery-log";
+    59→import { writeAuditSafe } from "@/lib/audit";
+    60→import { AUDIT_ACTIONS, AUDIT_ENTITY_TYPES } from "@/lib/audit-actions";
+    61→
+    62→/* ──────────────────────────────────────────────────────────────────────── */
+    63→/*  أخطاء منظمة                                                             */
+    64→/* ──────────────────────────────────────────────────────────────────────── */
+    65→
+    66→export class BackupError extends Error {
+    67→  code: string;
+    68→  httpStatus: number;
+    69→  extra?: Record<string, unknown>;
+    70→  constructor(code: string, message: string, httpStatus = 400, extra?: Record<string, unknown>) {
+    71→    super(message);
+    72→    this.code = code;
+    73→    this.httpStatus = httpStatus;
+    74→    this.extra = extra;
+    75→  }
+    76→}
+    77→
+    78→/* ──────────────────────────────────────────────────────────────────────── */
+    79→/*  أدوات داخلية                                                            */
+    80→/* ──────────────────────────────────────────────────────────────────────── */
+    81→
+    82→function tempClientFor(dbPath: string): PrismaClient {
+    83→  return new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } }, log: [] });
+    84→}
+    85→
+    86→async function hashFileStream(filePath: string): Promise<{ sha256: string; bytes: number }> {
+    87→  return new Promise((resolve, reject) => {
+    88→    const hash = createHash("sha256");
+    89→    let bytes = 0;
+    90→    const stream = createReadStream(filePath);
+    91→    stream.on("data", (chunk: Buffer) => {
+    92→      bytes += chunk.length;
+    93→      hash.update(chunk);
+    94→    });
+    95→    stream.on("end", () => resolve({ sha256: hash.digest("hex"), bytes }));
+    96→    stream.on("error", reject);
+    97→  });
+    98→}
+    99→
+   100→function hashBuffer(buf: Buffer): string {
+   101→  return createHash("sha256").update(buf).digest("hex");
+   102→}
+   103→
+   104→/** كتابة ملف 0600 بذرية (tmp + rename داخل نفس المجلد). */
+   105→function writePrivateFileAtomic(finalPath: string, data: Buffer | string): void {
+   106→  const tmp = `${finalPath}.tmp-${randomBytes(4).toString("hex")}`;
+   107→  writeFileSync(tmp, data, { mode: 0o600 });
+   108→  renameSync(tmp, finalPath);
+   109→}
+   110→
+   111→/** قفل داخلي للعمليات المتغيرة (عملية خادم واحدة — حد موثق). */
+   112→const g = globalThis as unknown as { __backupOpLock?: Promise<unknown> };
+   113→async function withOpLock<T>(fn: () => Promise<T>): Promise<T> {
+   114→  while (g.__backupOpLock) {
+   115→    await g.__backupOpLock.catch(() => undefined);
+   116→  }
+   117→  let release!: () => void;
+   118→  g.__backupOpLock = new Promise((r) => (release = r));
+   119→  try {
+   120→    return await fn();
+   121→  } finally {
+   122→    release();
+   123→    g.__backupOpLock = undefined;
+   124→  }
+   125→}
+   126→
+   127→let lastCreateAt = 0;
+   128→
+   129→/**
+   130→ * هوية المخطط الحية (4A.1): البصمة القاعدية الدلالية الحاكمة + الفيزيائية التشخيصية
+   131→ * تُحتسبان من قاعدة التشغيل قبل كل عملية تحقق/Drill/إنشاء.
+   132→ */
+   133→async function refreshCurrentSchemaIdentity(): Promise<{ canonical: string; physical: string }> {
+   134→  const canonical = await computeCanonicalFingerprint(liveDb);
+   135→  const physical = await computePhysicalFingerprint(liveDb);
+   136→  setCurrentSchemaIdentity({ canonical, physical });
+   137→  return { canonical, physical };
+   138→}
+   139→
+   140→function shortFp(fp: string): string {
+   141→  return fp.replace(/^(c)?sha256:/, "").slice(0, 12);
+   142→}
+   143→
+   144→function assertSafeId(id: string): string {
+   145→  if (!/^(bk|up)-[A-Za-z0-9_-]+$/.test(id)) {
+   146→    throw new BackupError("BAD_ID", "معرف غير صالح", 400);
+   147→  }
+   148→  return id;
+   149→}
+   150→
+   151→/* ──────────────────────────────────────────────────────────────────────── */
+   152→/*  أنواع التقارير العامة                                                   */
+   153→/* ──────────────────────────────────────────────────────────────────────── */
+   154→
+   155→export interface CheckResult {
+   156→  name: string;
+   157→  code: string;
+   158→  ok: boolean;
+   159→  detail?: string;
+   160→  ms?: number;
+   161→}
+   162→
+   163→export interface ValidationReport {
+   164→  ok: boolean;
+   165→  backupId: string;
+   166→  source: "local" | "upload";
+   167→  level: VerificationLevel;
+   168→  checks: CheckResult[];
+   169→  warnings: string[];
+   170→  /** البصمة الفيزيائية المستخرجة من database.db نفسها (تشخيصية). */
+   171→  physicalSchemaFingerprint?: string;
+   172→  /** البصمة القاعدية الدلالية المستخرجة من database.db نفسها — الحاكمة (4A.1). */
+   173→  canonicalSchemaFingerprint?: string;
+   174→  /** صيغة الـ Manifest: 3 (canonical مضمّن) أو 2 (legacy). */
+   175→  manifestFormat?: 2 | 3;
+   176→  /** تصنيف الـ Manifest: v3 الحالي أو legacy-v2 الإرث (لا ترقية صامتة). */
+   177→  manifestClass?: "v3" | "legacy-v2";
+   178→  /** هل طابقت قيمة الـ Manifest المضمّنة المستخرجة من المحتوى؟ null = legacy v2 (لا قيمة مضمّنة). */
+   179→  canonicalMatchesManifest?: boolean | null;
+   180→  durationMs: number;
+   181→}
+   182→
+   183→export interface DrillReport extends ValidationReport {
+   184→  steps: CheckResult[];
+   185→  prismaReadTests: CheckResult[];
+   186→  countsMatched: boolean;
+   187→  periodRangeMatched: boolean;
+   188→}
+   189→
+   190→/* ──────────────────────────────────────────────────────────────────────── */
+   191→/*  القائمة — من Manifest لا من الأسماء                                     */
+   192→/* ──────────────────────────────────────────────────────────────────────── */
+   193→
+   194→export interface BackupListEntry {
+   195→  backupId: string;
+   196→  fileName: string;
+   197→  source: "local" | "upload";
+   198→  backupType: string;
+   199→  createdAt: string;
+   200→  appVersion: string;
+   201→  schemaVersion: string;
+   202→  schemaFingerprintShort: string;
+   203→  /** صيغة الـ Manifest (4A.1) — 0 = بلا Manifest صالح. */
+   204→  manifestFormat: 2 | 3 | 0;
+   205→  /** البصمة القاعدية الدلالية المختصرة — فارغة لـ legacy v2 (تُستخرج وقت التحقق). */
+   206→  canonicalFingerprintShort: string;
+   207→  level: VerificationLevel | "INVALID";
+   208→  invalidReason: string | null;
+   209→  sizeBytes: number;
+   210→  dbBytes: number;
+   211→  counts: BackupManifestV2["counts"] | null;
+   212→  periodRange: BackupManifestV2["periodRange"] | null;
+   213→  integrityCheck: string | null;
+   214→}
+   215→
+   216→function scanDirForEntries(dir: string, source: "local" | "upload"): BackupListEntry[] {
+   217→  const entries: BackupListEntry[] = [];
+   218→  if (!existsSync(dir)) return entries;
+   219→  const files = readdirSync(dir);
+   220→  const zipIds = new Set<string>();
+   221→  const manifestIds = new Set<string>();
+   222→  for (const f of files) {
+   223→    if (f.endsWith(".zip")) zipIds.add(f.slice(0, -4));
+   224→    if (f.endsWith(".manifest.json")) manifestIds.add(f.slice(0, -14));
+   225→  }
+   226→  const ids = new Set([...zipIds, ...manifestIds]);
+   227→  for (const id of ids) {
+   228→    const zipPath = path.join(dir, `${id}.zip`);
+   229→    const manifestPath = path.join(dir, `${id}.manifest.json`);
+   230→    const hasZip = existsSync(zipPath) && statSync(zipPath).size > 0;
+   231→    const manifest = hasManifest(manifestPath);
+   232→
+   233→    if (!hasZip) {
+   234→      entries.push(invalidEntry(id, source, manifest?.manifest, "MISSING_PACKAGE", "حزمة ZIP مفقودة أو فارغة"));
+   235→      continue;
+   236→    }
+   237→    if (!manifest) {
+   238→      entries.push(invalidEntry(id, source, undefined, "BAD_MANIFEST", "Manifest مفقود أو تالف — ليس مرشح استعادة"));
+   239→      continue;
+   240→    }
+   241→    let sizeBytes = 0;
+   242→    try {
+   243→      sizeBytes = statSync(zipPath).size;
+   244→    } catch {
+   245→      /* ignore */
+   246→    }
+   247→    entries.push({
+   248→      backupId: manifest.manifest.backupId,
+   249→      fileName: `${id}.zip`,
+   250→      source,
+   251→      backupType: manifest.manifest.backupType,
+   252→      createdAt: manifest.manifest.createdAt,
+   253→      appVersion: manifest.manifest.appVersion,
+   254→      schemaVersion: manifest.manifest.schemaVersion,
+   255→      schemaFingerprintShort: shortFp(manifest.manifest.schemaFingerprint),
+   256→      manifestFormat: manifest.manifest.formatVersion,
+   257→      canonicalFingerprintShort:
+   258→        manifest.manifest.formatVersion === 3 ? shortFp(manifest.manifest.canonicalSchemaFingerprint) : "",
+   259→      level: manifest.manifest.verification.level,
+   260→      invalidReason: null,
+   261→      sizeBytes,
+   262→      dbBytes: manifest.manifest.database.bytes,
+   263→      counts: manifest.manifest.counts,
+   264→      periodRange: manifest.manifest.periodRange,
+   265→      integrityCheck: manifest.manifest.database.integrityCheck,
+   266→    });
+   267→  }
+   268→  return entries.sort((a, b) => {
+   269→    if (!!a.invalidReason !== !!b.invalidReason) return a.invalidReason ? 1 : -1;
+   270→    return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+   271→  });
+   272→}
+   273→
+   274→function hasManifest(manifestPath: string): { manifest: AnyBackupManifest } | null {
+   275→  try {
+   276→    if (!existsSync(manifestPath)) return null;
+   277→    const raw = readFileSync(manifestPath, "utf8");
+   278→    const manifest = parseManifest(raw);
+   279→    return manifest ? { manifest } : null;
+   280→  } catch {
+   281→    return null;
+   282→  }
+   283→}
+   284→
+   285→function invalidEntry(
+   286→  id: string,
+   287→  source: "local" | "upload",
+   288→  manifest: AnyBackupManifest | undefined,
+   289→  code: string,
+   290→  message: string
+   291→): BackupListEntry {
+   292→  return {
+   293→    backupId: manifest?.backupId ?? id,
+   294→    fileName: `${id}.zip`,
+   295→    source,
+   296→    backupType: manifest?.backupType ?? "unknown",
+   297→    createdAt: manifest?.createdAt ?? "",
+   298→    appVersion: manifest?.appVersion ?? "",
+   299→    schemaVersion: manifest?.schemaVersion ?? "",
+   300→    schemaFingerprintShort: manifest ? shortFp(manifest.schemaFingerprint) : "",
+   301→    manifestFormat: manifest?.formatVersion ?? 0,
+   302→    canonicalFingerprintShort:
+   303→      manifest?.formatVersion === 3 ? shortFp(manifest.canonicalSchemaFingerprint) : "",
+   304→    level: "INVALID",
+   305→    invalidReason: `${code}: ${message}`,
+   306→    sizeBytes: 0,
+   307→    dbBytes: manifest?.database.bytes ?? 0,
+   308→    counts: manifest?.counts ?? null,
+   309→    periodRange: manifest?.periodRange ?? null,
+   310→    integrityCheck: manifest?.database.integrityCheck ?? null,
+   311→  };
+   312→}
+   313→
+   314→/** القائمة الكاملة: نسخ BACKUP_DIR الرسمية + المرفوعات في staging. */
+   315→export function listBackups(): { local: BackupListEntry[]; uploads: BackupListEntry[] } {
+   316→  return {
+   317→    local: scanDirForEntries(resolveBackupDir(), "local"),
+   318→    uploads: scanDirForEntries(path.join(resolveStagingDir(), "uploads"), "upload"),
+   319→  };
+   320→}
+   321→
+   322→/* ──────────────────────────────────────────────────────────────────────── */
+   323→/*  إنشاء نسخة (VACUUM INTO + Manifest + ZIP + تحقق تلقائي)                 */
+   324→/* ──────────────────────────────────────────────────────────────────────── */
+   325→
+   326→export interface ActorInfo {
+   327→  id: string | null;
+   328→  username: string;
+   329→}
+   330→
+   331→export async function createBackup(actor: ActorInfo): Promise<{
+   332→  backupId: string;
+   333→  level: VerificationLevel;
+   334→  manifest: BackupManifestV2;
+   335→  validationReport: ValidationReport | null;
+   336→  validationError: string | null;
+   337→}> {
+   338→  const now = Date.now();
+   339→  if (now - lastCreateAt < BACKUP_CREATE_COOLDOWN_MS) {
+   340→    throw new BackupError(
+   341→      "COOLDOWN",
+   342→      `فترة تهدئة بين النسخ (${BACKUP_CREATE_COOLDOWN_MS / 1000} ثانية) — أعد المحاولة لاحقًا`,
+   343→      429,
+   344→      { retryAfterMs: BACKUP_CREATE_COOLDOWN_MS - (now - lastCreateAt) }
+   345→    );
+   346→  }
+   347→  lastCreateAt = now;
+   348→
+   349→  return withOpLock(async () => {
+   350→    const opId = newOperationId("backup");
+   351→    const backupId = newBackupId();
+   352→    const backupDir = ensurePrivateDir(resolveBackupDir());
+   353→    const ws = ensurePrivateDir(path.join(resolveStagingDir(), `create-${opId}`));
+   354→    let tempClient: PrismaClient | null = null;
+   355→
+   356→    await appendRecoveryEvent({
+   357→      operationId: opId,
+   358→      event: "BACKUP_STARTED",
+   359→      actor,
+   360→      backupId,
+   361→      result: "info",
+   362→      details: { backupType: "manual", trigger: "manual" },
+   363→    });
+   364→
+   365→    try {
+   366→      // 1) VACUUM INTO — snapshot متسق من قاعدة التشغيل (قراءة فقط)
+   367→      const dbTarget = path.join(ws, "database.db");
+   368→      const jmRows = await liveDb.$queryRawUnsafe<{ journal_mode: string }[]>(`PRAGMA journal_mode`);
+   369→      const journalModeAtBackup = jmRows[0]?.journal_mode ?? "unknown";
+   370→      await liveDb.$executeRawUnsafe(`VACUUM INTO '${dbTarget.replace(/'/g, "''")}'`);
+   371→
+   372→      // 2) فحوص على النسخة المولدة (عميل Prisma مؤقت على الملف)
+   373→      tempClient = tempClientFor(dbTarget);
+   374→      const integRows = await tempClient.$queryRawUnsafe<{ integrity_check: string }[]>(`PRAGMA integrity_check`);
+   375→      const integrityCheck = integRows[0]?.integrity_check ?? "unknown";
+   376→      if (integrityCheck !== "ok") {
+   377→        throw new BackupError("CORRUPT_DB", `integrity_check أعادت: ${integrityCheck}`);
+   378→      }
+   379→      const canonicalFp = await computeCanonicalFingerprint(tempClient);
+   380→      const physicalFp = await computePhysicalFingerprint(tempClient);
+   381→      setCurrentSchemaIdentity({ canonical: canonicalFp, physical: physicalFp });
+   382→      const countsRes = await collectCounts(tempClient);
+   383→      if (!countsRes.ok) {
+   384→        throw new BackupError("MISSING_TABLES", countsRes.missingTable);
+   385→      }
+   386→      const [periodRange, dataRange] = await Promise.all([
+   387→        collectPeriodRange(tempClient),
+   388→        collectDataRange(tempClient),
+   389→      ]);
+   390→      const psRows = await tempClient.$queryRawUnsafe<{ page_size: number | bigint }[]>(`PRAGMA page_size`);
+   391→      const pageSize = Number(psRows[0]?.page_size ?? 0);
+   392→      await tempClient.$disconnect();
+   393→      tempClient = null;
+   394→
+   395→      // 3) SHA-256 + الحجم (بثّ — بلا تحميل كامل بالذاكرة)
+   396→      const { sha256, bytes } = await hashFileStream(dbTarget);
+   397→
+   398→      // 4) Manifest v3 — يحمل البصمتين: الحاكمة canonical + التشخيصية physical
+   399→      const manifest = buildManifest({
+   400→        backupId,
+   401→        backupType: "manual",
+   402→        createdBy: { id: actor.id, username: actor.username },
+   403→        schemaVersion: CURRENT_SCHEMA_LABEL,
+   404→        schemaFingerprint: physicalFp,
+   405→        canonicalSchemaFingerprint: canonicalFp,
+   406→        database: {
+   407→          filename: "database.db",
+   408→          sha256,
+   409→          bytes,
+   410→          pageSize,
+   411→          integrityCheck,
+   412→          journalModeAtBackup,
+   413→        },
+   414→        counts: countsRes.counts,
+   415→        periodRange,
+   416→        dataRange,
+   417→        level: "CREATED",
+   418→      });
+   419→
+   420→      // 5) التغليف: ZIP يحوي database.db + manifest.json حصرًا (D-1)
+   421→      const zip = new JSZip();
+   422→      zip.file("database.db", readFileSync(dbTarget));
+   423→      zip.file("manifest.json", JSON.stringify(manifest, null, 2));
+   424→      const zipBuf = await zip.generateAsync({
+   425→        type: "nodebuffer",
+   426→        compression: "DEFLATE",
+   427→        compressionOptions: { level: 6 },
+   428→      });
+   429→
+   430→      // 6) النشر الذري في BACKUP_DIR + Manifest جانبي متزامن
+   431→      const zipPath = path.join(backupDir, `${backupId}.zip`);
+   432→      const sidecarPath = path.join(backupDir, `${backupId}.manifest.json`);
+   433→      writePrivateFileAtomic(zipPath, zipBuf);
+   434→      writePrivateFileAtomic(sidecarPath, JSON.stringify(manifest, null, 2));
+   435→
+   436→      await appendRecoveryEvent({
+   437→        operationId: opId,
+   438→        event: "BACKUP_CREATED",
+   439→        actor,
+   440→        backupId,
+   441→        result: "success",
+   442→        details: { bytes, zipBytes: zipBuf.length, counts: countsRes.counts, level: "CREATED" },
+   443→      });
+   444→      await writeAuditSafe({
+   445→        user: { id: actor.id, username: actor.username },
+   446→        action: AUDIT_ACTIONS.BACKUP_CREATED,
+   447→        entityType: AUDIT_ENTITY_TYPES.Backup,
+   448→        entityId: backupId,
+   449→        description: `إنشاء نسخة احتياطية «${backupId}» (${bytes} بايت قاعدة، ${zipBuf.length} بايت حزمة)`,
+   450→        metadata: { backupId, dbBytes: bytes, zipBytes: zipBuf.length, counts: countsRes.counts },
+   451→      });
+   452→
+   453→      // 7) التحقق الداخلي التلقائي فور الإنشاء (CREATED → VALIDATED إن سلمت)
+   454→      let validationReport: ValidationReport | null = null;
+   455→      let validationError: string | null = null;
+   456→      try {
+   457→        validationReport = await validateBackupArtifact({
+   458→          zipPath,
+   459→          actor,
+   460→          source: "local",
+   461→          operationId: newOperationId("validate"),
+   462→        });
+   463→        await appendRecoveryEvent({
+   464→          operationId: opId,
+   465→          event: "BACKUP_VALIDATED",
+   466→          actor,
+   467→          backupId,
+   468→          result: "success",
+   469→          details: { source: "local", level: validationReport.level, trigger: "auto" },
+   470→        });
+   471→        await writeAuditSafe({
+   472→          user: { id: actor.id, username: actor.username },
+   473→          action: AUDIT_ACTIONS.BACKUP_VALIDATED,
+   474→          entityType: AUDIT_ENTITY_TYPES.Backup,
+   475→          entityId: backupId,
+   476→          description: `نجح التحقق التلقائي للنسخة «${backupId}» — المستوى ${validationReport.level}`,
+   477→          metadata: { level: validationReport.level, trigger: "auto", durationMs: validationReport.durationMs },
+   478→        });
+   479→      } catch (e) {
+   480→        validationError = e instanceof BackupError ? `${e.code}: ${e.message}` : String(e);
+   481→        await appendRecoveryEvent({
+   482→          operationId: opId,
+   483→          event: "BACKUP_FAILED",
+   484→          actor,
+   485→          backupId,
+   486→          result: "failure",
+   487→          details: { stage: "AUTO_VALIDATION", reason: validationError, keptAs: "CREATED" },
+   488→        });
+   489→        await writeAuditSafe({
+   490→          user: { id: actor.id, username: actor.username },
+   491→          action: AUDIT_ACTIONS.BACKUP_FAILED,
+   492→          entityType: AUDIT_ENTITY_TYPES.Backup,
+   493→          entityId: backupId,
+   494→          description: `فشل التحقق التلقائي للنسخة «${backupId}» — بقيت بمستوى CREATED`,
+   495→          metadata: { stage: "AUTO_VALIDATION", reason: validationError },
+   496→        });
+   497→      }
+   498→
+   499→      const finalManifest = hasManifest(sidecarPath)?.manifest ?? manifest;
+   500→      return {
+   501→        backupId,
+   502→        level: finalManifest.verification.level,
+   503→        manifest: finalManifest,
+   504→        validationReport,
+   505→        validationError,
+   506→      };
+   507→    } catch (e) {
+   508→      const reason = e instanceof BackupError ? `${e.code}: ${e.message}` : String(e);
+   509→      await appendRecoveryEvent({
+   510→        operationId: opId,
+   511→        event: "BACKUP_FAILED",
+   512→        actor,
+   513→        backupId,
+   514→        result: "failure",
+   515→        details: { stage: "CREATE", reason },
+   516→      });
+   517→      await writeAuditSafe({
+   518→        user: { id: actor.id, username: actor.username },
+   519→        action: AUDIT_ACTIONS.BACKUP_FAILED,
+   520→        entityType: AUDIT_ENTITY_TYPES.Backup,
+   521→        entityId: backupId,
+   522→        description: `فشل إنشاء نسخة احتياطية — ${reason}`,
+   523→        metadata: { stage: "CREATE", reason },
+   524→      });
+   525→      // نظافة: لا ملفات جزئية نهائية — الملفات المنشورة كاملة تُحفظ كما هي
+   526→      if (e instanceof BackupError) throw e;
+   527→      throw new BackupError("IO", `فشل إنشاء النسخة: ${reason}`, 500);
+   528→    } finally {
+   529→      try {
+   530→        await tempClient?.$disconnect();
+   531→      } catch {
+   532→        /* ignore */
+   533→      }
+   534→      rmSync(ws, { recursive: true, force: true });
+   535→    }
+   536→  });
+   537→}
+   538→
+   539→/* ──────────────────────────────────────────────────────────────────────── */
+   540→/*  خط التحقق المشترك (يستخدمه الإنشاء التلقائي/التحقق الصريح/الرفع)        */
+   541→/* ──────────────────────────────────────────────────────────────────────── */
+   542→
+   543→interface ValidateArtifactArgs {
+   544→  zipPath: string;
+   545→  actor: ActorInfo;
+   546→  source: "local" | "upload";
+   547→  operationId: string;
+   548→}
+   549→
+   550→/**
+   551→ * خط التحقق المشترك — مُصدَّر لسكربتات إثبات 4A.1 (اختبارات التلاعب على نسخ
+   552→ * مصطنعة خارج النسخ الرسمية). لا يكتب Audit/Recovery — المحاسبة على المستدعي.
+   553→ */
+   554→export async function validateBackupArtifact(args: ValidateArtifactArgs): Promise<ValidationReport> {
+   555→  const { zipPath, actor, source, operationId } = args;
+   556→  const t0 = Date.now();
+   557→  const checks: CheckResult[] = [];
+   558→  const warnings: string[] = [];
+   559→  const ws = ensurePrivateDir(path.join(resolveStagingDir(), `validate-${operationId}`));
+   560→  let tempClient: PrismaClient | null = null;
+   561→
+   562→  try {
+   563→    const zipBuf = readFileSync(zipPath);
+   564→    const sidecarPath = zipPath.replace(/\.zip$/, ".manifest.json");
+   565→    const original = hasManifest(sidecarPath)?.manifest;
+   566→    if (!original) throw new BackupError("BAD_MANIFEST", "الـ Manifest الجانبي مفقود أو تالف");
+   567→
+   568→    // 1) بوابة أمن ZIP الصارمة
+   569→    const t1 = Date.now();
+   570→    const inspected = inspectZipBuffer(zipBuf, {
+   571→      maxUncompressedBytes: UPLOAD_LIMITS.maxUncompressedMB * 1024 * 1024,
+   572→      maxEntries: UPLOAD_LIMITS.maxZipEntries,
+   573→      allowedNames: ALLOWED_ZIP_ENTRIES,
+   574→      maxRatio: UPLOAD_LIMITS.maxCompressionRatio,
+   575→      maxCompressedBytes: source === "upload" ? UPLOAD_LIMITS.maxUploadMB * 1024 * 1024 : undefined,
+   576→    });
+   577→    if (!inspected.ok) {
+   578→      throw new BackupError(inspected.code, zipFailMsg(inspected), inspected.code === "TOO_LARGE" ? 413 : 400);
+   579→    }
+   580→    checks.push({ name: "أمن الحزمة (بنية/أسماء/حدود)", code: "PACKAGE_OK", ok: true, ms: Date.now() - t1 });
+   581→
+   582→    // 2) manifest.json من داخل الـ ZIP (≤1MB)
+   583→    const manifestRaw = await readZipEntry(zipBuf, "manifest.json", UPLOAD_LIMITS.maxManifestBytes);
+   584→    if ("ok" in manifestRaw && !manifestRaw.ok) {
+   585→      throw new BackupError(manifestRaw.code, zipFailMsg(manifestRaw as ZipInspectFail));
+   586→    }
+   587→    const embedded = parseManifest((manifestRaw as Buffer).toString("utf8"));
+   588→    if (!embedded) throw new BackupError("BAD_MANIFEST", "manifest.json داخل الحزمة غير صالح");
+   589→    checks.push({ name: "Manifest داخل الحزمة صالح", code: "MANIFEST_OK", ok: true });
+   590→
+   591→    // اتساق الجانبي مع المضمّن
+   592→    if (embedded.database.sha256 !== original.database.sha256) {
+   593→      throw new BackupError("BAD_MANIFEST", "الـ Manifest الجانبي لا يطابق المضمّن داخل الحزمة");
+   594→    }
+   595→
+   596→    // 3) استخراج database.db + فحص البصمة السحرية
+   597→    const t2 = Date.now();
+   598→    const dbBytes = await readZipEntry(zipBuf, "database.db", UPLOAD_LIMITS.maxUncompressedMB * 1024 * 1024);
+   599→    if ("ok" in dbBytes && !dbBytes.ok) {
+   600→      throw new BackupError(dbBytes.code, zipFailMsg(dbBytes as ZipInspectFail));
+   601→    }
+   602→    const dbBuf = dbBytes as Buffer;
+   603→    const MAGIC = Buffer.from("SQLite format 3\0");
+   604→    if (dbBuf.length < 16 || !dbBuf.subarray(0, 16).equals(MAGIC)) {
+   605→      throw new BackupError("NOT_SQLITE", "database.db ليس ملف SQLite صالح");
+   606→    }
+   607→    checks.push({ name: "بصمة SQLite", code: "SQLITE_MAGIC_OK", ok: true, ms: Date.now() - t2 });
+   608→
+   609→    // 4) checksum قاطع — SHA-256 الفعلي مقابل الـ Manifest
+   610→    const t3 = Date.now();
+   611→    const actualSha = hashBuffer(dbBuf);
+   612→    if (actualSha !== embedded.database.sha256) {
+   613→      throw new BackupError(
+   614→        "CHECKSUM_MISMATCH",
+   615→        `عدم تطابق SHA-256 — المحتوى لا يطابق الـ Manifest (يرفض قاطعًا)`
+   616→      );
+   617→    }
+   618→    checks.push({ name: "تطابق SHA-256", code: "CHECKSUM_OK", ok: true, ms: Date.now() - t3 });
+   619→
+   620→    // 5) integrity_check + جداول Prisma + بصمة المخطط (عميل مؤقت حصرًا)
+   621→    const dbPath = path.join(ws, "database.db");
+   622→    writeFileSync(dbPath, dbBuf, { mode: 0o600 });
+   623→    tempClient = tempClientFor(dbPath);
+   624→    const t4 = Date.now();
+   625→    const integ = await tempClient.$queryRawUnsafe<{ integrity_check: string }[]>(`PRAGMA integrity_check`);
+   626→    if ((integ[0]?.integrity_check ?? "") !== "ok") {
+   627→      throw new BackupError("CORRUPT_DB", `integrity_check أعادت: ${integ[0]?.integrity_check}`);
+   628→    }
+   629→    checks.push({ name: "integrity_check", code: "INTEGRITY_OK", ok: true, ms: Date.now() - t4 });
+   630→
+   631→    const t5 = Date.now();
+   632→    const countsRes = await collectCounts(tempClient);
+   633→    if (!countsRes.ok) throw new BackupError("MISSING_TABLES", countsRes.missingTable);
+   634→    checks.push({
+   635→      name: "الجداول الإلزامية عبر Prisma",
+   636→      code: "TABLES_OK",
+   637→      ok: true,
+   638→      ms: Date.now() - t5,
+   639→    });
+   640→
+   641→    const t6 = Date.now();
+   642→    // البصمتان تُستخرجان من database.db نفسها — لا ثقة بقيمة Manifest وحدها (قرار 4A.1)
+   643→    const canonicalFp = await computeCanonicalFingerprint(tempClient);
+   644→    const physicalFp = await computePhysicalFingerprint(tempClient);
+   645→    const liveIdentity = await refreshCurrentSchemaIdentity();
+   646→
+   647→    // اتساق قيم الـ Manifest المضمنة مع المحتوى — فشل فوري عند أي تلاعب/اختلاف
+   648→    const physicalMatchesManifest = embedded.schemaFingerprint === physicalFp;
+   649→    const canonicalMatchesManifest =
+   650→      embedded.formatVersion === 3 ? embedded.canonicalSchemaFingerprint === canonicalFp : null;
+   651→    if (!physicalMatchesManifest || canonicalMatchesManifest === false) {
+   652→      throw new BackupError(
+   653→        "MANIFEST_INCONSISTENT",
+   654→        "قيمة بصمة المخطط في الـ Manifest لا تطابق ما استُخرج من database.db — رفض (لا ثقة بقيمة مكتوبة)",
+   655→        422,
+   656→        {
+   657→          manifestPhysical: shortFp(embedded.schemaFingerprint),
+   658→          actualPhysical: shortFp(physicalFp),
+   659→          ...(embedded.formatVersion === 3
+   660→            ? { manifestCanonical: shortFp(embedded.canonicalSchemaFingerprint), actualCanonical: shortFp(canonicalFp) }
+   661→            : {}),
+   662→        }
+   663→      );
+   664→    }
+   665→    checks.push({
+   666→      name: "اتساق بصمات المخطط في الـ Manifest مع المحتوى",
+   667→      code: "MANIFEST_CONSISTENT",
+   668→      ok: true,
+   669→      detail: embedded.formatVersion === 3 ? "canonical + physical" : "physical (legacy-v2)",
+   670→    });
+   671→
+   672→    // قرار التوافق على البصمة القاعدية الدلالية حصرًا — لا الفيزيائية
+   673→    const classified = classifySchemaFingerprint(canonicalFp);
+   674→    if (classified.schemaClass !== "current") {
+   675→      throw new BackupError(
+   676→        "SCHEMA_UNKNOWN",
+   677→        "المخطط الدلالي للنسخة غير معروف/غير مطابق للمخطط الحالي — الرفض (يشمل الأحدث: لا downgrade)",
+   678→        422,
+   679→        { candidateCanonical: shortFp(canonicalFp), currentCanonical: shortFp(liveIdentity.canonical) }
+   680→      );
+   681→    }
+   682→    checks.push({
+   683→      name: "تطابق المخطط الدلالي (canonical) مع الحالي",
+   684→      code: "SCHEMA_OK",
+   685→      ok: true,
+   686→      ms: Date.now() - t6,
+   687→      detail: shortFp(canonicalFp),
+   688→    });
+   689→
+   690→    // 6) اتساق الـ Manifest مع المحتوى الفعلي
+   691→    const t7 = Date.now();
+   692→    if (
+   693→      embedded.counts.users !== countsRes.counts.users ||
+   694→      embedded.counts.groups !== countsRes.counts.groups ||
+   695→      embedded.counts.reports !== countsRes.counts.reports ||
+   696→      embedded.counts.workflowHistory !== countsRes.counts.workflowHistory ||
+   697→      embedded.counts.auditLog !== countsRes.counts.auditLog
+   698→    ) {
+   699→      throw new BackupError("COUNTS_MISMATCH", "عدّ الـ Manifest لا يطابق محتوى قاعدة النسخة");
+   700→    }
+   701→    const periodRange = await collectPeriodRange(tempClient);
+   702→    if (
+   703→      embedded.periodRange.minPeriodEnd !== periodRange.minPeriodEnd ||
+   704→      embedded.periodRange.maxPeriodEnd !== periodRange.maxPeriodEnd
+   705→    ) {
+   706→      throw new BackupError("COUNTS_MISMATCH", "periodRange في الـ Manifest لا يطابق المحتوى");
+   707→    }
+   708→    checks.push({ name: "اتساق الـ Manifest مع المحتوى", code: "CONSISTENCY_OK", ok: true, ms: Date.now() - t7 });
+   709→
+   710→    // 7) sanity أعمال (تحذيرات لا إخفاق)
+   711→    if (countsRes.counts.users === 0) {
+   712→      warnings.push("SANITY_NO_USERS: لا مستخدمون في النسخة — بعد أي استعادة مستقبلية ستُفعّل شاشة الإعداد الأولي (مدير افتراضي)");
+   713→    }
+   714→
+   715→    // 8) رفع المستوى (لا يهبط أبدًا بالتحقق؛ RESTORE_VERIFIED يبقى حتى إعادة تحقق ناجحة)
+   716→    //    الصيغة تبقى كما هي: legacy v2 تبقى v2 بلا ترقية صامتة، وv3 تبقى v3.
+   717→    const updated = withValidatedLevel(embedded);
+   718→    await rewriteManifestInZip(zipPath, updated);
+   719→    checks.push({ name: "تحديث مستوى التحقق", code: "LEVEL_SET", ok: true, detail: updated.verification.level });
+   720→
+   721→    return {
+   722→      ok: true,
+   723→      backupId: embedded.backupId,
+   724→      source,
+   725→      level: updated.verification.level,
+   726→      checks,
+   727→      warnings,
+   728→      physicalSchemaFingerprint: physicalFp,
+   729→      canonicalSchemaFingerprint: canonicalFp,
+   730→      manifestFormat: embedded.formatVersion,
+   731→      manifestClass: manifestClassOf(embedded),
+   732→      canonicalMatchesManifest,
+   733→      durationMs: Date.now() - t0,
+   734→    };
+   735→  } finally {
+   736→    try {
+   737→      await tempClient?.$disconnect();
+   738→    } catch {
+   739→      /* ignore */
+   740→    }
+   741→    rmSync(ws, { recursive: true, force: true });
+   742→  }
+   743→}
+   744→
+   745→function zipFailMsg(f: ZipInspectFail): string {
+   746→  const withEntry = f.entry ? ` [${f.entry}]` : "";
+   747→  return `${f.message}${withEntry}`;
+   748→}
+   749→
+   750→/** رفع مستوى التحقق — الصيغة تبقى كما هي (2 تبقى 2، 3 تبقى 3 — لا ترقية صامتة). */
+   751→function withValidatedLevel(m: AnyBackupManifest): AnyBackupManifest {
+   752→  const nextLevel = m.verification.level === "RESTORE_VERIFIED" ? ("RESTORE_VERIFIED" as const) : ("VALIDATED" as const);
+   753→  const verification = { ...m.verification, level: nextLevel, validatedAt: new Date().toISOString() };
+   754→  if (m.formatVersion === 3) return { ...m, verification };
+   755→  return { ...m, verification };
+   756→}
+   757→
+   758→/**
+   759→ * توثيق Drill ناجح على الـ Manifest — نفس الصيغة بلا ترقية.
+   760→ * drillRuns يزداد مع كل نجاح — كي لا يُقرأ تشغيلان مستقلان كحدث واحد
+   761→ * (مع operationId المستقل لكل تشغيل — ملاحظة المستخدم في 4A.1).
+   762→ */
+   763→function withDrillVerified(m: AnyBackupManifest, operationId: string): AnyBackupManifest {
+   764→  const verification = {
+   765→    ...m.verification,
+   766→    level: "RESTORE_VERIFIED" as const,
+   767→    drillAt: new Date().toISOString(),
+   768→    drillOperationId: operationId,
+   769→    drillRuns: (m.verification.drillRuns ?? 0) + 1,
+   770→  };
+   771→  if (m.formatVersion === 3) return { ...m, verification };
+   772→  return { ...m, verification };
+   773→}
+   774→
+   775→/** إعادة كتابة manifest.json داخل الـ ZIP + الجانبي (ذرية tmp+rename) — الصيغة كما هي. */
+   776→async function rewriteManifestInZip(zipPath: string, manifest: AnyBackupManifest): Promise<void> {
+   777→  const zip = await JSZip.loadAsync(readFileSync(zipPath));
+   778→  zip.file("manifest.json", JSON.stringify(manifest, null, 2));
+   779→  const out = await zip.generateAsync({
+   780→    type: "nodebuffer",
+   781→    compression: "DEFLATE",
+   782→    compressionOptions: { level: 6 },
+   783→  });
+   784→  writePrivateFileAtomic(zipPath, out);
+   785→  writePrivateFileAtomic(zipPath.replace(/\.zip$/, ".manifest.json"), JSON.stringify(manifest, null, 2));
+   786→}
+   787→
+   788→/* ──────────────────────────────────────────────────────────────────────── */
+   789→/*  التحقق الصريح                                                           */
+   790→/* ──────────────────────────────────────────────────────────────────────── */
+   791→
+   792→export async function validateBackupById(id: string, actor: ActorInfo): Promise<ValidationReport> {
+   793→  assertSafeId(id);
+   794→  return withOpLock(async () => {
+   795→    const artifact = findArtifact(id);
+   796→    if (!artifact) throw new BackupError("NOT_FOUND", "لا توجد نسخة بهذا المعرف", 404);
+   797→    const opId = newOperationId("validate");
+   798→    try {
+   799→      const report = await validateBackupArtifact({
+   800→        zipPath: artifact.zipPath,
+   801→        actor,
+   802→        source: artifact.source,
+   803→        operationId: opId,
+   804→      });
+   805→      await appendRecoveryEvent({
+   806→        operationId: opId,
+   807→        event: "BACKUP_VALIDATED",
+   808→        actor,
+   809→        backupId: report.backupId,
+   810→        result: "success",
+   811→        details: { source: artifact.source, level: report.level, durationMs: report.durationMs },
+   812→      });
+   813→      await writeAuditSafe({
+   814→        user: { id: actor.id, username: actor.username },
+   815→        action: AUDIT_ACTIONS.BACKUP_VALIDATED,
+   816→        entityType: AUDIT_ENTITY_TYPES.Backup,
+   817→        entityId: report.backupId,
+   818→        description: `نجح التحقق من النسخة «${report.backupId}» — المستوى ${report.level}`,
+   819→        metadata: { level: report.level, durationMs: report.durationMs, source: artifact.source },
+   820→      });
+   821→      return report;
+   822→    } catch (e) {
+   823→      const reason = e instanceof BackupError ? `${e.code}: ${e.message}` : String(e);
+   824→      await appendRecoveryEvent({
+   825→        operationId: opId,
+   826→        event: "BACKUP_FAILED",
+   827→        actor,
+   828→        backupId: id,
+   829→        result: "failure",
+   830→        details: { stage: "VALIDATION", source: artifact.source, reason },
+   831→      });
+   832→      await writeAuditSafe({
+   833→        user: { id: actor.id, username: actor.username },
+   834→        action: AUDIT_ACTIONS.BACKUP_FAILED,
+   835→        entityType: AUDIT_ENTITY_TYPES.Backup,
+   836→        entityId: id,
+   837→        description: `فشل التحقق من النسخة «${id}» — ${reason}`,
+   838→        metadata: { stage: "VALIDATION", reason, source: artifact.source },
+   839→      });
+   840→      if (e instanceof BackupError) throw e;
+   841→      throw new BackupError("IO", `فشل التحقق: ${reason}`, 500);
+   842→    }
+   843→  });
+   844→}
+   845→
+   846→/* ──────────────────────────────────────────────────────────────────────── */
+   847→/*  Restore Drill — قاعدة مؤقتة معزولة حصرًا (لا يمس التشغيل إطلاقًا)       */
+   848→/* ──────────────────────────────────────────────────────────────────────── */
+   849→
+   850→export async function runRestoreDrillById(id: string, actor: ActorInfo): Promise<DrillReport> {
+   851→  assertSafeId(id);
+   852→  return withOpLock(async () => {
+   853→    const opId = newOperationId("drill");
+   854→    const t0 = Date.now();
+   855→    const steps: CheckResult[] = [];
+   856→    const prismaReadTests: CheckResult[] = [];
+   857→    const warnings: string[] = [];
+   858→    let tempClient: PrismaClient | null = null;
+   859→    const ws = ensurePrivateDir(path.join(resolveStagingDir(), `drill-${opId}`));
+   860→
+   861→    // رقم تشغيل مستقل لكل Drill — تشغيلان لنفس النسخة لا يبدآن كحدثين مكررين
+   862→    // (operationId مميز لكل تشغيل + sequence في details — ملاحظة المستخدم 4A.1)
+   863→    const priorDrills = await countRecoveryEvents("DRILL_STARTED", id);
+   864→    const drillRunSequence = priorDrills + 1;
+   865→    await appendRecoveryEvent({
+   866→      operationId: opId,
+   867→      event: "DRILL_STARTED",
+   868→      actor,
+   869→      backupId: id,
+   870→      result: "info",
+   871→      details: {
+   872→        target: "temp-isolated-db",
+   873→        drillRun: { sequence: drillRunSequence, startedAt: new Date().toISOString() },
+   874→      },
+   875→    });
+   876→
+   877→    try {
+   878→      const artifact = findArtifact(id);
+   879→      if (!artifact) throw new BackupError("NOT_FOUND", "لا توجد نسخة بهذا المعرف", 404);
+   880→      let manifest = artifact.manifest;
+   881→
+   882→      // الرخصة: لا Drill إلا لنسخة تم التحقق منها — CREATED تُتحقق تلقائيًا أولًا
+   883→      if (manifest.verification.level === "CREATED") {
+   884→        steps.push({ name: "تحقق أولي (CREATED → VALIDATED)", code: "AUTO_VALIDATE", ok: true });
+   885→        await validateBackupArtifact({
+   886→          zipPath: artifact.zipPath,
+   887→          actor,
+   888→          source: artifact.source,
+   889→          operationId: newOperationId("validate"),
+   890→        });
+   891→        const refreshed = findArtifact(id);
+   892→        if (!refreshed) throw new BackupError("NOT_FOUND", "اختفاء النسخة أثناء التحقق", 404);
+   893→        manifest = refreshed.manifest;
+   894→        if (manifest.verification.level === "CREATED") {
+   895→          throw new BackupError("NOT_VALIDATED", "لم يكتمل التحقق الأولي — لا Drill");
+   896→        }
+   897→      }
+   898→
+   899→      const zipBuf = readFileSync(artifact.zipPath);
+   900→
+   901→      // 1) فك في temp معزول + بوابة أمن ZIP
+   902→      let t = Date.now();
+   903→      const inspected = inspectZipBuffer(zipBuf, {
+   904→        maxUncompressedBytes: UPLOAD_LIMITS.maxUncompressedMB * 1024 * 1024,
+   905→        maxEntries: UPLOAD_LIMITS.maxZipEntries,
+   906→        allowedNames: ALLOWED_ZIP_ENTRIES,
+   907→        maxRatio: UPLOAD_LIMITS.maxCompressionRatio,
+   908→      });
+   909→      if (!inspected.ok) throw new BackupError(inspected.code, zipFailMsg(inspected));
+   910→      steps.push({ name: "فك الحزمة في temp معزول", code: "EXTRACT_OK", ok: true, ms: Date.now() - t });
+   911→
+   912→      // 2) checksum
+   913→      t = Date.now();
+   914→      const dbBytes = await readZipEntry(zipBuf, "database.db", UPLOAD_LIMITS.maxUncompressedMB * 1024 * 1024);
+   915→      if ("ok" in dbBytes && !dbBytes.ok) throw new BackupError(dbBytes.code, zipFailMsg(dbBytes as ZipInspectFail));
+   916→      const actualSha = hashBuffer(dbBytes as Buffer);
+   917→      if (actualSha !== manifest.database.sha256) {
+   918→        throw new BackupError("CHECKSUM_MISMATCH", "عدم تطابق SHA-256 داخل الـ Drill");
+   919→      }
+   920→      steps.push({ name: "تطابق SHA-256", code: "CHECKSUM_OK", ok: true, ms: Date.now() - t });
+   921→
+   922→      // 3) SQLite validation
+   923→      t = Date.now();
+   924→      const MAGIC = Buffer.from("SQLite format 3\0");
+   925→      if (!(dbBytes as Buffer).subarray(0, 16).equals(MAGIC)) {
+   926→        throw new BackupError("NOT_SQLITE", "database.db ليس SQLite");
+   927→      }
+   928→      const extractedPath = path.join(ws, "extracted-database.db");
+   929→      writeFileSync(extractedPath, dbBytes as Buffer, { mode: 0o600 });
+   930→      steps.push({ name: "بصمة SQLite سليمة", code: "SQLITE_MAGIC_OK", ok: true, ms: Date.now() - t });
+   931→
+   932→      // 4) توافق المخطط — ثم migrations على المؤقتة فقط إن لزم (4A: لا إصدارات أقدم مسجلة)
+   933→      t = Date.now();
+   934→      const probe = tempClientFor(extractedPath);
+   935→      const integ = await probe.$queryRawUnsafe<{ integrity_check: string }[]>(`PRAGMA integrity_check`);
+   936→      if ((integ[0]?.integrity_check ?? "") !== "ok") {
+   937→        throw new BackupError("CORRUPT_DB", `integrity_check: ${integ[0]?.integrity_check}`);
+   938→      }
+   939→      await probe.$disconnect();
+   940→      const candidateCanonical = await (async () => {
+   941→        const c = tempClientFor(extractedPath);
+   942→        try {
+   943→          return await computeCanonicalFingerprint(c);
+   944→        } finally {
+   945→          await c.$disconnect();
+   946→        }
+   947→      })();
+   948→      const candidatePhysical = await (async () => {
+   949→        const c = tempClientFor(extractedPath);
+   950→        try {
+   951→          return await computePhysicalFingerprint(c);
+   952→        } finally {
+   953→          await c.$disconnect();
+   954→        }
+   955→      })();
+   956→      // اتساق بصمات الـ Manifest مع محتوى النسخة — قبل أي قرار قبول (لا ثقة بقيمة مكتوبة)
+   957→      const physicalMatchesManifest = manifest.schemaFingerprint === candidatePhysical;
+   958→      const canonicalMatchesManifest =
+   959→        manifest.formatVersion === 3 ? manifest.canonicalSchemaFingerprint === candidateCanonical : null;
+   960→      if (!physicalMatchesManifest || canonicalMatchesManifest === false) {
+   961→        throw new BackupError(
+   962→          "MANIFEST_INCONSISTENT",
+   963→          "بصمة المخطط في الـ Manifest لا تطابق محتوى database.db داخل الحزمة",
+   964→          422
+   965→        );
+   966→      }
+   967→      const liveIdentity = await refreshCurrentSchemaIdentity();
+   968→      // قرار التوافق على البصمة القاعدية الدلالية حصرًا (4A.1)
+   969→      const classified = classifySchemaFingerprint(candidateCanonical);
+   970→      if (classified.schemaClass === "older-known") {
+   971→        // 4B: تطبيق تسلسل migrations على المؤقتة فقط — غير مفعّل في 4A
+   972→        throw new BackupError("SCHEMA_MIGRATION_UNAVAILABLE", "ترحيل المخططات الأقدم يعتمد في 4B (مؤقتة فقط)");
+   973→      }
+   974→      if (classified.schemaClass !== "current") {
+   975→        throw new BackupError(
+   976→          "SCHEMA_UNKNOWN",
+   977→          "المخطط الدلالي غير معروف — رفض (يشمل الأحدث من التطبيق: لا downgrade)",
+   978→          422,
+   979→          { candidateCanonical: shortFp(candidateCanonical), currentCanonical: shortFp(liveIdentity.canonical) }
+   980→        );
+   981→      }
+   982→      steps.push({
+   983→        name: "توافق المخطط الدلالي canonical (بلا ترحيل — مطابق للحالي)",
+   984→        code: "SCHEMA_OK",
+   985→        ok: true,
+   986→        ms: Date.now() - t,
+   987→        detail: `${shortFp(candidateCanonical)} · physical: ${shortFp(candidatePhysical)} (تشخيصي)`,
+   988→      });
+   989→
+   990→      // 5) integrity_check على DB مؤقتة عاملة
+   991→      t = Date.now();
+   992→      const workingPath = path.join(ws, "drill-working.db");
+   993→      writeFileSync(workingPath, readFileSync(extractedPath), { mode: 0o600 });
+   994→      tempClient = tempClientFor(workingPath);
+   995→      const integ2 = await tempClient.$queryRawUnsafe<{ integrity_check: string }[]>(`PRAGMA integrity_check`);
+   996→      if ((integ2[0]?.integrity_check ?? "") !== "ok") {
+   997→        throw new BackupError("CORRUPT_DB", "integrity_check على المؤقتة فشل");
+   998→      }
+   999→      steps.push({ name: "integrity_check على المؤقتة", code: "INTEGRITY_OK", ok: true, ms: Date.now() - t });
+  1000→
+  1001→      // 6) اتصال Prisma حقيقي على المؤقتة + قراءة الجداول الأساسية (إثبات طبقة البيانات)
+  1002→      t = Date.now();
+  1003→      const userSample = await tempClient.user.findMany({ take: 5, select: { id: true, username: true, role: true } });
+  1004→      const groupSample = await tempClient.group.findMany({ take: 5, select: { id: true, name: true } });
+  1005→      const reportSample = await tempClient.report.findMany({ take: 5, select: { id: true, name: true, status: true, periodEnd: true } });
+  1006→      const wfSample = await tempClient.workflowHistory.findMany({ take: 5, select: { id: true, action: true, cycle: true } });
+  1007→      const auditSample = await tempClient.auditLog.findMany({ take: 5, select: { id: true, action: true } });
+  1008→      prismaReadTests.push(
+  1009→        { name: "Prisma: user.read", code: "READ_OK", ok: true, detail: `${userSample.length} صف مقروء` },
+  1010→        { name: "Prisma: group.read", code: "READ_OK", ok: true, detail: `${groupSample.length} صف مقروء` },
+  1011→        { name: "Prisma: report.read", code: "READ_OK", ok: true, detail: `${reportSample.length} صف مقروء` },
+  1012→        { name: "Prisma: workflowHistory.read", code: "READ_OK", ok: true, detail: `${wfSample.length} صف مقروء` },
+  1013→        { name: "Prisma: auditLog.read", code: "READ_OK", ok: true, detail: `${auditSample.length} صف مقروء` }
+  1014→      );
+  1015→      steps.push({
+  1016→        name: "قراءة Prisma حقيقية على المؤقتة (5 جداول)",
+  1017→        code: "PRISMA_READ_OK",
+  1018→        ok: true,
+  1019→        ms: Date.now() - t,
+  1020→      });
+  1021→
+  1022→      // 7) مقارنة counts مع Manifest
+  1023→      t = Date.now();
+  1024→      const countsRes = await collectCounts(tempClient);
+  1025→      if (!countsRes.ok) throw new BackupError("MISSING_TABLES", countsRes.missingTable);
+  1026→      const countsMatched =
+  1027→        countsRes.counts.users === manifest.counts.users &&
+  1028→        countsRes.counts.groups === manifest.counts.groups &&
+  1029→        countsRes.counts.reports === manifest.counts.reports &&
+  1030→        countsRes.counts.workflowHistory === manifest.counts.workflowHistory &&
+  1031→        countsRes.counts.auditLog === manifest.counts.auditLog;
+  1032→      if (!countsMatched) {
+  1033→        throw new BackupError("COUNTS_MISMATCH", "عدّ المؤقتة لا يطابق عدّ الـ Manifest", 422, {
+  1034→          manifest: manifest.counts,
+  1035→          actual: countsRes.counts,
+  1036→        });
+  1037→      }
+  1038→      steps.push({ name: "مطابقة counts مع Manifest", code: "COUNTS_OK", ok: true, ms: Date.now() - t });
+  1039→
+  1040→      // 8) business sanity
+  1041→      t = Date.now();
+  1042→      const periodRange = await collectPeriodRange(tempClient);
+  1043→      const periodRangeMatched =
+  1044→        periodRange.minPeriodEnd === manifest.periodRange.minPeriodEnd &&
+  1045→        periodRange.maxPeriodEnd === manifest.periodRange.maxPeriodEnd;
+  1046→      if (!periodRangeMatched) {
+  1047→        throw new BackupError("PERIOD_MISMATCH", "periodRange لا يطابق الـ Manifest", 422);
+  1048→      }
+  1049→      if (countsRes.counts.users === 0) warnings.push("SANITY_NO_USERS: لا مستخدمون في النسخة");
+  1050→      const statusRows = await tempClient.report.groupBy({ by: ["status"], _count: { status: true } });
+  1051→      const KNOWN_STATUSES = new Set(["DRAFT", "SUBMITTED", "UNDER_REVIEW", "PENDING_APPROVAL", "RETURNED", "APPROVED", "REOPENED"]);
+  1052→      const oddStatuses = statusRows.map((r) => r.status).filter((s) => !KNOWN_STATUSES.has(s));
+  1053→      if (oddStatuses.length > 0) {
+  1054→        warnings.push(`SANITY_UNKNOWN_STATUSES: حالات غير معروفة في التقارير — ${oddStatuses.join(", ")}`);
+  1055→      }
+  1056→      steps.push({ name: "فحوص sanity أعمال", code: "SANITY_OK", ok: true, ms: Date.now() - t, detail: oddStatuses.length === 0 ? "لا حالات شاذة" : "تحذيرات" });
+  1057→
+  1058→      // 9) النتيجة: RESTORE_VERIFIED — drillRuns يزداد مع كل تشغيل ناجح
+  1059→      const updated = withDrillVerified(manifest, opId);
+  1060→      await rewriteManifestInZip(artifact.zipPath, updated);
+  1061→
+  1062→      const report: DrillReport = {
+  1063→        ok: true,
+  1064→        backupId: manifest.backupId,
+  1065→        source: artifact.source,
+  1066→        level: "RESTORE_VERIFIED",
+  1067→        checks: steps,
+  1068→        steps,
+  1069→        prismaReadTests,
+  1070→        warnings,
+  1071→        countsMatched,
+  1072→        periodRangeMatched,
+  1073→        physicalSchemaFingerprint: candidatePhysical,
+  1074→        canonicalSchemaFingerprint: candidateCanonical,
+  1075→        manifestFormat: manifest.formatVersion,
+  1076→        manifestClass: manifestClassOf(manifest),
+  1077→        canonicalMatchesManifest,
+  1078→        durationMs: Date.now() - t0,
+  1079→      };
+  1080→
+  1081→      // تقرير Drill محفوظ في staging (مسار مرحلي — لا يحوي مسارات داخلية)
+  1082→      writePrivateFileAtomic(
+  1083→        path.join(resolveStagingDir(), `drill-${opId}.json`),
+  1084→        JSON.stringify({ ...report, manifestSummary: { backupId: manifest.backupId, counts: manifest.counts } }, null, 2)
+  1085→      );
+  1086→
+  1087→      await appendRecoveryEvent({
+  1088→        operationId: opId,
+  1089→        event: "DRILL_VERIFIED",
+  1090→        actor,
+  1091→        backupId: manifest.backupId,
+  1092→        result: "success",
+  1093→        details: {
+  1094→          durationMs: report.durationMs,
+  1095→          counts: countsRes.counts,
+  1096→          level: "RESTORE_VERIFIED",
+  1097→          drillRun: { sequence: drillRunSequence, operationId: opId },
+  1098→        },
+  1099→      });
+  1100→      await writeAuditSafe({
+  1101→        user: { id: actor.id, username: actor.username },
+  1102→        action: AUDIT_ACTIONS.BACKUP_DRILLED,
+  1103→        entityType: AUDIT_ENTITY_TYPES.Backup,
+  1104→        entityId: manifest.backupId,
+  1105→        description: `نجح Restore Drill للنسخة «${manifest.backupId}» على قاعدة مؤقتة معزولة — RESTORE_VERIFIED`,
+  1106→        metadata: { durationMs: report.durationMs, operationId: opId, counts: countsRes.counts },
+  1107→      });
+  1108→
+  1109→      return report;
+  1110→    } catch (e) {
+  1111→      const reason = e instanceof BackupError ? `${e.code}: ${e.message}` : String(e);
+  1112→      await appendRecoveryEvent({
+  1113→        operationId: opId,
+  1114→        event: "DRILL_FAILED",
+  1115→        actor,
+  1116→        backupId: id,
+  1117→        result: "failure",
+  1118→        details: { stage: "DRILL", reason },
+  1119→      });
+  1120→      await writeAuditSafe({
+  1121→        user: { id: actor.id, username: actor.username },
+  1122→        action: AUDIT_ACTIONS.BACKUP_FAILED,
+  1123→        entityType: AUDIT_ENTITY_TYPES.Backup,
+  1124→        entityId: id,
+  1125→        description: `فشل Restore Drill للنسخة «${id}» — ${reason}`,
+  1126→        metadata: { stage: "DRILL", reason, operationId: opId },
+  1127→      });
+  1128→      if (e instanceof BackupError) throw e;
+  1129→      throw new BackupError("IO", `فشل الـ Drill: ${reason}`, 500);
+  1130→    } finally {
+  1131→      try {
+  1132→        await tempClient?.$disconnect();
+  1133→      } catch {
+  1134→        /* ignore */
+  1135→      }
+  1136→      rmSync(ws, { recursive: true, force: true });
+  1137→    }
+  1138→  });
+  1139→}
+  1140→
+  1141→/* ──────────────────────────────────────────────────────────────────────── */
+  1142→/*  الرفع — staging فقط + نفس خط التحقق                                     */
+  1143→/* ──────────────────────────────────────────────────────────────────────── */
+  1144→
+  1145→export interface UploadOutcome {
+  1146→  uploadId: string;
+  1147→  backupId: string;
+  1148→  level: VerificationLevel;
+  1149→  report: ValidationReport;
+  1150→  manifest: BackupManifestV2;
+  1151→}
+  1152→
+  1153→export async function uploadBackupZip(
+  1154→  actor: ActorInfo,
+  1155→  bytes: Buffer,
+  1156→  originalName: string
+  1157→): Promise<UploadOutcome> {
+  1158→  return withOpLock(async () => {
+  1159→    const opId = newOperationId("upload");
+  1160→    const uploadId = newUploadId();
+  1161→    const displayName = sanitizeDisplayName(originalName);
+  1162→    const uploadsDir = ensurePrivateDir(path.join(resolveStagingDir(), "uploads"));
+  1163→    const ws = ensurePrivateDir(path.join(resolveStagingDir(), `upload-${opId}`));
+  1164→
+  1165→    await appendRecoveryEvent({
+  1166→      operationId: opId,
+  1167→      event: "UPLOAD_RECEIVED",
+  1168→      actor,
+  1169→      backupId: null,
+  1170→      result: "info",
+  1171→      details: { displayName, compressedBytes: bytes.length },
+  1172→    });
+  1173→
+  1174→    let rejectedLogged = false;
+  1175→    const reject = async (code: string, message: string, httpStatus = 400): Promise<never> => {
+  1176→      rmSync(ws, { recursive: true, force: true });
+  1177→      rejectedLogged = true;
+  1178→      await appendRecoveryEvent({
+  1179→        operationId: opId,
+  1180→        event: "UPLOAD_REJECTED",
+  1181→        actor,
+  1182→        backupId: null,
+  1183→        result: "failure",
+  1184→        details: { reason: code, message, displayName },
+  1185→      });
+  1186→      await writeAuditSafe({
+  1187→        user: { id: actor.id, username: actor.username },
+  1188→        action: AUDIT_ACTIONS.BACKUP_FAILED,
+  1189→        entityType: AUDIT_ENTITY_TYPES.Backup,
+  1190→        entityId: null,
+  1191→        description: `رفض ملف مرفوع «${displayName}» — ${code}: ${message}`,
+  1192→        metadata: { stage: "UPLOAD", reason: code },
+  1193→      });
+  1194→      throw new BackupError(code, message, httpStatus);
+  1195→    };
+  1196→
+  1197→    try {
+  1198→      // الحد المضغوط — قبل أي فحص آخر
+  1199→      if (bytes.length > UPLOAD_LIMITS.maxUploadMB * 1024 * 1024) {
+  1200→        await reject("TOO_LARGE", `الحجم المضغوط ${bytes.length} يتجاوز الحد`, 413);
+  1201→      }
+  1202→
+  1203→      // بوابة أمن ZIP — المسموح: database.db + manifest.json حصرًا
+  1204→      const inspected = inspectZipBuffer(bytes, {
+  1205→        maxUncompressedBytes: UPLOAD_LIMITS.maxUncompressedMB * 1024 * 1024,
+  1206→        maxEntries: UPLOAD_LIMITS.maxZipEntries,
+  1207→        allowedNames: ALLOWED_ZIP_ENTRIES,
+  1208→        maxRatio: UPLOAD_LIMITS.maxCompressionRatio,
+  1209→        maxCompressedBytes: UPLOAD_LIMITS.maxUploadMB * 1024 * 1024,
+  1210→      });
+  1211→      if (!inspected.ok) {
+  1212→        await reject(inspected.code, zipFailMsg(inspected), inspected.code === "TOO_LARGE" ? 413 : 400);
+  1213→      }
+  1214→
+  1215→      // manifest.json من الداخل
+  1216→      const manifestRaw = await readZipEntry(bytes, "manifest.json", UPLOAD_LIMITS.maxManifestBytes);
+  1217→      if ("ok" in manifestRaw && !manifestRaw.ok) {
+  1218→        await reject(manifestRaw.code, zipFailMsg(manifestRaw as ZipInspectFail));
+  1219→      }
+  1220→      const manifest = parseManifest((manifestRaw as Buffer).toString("utf8"));
+  1221→      if (!manifest) {
+  1222→        await reject("BAD_MANIFEST", "manifest.json داخل الحزمة غير صالح أو ناقص الحقول الإلزامية");
+  1223→      }
+  1224→
+  1225→      // حفظ الحزمة كما هي في staging ثم خط التحقق المشترك عليها
+  1226→      const zipPath = path.join(uploadsDir, `${uploadId}.zip`);
+  1227→      writePrivateFileAtomic(zipPath, bytes);
+  1228→      writePrivateFileAtomic(
+  1229→        zipPath.replace(/\.zip$/, ".manifest.json"),
+  1230→        JSON.stringify(
+  1231→          (manifest as AnyBackupManifest).backupType === "upload"
+  1232→            ? manifest
+  1233→            : { ...(manifest as AnyBackupManifest), backupType: "upload" as const },
+  1234→          null,
+  1235→          2
+  1236→        )
+  1237→      );
+  1238→      rmSync(ws, { recursive: true, force: true });
+  1239→
+  1240→      const report = await validateBackupArtifact({
+  1241→        zipPath,
+  1242→        actor,
+  1243→        source: "upload",
+  1244→        operationId: newOperationId("validate"),
+  1245→      });
+  1246→
+  1247→      // إثراء الـ Manifest بمعلومات الرفع (وصفية — ليست آلية تحقق)
+  1248→      const sidecarPath = zipPath.replace(/\.zip$/, ".manifest.json");
+  1249→      const current = hasManifest(sidecarPath)?.manifest;
+  1250→      if (current) {
+  1251→        const enriched: AnyBackupManifest = {
+  1252→          ...current,
+  1253→          uploadInfo: {
+  1254→            originalNameSanitized: displayName,
+  1255→            uploadedAt: new Date().toISOString(),
+  1256→            uploadedByUsername: actor.username ?? "",
+  1257→          },
+  1258→        };
+  1259→        await rewriteManifestInZip(zipPath, enriched);
+  1260→      }
+  1261→
+  1262→      const finalManifest = hasManifest(sidecarPath)?.manifest ?? (manifest as BackupManifestV2);
+  1263→      await appendRecoveryEvent({
+  1264→        operationId: opId,
+  1265→        event: "BACKUP_VALIDATED",
+  1266→        actor,
+  1267→        backupId: finalManifest.backupId,
+  1268→        result: "success",
+  1269→        details: { source: "upload", uploadId, level: finalManifest.verification.level, displayName },
+  1270→      });
+  1271→      await writeAuditSafe({
+  1272→        user: { id: actor.id, username: actor.username },
+  1273→        action: AUDIT_ACTIONS.BACKUP_UPLOADED,
+  1274→        entityType: AUDIT_ENTITY_TYPES.Backup,
+  1275→        entityId: finalManifest.backupId,
+  1276→        description: `رفع نسخة للتحقق «${finalManifest.backupId}» (${displayName}) — المستوى ${finalManifest.verification.level}`,
+  1277→        metadata: { source: "upload", uploadId, level: finalManifest.verification.level },
+  1278→      });
+  1279→
+  1280→      return {
+  1281→        uploadId,
+  1282→        backupId: finalManifest.backupId,
+  1283→        level: finalManifest.verification.level,
+  1284→        report,
+  1285→        manifest: finalManifest,
+  1286→      };
+  1287→    } catch (e) {
+  1288→      rmSync(ws, { recursive: true, force: true });
+  1289→      // فشل التحقق بعد الحفظ: إزالة الحزمة المرحلية (الرفض النهائي)
+  1290→      const zipPath = path.join(uploadsDir, `${uploadId}.zip`);
+  1291→      rmSync(zipPath, { force: true });
+  1292→      rmSync(zipPath.replace(/\.zip$/, ".manifest.json"), { force: true });
+  1293→      if (e instanceof BackupError) {
+  1294→        if (!rejectedLogged) {
+  1295→          // رفض في مرحلة التحقق المحتواي (checksum/SQLite/مخطط) — أثر أمني كامل أيضًا
+  1296→          await appendRecoveryEvent({
+  1297→            operationId: opId,
+  1298→            event: "UPLOAD_REJECTED",
+  1299→            actor,
+  1300→            backupId: null,
+  1301→            result: "failure",
+  1302→            details: { reason: e.code, message: e.message, displayName, stage: "VALIDATION" },
+  1303→          });
+  1304→          await writeAuditSafe({
+  1305→            user: { id: actor.id, username: actor.username },
+  1306→            action: AUDIT_ACTIONS.BACKUP_FAILED,
+  1307→            entityType: AUDIT_ENTITY_TYPES.Backup,
+  1308→            entityId: null,
+  1309→            description: `رفض ملف مرفوع «${displayName}» في التحقق — ${e.code}: ${e.message}`,
+  1310→            metadata: { stage: "UPLOAD_VALIDATION", reason: e.code },
+  1311→          });
+  1312→        }
+  1313→        throw e;
+  1314→      }
+  1315→      throw new BackupError("IO", `فشل الرفع: ${String(e)}`, 500);
+  1316→    }
+  1317→  });
+  1318→}
+  1319→
+  1320→/* ──────────────────────────────────────────────────────────────────────── */
+  1321→/*  تفاصيل وتنزيل                                                           */
+  1322→/* ──────────────────────────────────────────────────────────────────────── */
+  1323→
+  1324→interface Artifact {
+  1325→  id: string;
+  1326→  source: "local" | "upload";
+  1327→  zipPath: string;
+  1328→  manifest: AnyBackupManifest;
+  1329→  sizeBytes: number;
+  1330→}
+  1331→
+  1332→function findArtifact(id: string): Artifact | null {
+  1333→  const dirs: Array<{ dir: string; source: "local" | "upload" }> = [
+  1334→    { dir: resolveBackupDir(), source: "local" },
+  1335→    { dir: path.join(resolveStagingDir(), "uploads"), source: "upload" },
+  1336→  ];
+  1337→  for (const { dir, source } of dirs) {
+  1338→    const zipPath = path.join(dir, `${id}.zip`);
+  1339→    if (existsSync(zipPath)) {
+  1340→      const manifest = hasManifest(zipPath.replace(/\.zip$/, ".manifest.json"));
+  1341→      if (!manifest) continue;
+  1342→      return {
+  1343→        id,
+  1344→        source,
+  1345→        zipPath,
+  1346→        manifest: manifest.manifest,
+  1347→        sizeBytes: statSync(zipPath).size,
+  1348→      };
+  1349→    }
+  1350→  }
+  1351→  return null;
+  1352→}
+  1353→
+  1354→export function getBackupDetails(id: string): {
+  1355→  manifest: AnyBackupManifest;
+  1356→  source: "local" | "upload";
+  1357→  sizeBytes: number;
+  1358→  zipExists: boolean;
+  1359→} | null {
+  1360→  assertSafeId(id);
+  1361→  const artifact = findArtifact(id);
+  1362→  if (!artifact) return null;
+  1363→  return {
+  1364→    manifest: artifact.manifest,
+  1365→    source: artifact.source,
+  1366→    sizeBytes: artifact.sizeBytes,
+  1367→    zipExists: true,
+  1368→  };
+  1369→}
+  1370→
+  1371→/** مسار ZIP للتنزيل — تحديد إغلاق (confinement) + وجود. */
+  1372→export function getBackupZipForDownload(id: string): { fileName: string; buf: Buffer; sizeBytes: number } {
+  1373→  assertSafeId(id);
+  1374→  const artifact = findArtifact(id);
+  1375→  if (!artifact) throw new BackupError("NOT_FOUND", "لا توجد نسخة بهذا المعرف", 404);
+  1376→  const resolved = path.resolve(artifact.zipPath);
+  1377→  const root = path.resolve(path.dirname(artifact.zipPath));
+  1378→  if (!resolved.startsWith(root + path.sep)) {
+  1379→    throw new BackupError("BAD_ID", "معرف غير صالح", 400);
+  1380→  }
+  1381→  return { fileName: `${id}.zip`, buf: readFileSync(artifact.zipPath), sizeBytes: artifact.sizeBytes };
+  1382→}
+  1383→

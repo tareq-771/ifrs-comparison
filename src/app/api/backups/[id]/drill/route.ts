@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { requireManageBackups } from "@/lib/session";
 import { runRestoreDrillById, BackupError } from "@/lib/backup-server";
+import { guardWrite } from "@/lib/api-guard";
 
 function authError(error: unknown) {
   const msg = error instanceof Error ? error.message : "خطأ";
@@ -13,22 +14,24 @@ function authError(error: unknown) {
 }
 
 export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await requireManageBackups();
-    const { id } = await ctx.params;
-    const report = await runRestoreDrillById(id, { id: user.id || null, username: user.username });
-    return NextResponse.json(report);
-  } catch (error) {
-    if (error instanceof BackupError) {
+  return guardWrite("/api/backups/[id]/drill", async () => {
+    try {
+      const user = await requireManageBackups();
+      const { id } = await ctx.params;
+      const report = await runRestoreDrillById(id, { id: user.id || null, username: user.username });
+      return NextResponse.json(report);
+    } catch (error) {
+      if (error instanceof BackupError) {
+        return NextResponse.json(
+          { error: error.message, code: error.code, ...(error.extra ?? {}) },
+          { status: error.httpStatus }
+        );
+      }
+      const { status, msg } = authError(error);
       return NextResponse.json(
-        { error: error.message, code: error.code, ...(error.extra ?? {}) },
-        { status: error.httpStatus }
+        { error: status === 500 ? "فشل الـ Drill: " + msg : msg },
+        { status }
       );
     }
-    const { status, msg } = authError(error);
-    return NextResponse.json(
-      { error: status === 500 ? "فشل الـ Drill: " + msg : msg },
-      { status }
-    );
-  }
+  });
 }

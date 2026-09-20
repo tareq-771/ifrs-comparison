@@ -4,6 +4,7 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SessionProvider } from "@/components/session-provider";
+import { MaintenanceBanner } from "@/components/maintenance-banner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -56,6 +57,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <SessionProvider>
+            <MaintenanceBanner />
             {children}
             <Toaster />
           </SessionProvider>

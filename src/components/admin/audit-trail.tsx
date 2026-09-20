@@ -224,12 +224,21 @@ export function AuditTrailTab() {
         <div>
           <CardTitle className="flex items-center gap-2 text-slate-800 dark:text-slate-100">
             <ScrollText className="size-4 text-emerald-600 dark:text-emerald-400" />
-            سجل التدقيق (Audit Trail)
+            سجل التدقيق التطبيقي (Application Audit Trail)
           </CardTitle>
           <CardDescription className="flex items-center gap-1.5">
             <ShieldCheck className="size-3 text-emerald-600 dark:text-emerald-400" />
             سجل رقابي للقراءة فقط — لا يمكن تعديله أو حذفه من النظام
           </CardDescription>
+          {/* Phase 4B.1 — التمييز الرقابي الإلزامي بين السجلين (قرار المستخدم) */}
+          <p className="mt-2 max-w-3xl rounded-md border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            هذا هو <strong>سجل التدقيق التطبيقي</strong> المخزّن داخل قاعدة البيانات. عند استعادة قاعدة
+            التشغيل إلى نسخة أقدم، يرجع هذا السجل تاريخيًا مع القاعدة نفسها — وهذا متوقع وليس خطأ.
+            أحداث الاستعادة والتشغيل الحاكمية تُسجل حصرًا في{" "}
+            <strong>سجل عمليات الاسترجاع (Recovery Operations Log)</strong> الخارجي الموجود في تبويب
+            «النسخ الاحتياطي» — ولا يُعتقد أبدًا أن هذا السجل وحده يمثل أحداث الاستعادة التي وقعت بعد
+            تاريخ النسخة المستعادة.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button
