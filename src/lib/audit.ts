@@ -92,7 +92,17 @@ export function serializeAuditField(value: unknown): string {
 /*  IP — best-effort                                                        */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-/** استخراج IP العميل — موثوق خلف بوابة Caddy التي تضبط X-Forwarded-For. */
+/**
+ * استخراج IP العميل — نظام الثقة (5B.2):
+ *   • البوابة الوحيدة (Caddy) تستبدل X-Forwarded-For بقيمة الاتصال المباشر
+ *     {remote_host} (header_up استبدال لا إلحاق — deploy/Caddyfile.windows) —
+ *     فأي XFF يصل التطبيق صدر عن البوابة حصرًا، وأي XFF ادّعاه العميل يُمسح عندها.
+ *   • دفاع إضافي بالعمق (5B.2): يُعتمد آخر عنصر (rightmost) لا الأول — الأول هو
+ *     ما يدّعيه العميل ويمكن انتحاله لو سُمح يومًا بتمرير XFF عبر وسيط؛ الأخير
+ *     هو ما ألحقه آخر وسيط موثوق فعليًا (اتجاه الإلحاق القياسي لـXFF).
+ *   • x-real-ip احتياط ثانوي (تضبطه البوابة أيضًا بـ{remote_host}).
+ *   • الوصول المباشر loopback بلا بوابة ⇒ null غالبًا (يُسجل فارغًا — لا ادعاء IP).
+ */
 export function getClientIp(req: Request | { headers: unknown } | null | undefined): string | null {
   try {
     const h = req?.headers as
@@ -109,8 +119,13 @@ export function getClientIp(req: Request | { headers: unknown } | null | undefin
     };
     const xff = get("x-forwarded-for");
     if (xff) {
-      const first = xff.split(",")[0]?.trim();
-      if (first) return first.slice(0, 64);
+      // 5B.2: آخر عنصر = ما ألحقه آخر وسيط موثوق (الأول قابل للانتحال من العميل)
+      const parts = xff
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const last = parts[parts.length - 1];
+      if (last) return last.slice(0, 64);
     }
     const real = get("x-real-ip");
     if (real) return real.slice(0, 64);

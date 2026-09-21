@@ -35,11 +35,15 @@
    robocopy ".next\standalone" "C:\Apps\ifrs-comparison\releases\$TAG" /E /NFL /NDL /NJH /NJS
    # ACL: ifrs-svc = Read+Execute على شجرة releases (لا كتابة إطلاقًا)
    ```
-6. **Prisma migrate deploy** (إن وُجدت ترحيلات جديدة):
+6. **Prisma migrate deploy — عبر بوابة deploy-migrate الحتمية (5B.2)**:
    ```powershell
-   $env:DATABASE_URL = (Get-Content 'D:\IFRS-Data\config\ifrs.env' | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=',''
-   & "C:\Apps\ifrs-comparison\tools\prisma-cli\node_modules\.bin\prisma.cmd" migrate deploy
-   # فشل ⇒ لا تبديل — الخدمة القديمة تستمر (ترحيل SQLite = معاملة)
+   # من شجرة المصدر عند الـTAG المعتمد (نفس مجلد الخطوة 4) — Node حصرًا:
+   node scripts\deploy-migrate.mjs --env-file D:\IFRS-Data\config\ifrs.env --dry-run   # راجع الخطة أولًا
+   node scripts\deploy-migrate.mjs --env-file D:\IFRS-Data\config\ifrs.env             # تنفيذ
+   # البوابة تفرض: migrate deploy حصرًا (لا db push)، DATABASE_URL ملف موجود خارج
+   # شجرة العمل، Prisma CLI من PRISMA_CLI_HOME (Layer B) — فشل أي شرط ⇒ exit 1.
+   # فشل ⇒ لا تبديل — الخدمة القديمة تستمر (ترحيل SQLite = معاملة).
+   # التحقق النهائي للمخطط = preflight الإقلاع مقابل الثابت المثبت (canonical fingerprint).
    ```
 7. **التبديل + إعادة التشغيل** (الخدمة موقفة لحظيًا — لا نشر فوق إصدار جارٍ):
    ```powershell

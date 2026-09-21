@@ -600,3 +600,26 @@ Stage Summary:
 - Phase 5B.1 مكتملة: كل فجوات Windows المحصورة (C-1..C-12) عولجت في الكود/القوالب دون أي تنفيذ على المضيف الحقيقي
 - الأدلة: 67/67 + 73/73 + 27/27 + انحدارات 4B.3/4B.1 أخضر؛ artifact إنتاجي نقي + RELEASE_META أساس فحص rollback
 - One commit (5B.1) — بلا push بانتظار مراجعة المستخدم؛ Graceful shutdown على Windows وACLs وDNS/DHCP وغيرها مؤجلة إلى 5B.2/5B.4 كما وثّق التقرير
+
+---
+Task ID: 5B.2
+Agent: main (Z.ai Code)
+Task: Phase 5B.2 — Host-Prep Readiness Gate: معالجة متابعات 5B.1 العشرة (تصنيف شجرة العمل، epoch، أسرار، مسارات، خدمة، migrations، recovery، RPO، محرك استعادة، health) + تجهيز أدوات/قوالب/اختبارات التهيئة داخل المستودع حصرًا — صفر تنفيذ على مضيف Windows
+
+Work Log:
+- GitHub Publication Gate للـ42896ad: أُغلق PASS من Windows (bundle تزايدي 58,541B SHA-256 0e0f61d7… — f8c0ab6..42896ad fast-forward — divergence 0 0) — مجلد download/ صار gitignored
+- تصنيف شجرة العمل: upload/route.ts = debris (مرجع حي في backup-manager.tsx) ⇒ استعادة من HEAD؛ tsconfig (+.next-prod/types) = تغيير لازم ضُم عمدًا؛ dev.pid + db/custom.db* = artifacts لا تُرسل
+- أمن audit: getClientIp ⇒ آخر عنصر XFF (rightmost anti-spoof) مع نظام ثقة موثق (Caddy يستبدل بـ{remote_host})
+- prod-server.mjs: فرض loopback (افتراضي 127.0.0.1؛ غير loopback ⇒ FATAL إلا IFRS_BIND_ALLOW_NON_LOOPBACK=1) + PORT 3000 + إشارات إنهاء best-effort
+- scripts/env-file.mjs محلل صارم مشترك + scripts/deploy-migrate.mjs بوابة ترحيل حتمية (migrate deploy حصرًا، لا إنشاء صامت، رفض داخل شجرة العمل، PRISMA_CLI_HOME صارم بلا fallback، dry-run) — وصلت بالrunbook step 6 وassemble-release ينسخ المحلل
+- health: محاولة إصلاح typo سجل حُجبت بيئيًا (البيئة تستعيد الملف حصرًا إلى HEAD خلال <3 ثوانٍ — مؤكد باختبار مزدوج؛ تجميلي حصرًا — مؤجل 5B.3 كـR-6) — الجسم محدود كما هو
+- مصفوفة scripts/phase5b2-host-prep.ts: 92/92 (تشغيلان) — A وحدات/قوالب 34، B مصفوفة prod-server 7، C بوابة migrate 9، D standalone حقيقي .next-prod 36 (بناء release=42896ad، fingerprint csha256:bffa026102…، migrations=1)
+- إثباتات D: ربط فعلي 127.0.0.1 (ss عمود Local)؛ أسرار مفقود/قصير/محرك غائب ⇒ exit 1 بلا قيمة سرية؛ epoch مفقود على قاعدة مهيأة ⇒ unhealthy 503 مستقر + EPOCH_STATE_LOST + بلا إنشاء صامت + سطر Ready واحد؛ تالف ⇒ EPOCH_STATE_CORRUPT دون لمس المحتوى؛ قاعدة جديدة ⇒ bootstrap 1؛ --epoch-recover يرفض فوق ملف سليم وبعد فقد فعلي يكتب unix-seconds مع MANUAL_RECOVERY_COMPLETED/unix_time_seconds في السجل الخارجي وJWT القديمة ماتت فعليًا (توكن epoch=1 ⇒ user=null)؛ SWAPPING مزروعة ⇒ recovery_required 503 + قراءة locked + صمود عبر restart كامل + عودة فقط بعد --verify-and-clear؛ نسخة API 201 VALIDATED بZIP مدخلين حصرًا وبلا أي سر (فحص نصي)
+- بيئة الاختبار معزولة كليًا: var/test/5b2/ + قواعد من migrations حصرًا + منافذ 31180-31199 — صفر لمس لقاعدة التشغيل/.env/var الحية
+- docs/phase5b2-report.md — تصنيف مختبر فعليًا مقابل design-only + residual risks (R-1: lost epoch invalidation hardening مفتوح — unix-seconds آلية عملية لا ضمان رياضي مطلق، بلا تغيير كود وفق التوجيه؛ R-2: RPO غير محقق حتى 5B.5)
+- لم يُعدَّل: accounts.ts، matching engine، Workflow، schema.prisma — لا تثبيت على أي مضيف
+
+Stage Summary:
+- بوابة 5B.2 اجتازت: كل متابعات 5B.1 العشر معالجة بأدلة — القوالب والأدوات جاهزة للتنفيذ اليدوي على Windows (5B.3 تهيئة مضيف/بيانات، 5B.4 LAN+متانة+restart، 5B.5 نسخ مجدولة)
+- ما زال design-only/مؤجلًا للمضيف: WinSW إيقاف رشيق، Junctions/ACLs، Caddy XDG، اسم المضيف/القناع، مسار D:\ الفعلي — موثقة R-3
+- commit واحد لـ5B.2 بلا push (لا مصادقة GitHub في Z.ai) — بانتظار مراجعة المستخدم قبل أي خطوة

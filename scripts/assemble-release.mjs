@@ -45,7 +45,9 @@ if (existsSync(publicSrc)) {
 }
 
 // 2) مُشغّل الإنتاج (env-file loader + chdir إلى جذر الإصدار)
+//    5B.2: env-file.mjs (المحلل المشترك) يُنسخ معه — prod-server يستورده نسبيًا
 cpSync(path.join(ROOT, "scripts", "prod-server.mjs"), path.join(STANDALONE, "prod-server.mjs"));
+cpSync(path.join(ROOT, "scripts", "env-file.mjs"), path.join(STANDALONE, "env-file.mjs"));
 
 // 3) تطهير إلزامي — لا بيانات/تهيئة داخل الإصدار (قرار 5A المثبت — 5B.1 يضيف التحقق)
 const FORBIDDEN = ["db", "var", "tool-results", "test"];

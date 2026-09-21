@@ -64,3 +64,6 @@ drill-*.json
 # Phase 5A — production artifact build (isolated distDir) + release simulation scaffold
 /.next-prod/
 /.p5a/
+
+# Phase 5B.2 — delivery artifacts (bundles للنقل اليدوي) لا تدخل Git
+/download/
