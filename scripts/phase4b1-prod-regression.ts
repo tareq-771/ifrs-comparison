@@ -68,6 +68,21 @@ async function main() {
   const loginOk = await s.login("admin", "admin123");
   line("1) دخول المدير (JWT يحمل epoch الآن)", loginOk);
 
+  // 1ب) منح restoreDatabase صراحةً — توافق 4B.3: بوابة الصلاحية الصريحة تسبق
+  // بوابة المحرك (403 قبل 409)، والاختبار 5 يفحص حالة المحرك لا الصلاحية.
+  const meId = (await s.whoami())?.id;
+  const grant = await s.api(`/api/users/${meId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      permissions: {
+        view: true, add: true, edit: true, delete: true, groups: true, export: true,
+        settings: true, manageUsers: true, manageBackups: true, restoreDatabase: true,
+      },
+    }),
+  });
+  line("1ب) منح restoreDatabase صراحةً (توافق 4B.3)", grant.status === 200, String(grant.status));
+  line("1ج) جلسة جديدة بعد المنح (تحديث توكن الصلاحيات)", await s.login("admin", "admin123"));
+
   // 2) مجموعة + تقرير اختباريان
   const rnd = crypto.randomUUID().slice(0, 6);
   const grp = await s.api<{ id: string }>("/api/groups", { method: "POST", body: JSON.stringify({ name: `مجموعة انحدار 4B.1 ${rnd}` }) });
@@ -87,8 +102,15 @@ async function main() {
   line("3ب) قراءة التقرير المعدّل", repRead.status === 200 && String(repRead.body.name).includes("معدّل"));
 
   // 4) نسخة احتياطية + Drill (4A ما زالت تعمل)
-  const bk = await s.api<{ backupId: string; level: string }>("/api/backups", { method: "POST" });
-  line("4أ) إنشاء نسخة (VALIDATED تلقائيًا)", bk.status === 201 && bk.body.level === "VALIDATED", `${bk.body?.backupId ?? ""} ${bk.body?.level ?? ""}`);
+  // 429-retry (توافق مع أسلوب المصفوفة — تهدئة النسخ بين المجموعات لا فشل حقيقي)
+  let bk = await s.api<{ backupId: string; level: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+  let bkTries = 0;
+  while (bk.status === 429 && bkTries < 8) {
+    bkTries++;
+    await new Promise((r) => setTimeout(r, Math.min(Number(bk.body?.retryAfterMs ?? 60_000) + 500, 65_000)));
+    bk = await s.api<{ backupId: string; level: string; retryAfterMs?: number }>("/api/backups", { method: "POST" });
+  }
+  line("4أ) إنشاء نسخة (VALIDATED تلقائيًا)", bk.status === 201 && bk.body.level === "VALIDATED", `${bk.body?.backupId ?? ""} ${bk.body?.level ?? ""}${bkTries ? ` بعد ${bkTries} انتظار تهدئة` : ""}`);
   if (bk.status === 201) {
     const drill = await s.api<{ level: string }>(`/api/backups/${bk.body.backupId}/drill`, { method: "POST" });
     line("4ب) Drill ⇒ RESTORE_VERIFIED", drill.status === 200 && drill.body.level === "RESTORE_VERIFIED");

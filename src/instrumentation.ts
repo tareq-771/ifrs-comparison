@@ -13,7 +13,12 @@
 //    وليس restart loop أو NORMAL تلقائي.»
 //
 // سلوك الإقلاع (Node runtime حصرًا):
-//   1. [كل الأوضاع] تهيئة Session Epoch عند الإقلاع فقط (مفقود ⇒ 1 ذريًا).
+//   1. [كل الأوضاع] تهيئة Session Epoch عند الإقلاع فقط:
+//      • dev: مفقود ⇒ 1 ذريًا (سلوك 4B.1 كما هو).
+//      • production: مفقود + قاعدة مهيأة (مستخدمون) ⇒ فشل مغلق — لا إنشاء
+//        صمت إطلاقًا (قرار المستخدم 5B.1 §4): unhealthy(epoch) + حدث
+//        EPOCH_STATE_LOST + مسار استرداد المشغّل الموثق (--epoch-recover).
+//        مفقود + قاعدة غير مهيأة (إقلاع أول حقيقي/بعد migrate deploy) ⇒ 1 ذريًا.
 //   2. [كل الأوضاع] كشف مقاطعة عملية سابقة ⇒ RECOVERY_REQUIRED (التطبيق يظل حيًا
 //      في restricted recovery mode — الحراس يمنعون القراءة والكتابة — لا exit،
 //      لا حلقة إعادة تشغيل، ولا عودة NORMAL تلقائيًا).
@@ -23,7 +28,7 @@
 //        b. ترويسة ملف القاعدة (SQLite format 3) + PRAGMA integrity_check.
 //        c. canonical schema fingerprint مقابل الثابت المثبت (4A.1).
 //        d. epoch قابل للقراءة + حالة الصيانة المرصودة ⇒ setBootStatus لـ /api/health.
-//      إخفاق (b/c/epoch) لا يقتل العملية — يرفع health إلى unhealthy مع سبب
+//      إخفاق (b/c) لا يقتل العملية — يرفع health إلى unhealthy مع سبب
 //      رمزي (قاعدة تالفة مع خادم حي أفضل من حلقة إقلاع تمحو التشخيص).
 //
 // ملاحظة 1: حتى لو لم يعمل هذا الملف لأي سبب، حراس الصيانة يقرؤون ملف الحالة
@@ -41,12 +46,14 @@ export async function register(): Promise<void> {
       { existsSync, openSync, readSync, closeSync },
       { setBootStatus },
       { ensureEpochBootstrapped, readSessionEpoch },
+      { probeDbInitialized },
       maintenance,
       { appendRecoveryEvent },
     ] = await Promise.all([
       import("node:fs"),
       import("@/lib/boot-status"),
       import("@/lib/session-epoch"),
+      import("@/lib/db-probe"),
       import("@/lib/maintenance"),
       import("@/lib/recovery-log"),
     ]);
@@ -69,7 +76,42 @@ export async function register(): Promise<void> {
     };
 
     // 1) تهيئة epoch عند الإقلاع فقط
-    const boot = ensureEpochBootstrapped();
+    let boot = { created: false, available: false };
+    let epochFileExists = existsSync(await import("@/lib/backup-config").then((m) => m.resolveSessionEpochFilePath()));
+    if (process.env.NODE_ENV === "production" && !epochFileExists) {
+      // 5B.1: production + ملف مفقود ⇒ قرار حسب حالة القاعدة (fail-closed عند المهيأة)
+      const { resolveDatabaseFilePath } = await import("@/lib/backup-config");
+      const initialized = await probeDbInitialized(resolveDatabaseFilePath());
+      if (initialized) {
+        boot = { created: false, available: false };
+        console.error(
+          "[instrumentation] CRITICAL: session-epoch مفقود على قاعدة إنتاج مهيأة — لا إنشاء صمت (fail-closed) — يلزم استرداد المشغّل الموثق (--epoch-recover)"
+        );
+        await appendRecoveryEvent({
+          operationId: "op-startup-epoch-lost",
+          event: "EPOCH_STATE_LOST",
+          actor: { id: null, username: "system:startup" },
+          backupId: null,
+          result: "failure",
+          details: { reason: "epoch_file_missing_with_initialized_production_db" },
+        });
+      } else {
+        boot = ensureEpochBootstrapped(); // إقلاع أول حقيقي: قاعدة جديدة بلا مستخدمين
+      }
+    } else {
+      boot = ensureEpochBootstrapped(); // dev كما هو؛ أو ملف موجود (لا إنشاء)
+      if (process.env.NODE_ENV === "production" && boot.available === false && epochFileExists) {
+        // ملف موجود لكن غير قابل للقراءة (تالف) — فشل مغلق موثق
+        await appendRecoveryEvent({
+          operationId: "op-startup-epoch-corrupt",
+          event: "EPOCH_STATE_CORRUPT",
+          actor: { id: null, username: "system:startup" },
+          backupId: null,
+          result: "failure",
+          details: { reason: "epoch_file_corrupt" },
+        });
+      }
+    }
     const epochOk = readSessionEpoch() !== null;
     console.log(
       `[instrumentation] session-epoch bootstrap: created=${boot.created} available=${epochOk}`

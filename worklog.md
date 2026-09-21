@@ -552,3 +552,51 @@ Work Log:
 Stage Summary:
 - **بوابة 5A اجتازت**: fail-closed مثبت بدورات إقلاع حقيقية (مفقود/ضعيف⇒موت، صالح⇒عمل، تدوير⇒إبطال جلسات بلا صمت)، health contract رباعي، RECOVERY_REQUIRED restricted mode بلا حلقة إقلاع، الفصل البنيوي مثبت بالمحاكاة (حذف releases/بناء ⇒ sha256 بيانات متطابقة)، Code rollback ≠ DB rollback مثبت بمؤشرات بيانات، artifact Node standalone يعمل على 127.0.0.1:3000 بpreflight كامل
 - **توقف كامل: قبل 5B — بانتظار موافقة المستخدم**
+
+---
+Task ID: 5B-REC-GATE (GitHub Reconciliation Gate — تسجيل التصحيح المعتمد)
+Agent: main (Z.ai Code)
+Task: اعتماد نتيجة بوابة مطابقة GitHub مع تصحيح منهجية الإثبات حسب قرار المستخدم
+
+Work Log:
+- Source Preservation Gate = **PASS — بناءً على التحقق المستقل Windows/GitHub** (وليس قياسًا مباشرًا من الصندوق)
+- التحقق المباشر عن بعد من بيئة Z.ai: **UNAVAILABLE** — لا GitHub authentication داخل الصندوق؛ fetch فشل (`could not read Username`, rc=128) وتوقف فورًا بلا أي التفاف
+- توثيق صريح: **لم يُقَس master...origin/master = 0 0 داخل Z.ai** — لم يُنشأ origin/master محليًا بعد فشل fetch (المرجع غير موجود محليًا)
+- الدليل الخارجي المعتمد (من المستخدم):
+  - Git Bundle SHA-256: 1b075d501bce0337b5bdcaa53a521d72929341944ca35af4081ddc0a9e9ea894
+  - Bundle tip: f8c0ab6548aa23d435282a70369554dee0c0bf40
+  - Complete history: 14 commits
+  - Windows push إلى https://github.com/tareq-771/ifrs-comparison.git نجح
+  - Windows HEAD = f8c0ab6548aa23d435282a70369554dee0c0bf40 = Windows origin/master
+  - push ثانٍ: "Everything up-to-date"
+- الجانب المحلي في Z.ai تحقق مباشرة: HEAD = master = f8c0ab6548aa23d435282a70369554dee0c0bf40، 14 commits، staging فارغ
+- العملية قراءة فقط عدا إضافة origin (موجود أصلًا بالرابط المعتمد فبقي كما هو)؛ لا push/mirror/all، لا لمس stashes، لا تنظيف
+
+Stage Summary:
+- **GitHub (https://github.com/tareq-771/ifrs-comparison.git) = النسخة الخارجية الدائمة المعتمدة للمصدر عند هذه النقطة**
+- الخطوة التالية المعتمدة: Phase 5B Host Readiness / Discovery Gate (قراءة فقط) — لا تنفيذ 5B قبل موافقة صريحة
+
+---
+Task ID: 5B.1
+Agent: main (Z.ai Code)
+Task: Phase 5B.1 — Windows production compatibility code changes + tests + Windows deploy templates (design-only constraints per user approval; no host execution)
+
+Work Log:
+- Source Baseline Gate: HEAD f8c0ab6 / master / origin مطابق؛ جرد شجرة العمل (62 mode-only + db runtime + tsconfig +2 + worklog gate record + upload route restore من HEAD)؛ core.fileMode=false محليًا؛ لا clean/reset/rebase/merge؛ 11 stash سليمة
+- C-1/C-2: helper مركزي src/lib/prisma-cli.ts — استدعاء Prisma CLI عبر process.execPath حصرًا (بلا bunx/npx/shell/PATH/.cmd)، دقة من PRISMA_CLI_HOME أو cwd node_modules، نتيجة مهيكلة حتمية؛ وُصل في restore-server وrestore-operator
+- §7: src/lib/sqlite-url.ts — toSqliteFileUrl موحّد (Windows drive/مسافات/Linux/UNC-مرفوض/نسبي-مرفوض)؛ استُبدل كل `file:${…}` في backup-server وrestore-server وrestore-operator
+- §8: fs-retry.ts (withTransientRetry/Sync — EPERM/EBUSY حصرًا) في rename/rm الswap؛ WAL/SHM cleanup أصبح fail-closed مع نقطة حقن WAL_CLEANUP (فشل ⇒ ABORTED قبل التبديل — مُثبت اختباريًا)
+- §4: epoch fail-closed في الإنتاج (instrumentation + probeDbInitialized في db-probe.ts منفصلة عن رسم auth) — مفقود/تالف على قاعدة مهيأة ⇒ unhealthy بلا إنشاء صمت + حدثا EPOCH_STATE_LOST/CORRUPT؛ restore-operator --epoch-recover (unix-seconds حصرًا — بلا قيم يدوية، حد أمني موثق)
+- §5: setup بلا fallback admin/admin123 + سياسة كلمة مرور (password-policy.ts) + بوابة SETUP_BOOTSTRAP_ENABLED في الإنتاج + mutex+recount+unique ضد السباق + حذف seed-admin.ts (dead code)
+- §6: health بلا version/reason تفصيلي — {status, app, serverTime} حصرًا؛ unhealthy بلا سبب عام (للسجل حصرًا)؛ maintenance=503
+- §9/§3/§19: build = next build + scripts/assemble-release.mjs (Node، بلا cp/tee، تطهير إلزامي db/var/.env/tool-results/test + RELEASE_META.json: sha/fingerprint/migrations)؛ start = node scripts/prod-server.mjs (تحميل IFRS_ENV_FILE صارم + NODE_ENV=production + cwd جذر الإصدار)؛ فصل Layer A runtime / Layer B أدوات Prisma CLI (لا نسخ node_modules)
+- §10: 9 قوالب Windows في deploy/ (env example، WinSW×2، Caddyfile.windows، firewall ps1 يرفض placeholders، host preflight ps1، runbooks deploy/rollback/bootstrap) — placeholders فقط بلا أسرار
+- §20: suite جديدة scripts/phase5b1-windows-compat.ts (67 فحصًا: وحدات + خادم dev معزول + إنتاج standalone حقيقي .next-prod) — 67/67
+- انحدار: 4B.1 harness 73/73 (بعد توافق منح restoreDatabase)، 4B.1 prod-regression green (منح + 429 retry)، 4B.3 matrix+regression green (بعد sweep حتمي u4b3-* وإعادة admin الأصلية)، 4B.2 full recovery 27/27 (استعادتان حقيقيتان عبر المحرك مع helpers الجديدة)
+- ملاحظة بيئة: إعادة تشغيل dev في Z.ai بدون NEXTAUTH_SECRET تقتل الجلسات عبر المسارات (اشتقاق لكل chunk) — المجموعات تعمل بسر اختبار صريح؛ الإنتاج يفرض سرًا fail-closed عبر preflight
+- accounts.ts: صفر تغيير (تجميد محرك المطابقة — التزام §21)
+
+Stage Summary:
+- Phase 5B.1 مكتملة: كل فجوات Windows المحصورة (C-1..C-12) عولجت في الكود/القوالب دون أي تنفيذ على المضيف الحقيقي
+- الأدلة: 67/67 + 73/73 + 27/27 + انحدارات 4B.3/4B.1 أخضر؛ artifact إنتاجي نقي + RELEASE_META أساس فحص rollback
+- One commit (5B.1) — بلا push بانتظار مراجعة المستخدم؛ Graceful shutdown على Windows وACLs وDNS/DHCP وغيرها مؤجلة إلى 5B.2/5B.4 كما وثّق التقرير

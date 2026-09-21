@@ -29,10 +29,12 @@
 
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 
+import { runPrismaCli } from "@/lib/prisma-cli";
+import { toSqliteFileUrl } from "@/lib/sqlite-url";
+import { withTransientRetry, withTransientRetrySync } from "@/lib/fs-retry";
 import { db as liveDb, reconnectDb } from "@/lib/db";
 import {
   MAINTENANCE_READ_DRAIN_MS,
@@ -347,23 +349,26 @@ async function runPostVerification(args: {
     return checks;
   }
 
-  // 4) prisma migrate status (عملية فرعية — بلا HTTP)
+  // 4) prisma migrate status (عملية فرعية عبر Node نفسه — Phase 5B.1:
+  //    بلا bunx/npx/shell/PATH lookup — helper مركزي platform-neutral)
   try {
-    const res = spawnSync("bunx", ["prisma", "migrate", "status"], {
+    const res = runPrismaCli({
+      args: ["migrate", "status"],
       cwd: process.cwd(),
-      env: { ...process.env, DATABASE_URL: `file:${dbPath}` },
-      encoding: "utf8",
-      timeout: 30_000,
+      databaseUrl: toSqliteFileUrl(dbPath),
+      timeoutMs: 30_000,
     });
-    const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+    const out = `${res.stdout}${res.stderr}`;
     const upToDate = /up to date/i.test(out) || /Database schema is up to date/i.test(out);
-    const ok = res.status === 0 && upToDate;
+    const ok = res.ok && upToDate;
     if (
       !t(
         "prisma migrate status — المخطط محدّث",
         "MIGRATE_STATUS_OK",
         ok,
-        upToDate ? "up to date" : out.slice(0, 200),
+        !res.ok && res.code === "PRISMA_CLI_UNRESOLVED"
+          ? "PRISMA_CLI_UNRESOLVED — أدوات النشر (Layer B) غير متاحة (راجع PRISMA_CLI_HOME)"
+          : upToDate ? "up to date" : out.slice(0, 200),
         `${label}_MIGRATE`
       )
     ) {
@@ -448,7 +453,7 @@ async function checkpointAndRemoveWal(dbPath: string): Promise<void> {
     // نقطة تفتيش آمنة عبر اتصال قصير — كل بيانات WAL تُدمج في الملف الرئيسي
     let probe: PrismaClient | null = null;
     try {
-      probe = new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } }, log: [] });
+      probe = new PrismaClient({ datasources: { db: { url: toSqliteFileUrl(dbPath) } }, log: [] });
       await probe.$queryRawUnsafe(`PRAGMA wal_checkpoint(TRUNCATE)`);
       await probe.$disconnect();
       probe = null;
@@ -460,12 +465,36 @@ async function checkpointAndRemoveWal(dbPath: string): Promise<void> {
       }
     }
   }
-  // بعد التفتيش/الإغلاق النظيف: أي -wal/-shm متبقية فارغة وتُزال بأمان
+  // Phase 5B.1 (نص المستخدم §8): إزالة الـsidecars بعد التفتيش مع retry
+  // محدود للأكواد العابرة (EPERM/EBUSY) — وعدم القدرة على إزالة sidecar خطير
+  // ⇒ فشل مغلق (رمي) لا متابعة صامتة: بقاء WAL قديمة بجانب قاعدة جديدة
+  // غير مثبت أمانًا للإنتاج، والمسار هنا لا يزال قبل التبديل (إلغاء نظيف).
+  // نقطة حقن اختبارية: WAL_CLEANUP (فشل محقون — بيئة معزولة حصرًا).
+  if (shouldFail("WAL_CLEANUP")) {
+    throw new RestoreError("WAL_CLEANUP_FAILED", "فشل محقون في تنظيف WAL/SHM قبل التبديل (اختبار معزول)", 500);
+  }
   for (const p of [walPath, shmPath]) {
     try {
-      if (existsSync(p)) rmSync(p, { force: true });
-    } catch {
-      /* ignore */
+      if (existsSync(p)) {
+        await withTransientRetry(() => rmSync(p, { force: true }), {
+          attempts: 3,
+          delayMs: 200,
+        });
+      }
+    } catch (e) {
+      throw new RestoreError(
+        "WAL_CLEANUP_FAILED",
+        "تعذر إزالة ملف WAL/SHM للقاعدة الحالية قبل التبديل — إلغاء مغلق قبل لمس القاعدة",
+        500
+      );
+    }
+    // تحقق نهائي حتمي: الsidecar لم يعد موجودًا — وإلا فشل مغلق
+    if (existsSync(p)) {
+      throw new RestoreError(
+        "WAL_CLEANUP_FAILED",
+        "ملف WAL/SHM ما زال موجودًا بعد محاولات الإزالة — إلغاء مغلق قبل التبديل",
+        500
+      );
     }
   }
 }
@@ -484,13 +513,15 @@ function atomicSwapFiles(args: { dbPath: string; candidatePath: string; replaced
   if (!assertSameFilesystem(candidatePath, dbPath)) {
     throw new RestoreError("CROSS_FILESYSTEM", "المرشحة ليست في نفس filesystem القاعدة — يجب staging داخل مجلد القاعدة", 500);
   }
-  renameSync(dbPath, replacedPath); // القديمة جانبًا (نفس fs — ذري)
+  // Phase 5B.1: rename مع retry محدود للأكواد العابرة (EPERM/EBUSY — مقابض AV
+  // لحظية على Windows). الخطأ الدائم يُرفع فورًا كما هو — بلا إخفاء.
+  withTransientRetrySync(() => renameSync(dbPath, replacedPath)); // القديمة جانبًا (نفس fs — ذري)
   try {
-    renameSync(candidatePath, dbPath); // المرشحة مكانها (نفس fs — ذري)
+    withTransientRetrySync(() => renameSync(candidatePath, dbPath)); // المرشحة مكانها (نفس fs — ذري)
   } catch (e) {
     // إعادة الترتيب: القديمة تعود مكانها — القاعدة كما كانت حرفيًا
     try {
-      renameSync(replacedPath, dbPath);
+      withTransientRetrySync(() => renameSync(replacedPath, dbPath));
     } catch {
       /* لا شيء أفضل — يُكتشف في post-verify أو crash recovery */
     }

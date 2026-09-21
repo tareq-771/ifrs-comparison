@@ -1,0 +1,44 @@
+<!--
+  Phase 5B.1 — قالب خدمة Windows لـCaddy (WinSW 2.x).
+  artifact داخل Git فقط — التثبيت في 5B.2. Caddy رابط LAN الوحيد لهذا النظام
+  (443 فقط — لا listener على 80 إطلاقًا؛ 80 ملك HTTP.sys/SSRS محصّن معماريًا).
+
+  ملاحظة 5B.4: التحقق من احترام Caddy لـXDG_DATA_HOME على Windows (موقع CA
+  الداخلي الدائم) يُثبت على المضيف الحقيقي — القالب يضبطها احتياطًا.
+-->
+<service>
+  <id>ifrs-caddy</id>
+  <name>IFRS Reverse Proxy (Caddy)</name>
+  <description>Caddy HTTPS reverse proxy for IFRS comparison tool (443 only, internal CA)</description>
+
+  <executable>C:\Apps\ifrs-comparison\bin\caddy.exe</executable>
+  <arguments>run --config "C:\Apps\ifrs-comparison\config\Caddyfile.windows" --adapter caddyfile</arguments>
+  <workingdirectory>C:\Apps\ifrs-comparison\bin</workingdirectory>
+
+  <!-- موقع دائم لبيانات Caddy: CA الداخلي (root/leaf) + state — خارج releases -->
+  <env name="XDG_DATA_HOME" value="D:\IFRS-Data\caddy\data"/>
+  <env name="XDG_CONFIG_HOME" value="D:\IFRS-Data\caddy\config"/>
+
+  <startmode>Automatic</startmode>
+  <delayedautostart>false</delayedautostart>
+
+  <onfailure action="RESTART" delay="10 sec"/>
+  <onfailure action="RESTART" delay="30 sec"/>
+  <onfailure action="NONE" delay="1 sec"/>
+  <resetfailure>10 min</resetfailure>
+
+  <stoptimeout>15 sec</stoptimeout>
+
+  <logpath>D:\IFRS-Data\logs\winsw\ifrs-caddy</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <serviceaccount>
+    <domain>.</domain>
+    <user>ifrs-svc</user>
+    <password></password>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+</service>

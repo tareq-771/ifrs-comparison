@@ -1,23 +1,16 @@
-// Phase 5A — Health endpoint محدود المعلومات (لـ Caddy/systemd/المشغّل).
-//
-// العقد (نص المستخدم 5A):
-//   «/api/health محدود المعلومات بحالات healthy, maintenance,
-//    recovery_required, unhealthy — دون كشف معلومات حساسة أو بيانات مالية.»
-//
-// المنطق:
-//   • الحالة الحية تُقرأ عند كل طلب: حالة الصيانة + توفر epoch (قد تتغير بعد
-//     الإقلاع: RECOVERY_REQUIRED لاحقًا أو تطبيع يدوي).
-//   • نتائج preflight الإقلاع (config/قاعدة/مخطط) ثابتة للعملية — من boot-status.
-//   • HTTP: healthy=200 · maintenance=200 (مخطط، الخدمة تعمل) ·
-//     recovery_required=503 · unhealthy=503.
-//   • الجسم: {status, reason?, app, version, serverTime} — بلا epoch بقيمته،
-//     بلا مسارات، بلا operationId، بلا أي بيانات تطبيقية.
+// Phase 5A — Health endpoint محدود المعلومات (لـ Caddy/الخدمة/المشغّل).
+// Phase 5B.1 — تقليل الإفصاح النهائي (نص المستخدم §6):
+//   الجسم العام: {status, app, serverTime} حصرًا — بلا version، بلا paths،
+//   بلا DB counts، بلا أسماء مستخدمين، بلا schema fingerprint، بلا أسرار،
+//   بلا تفاصيل recovery. عند unhealthy (config/schema/epoch): لا سبب تفصيلي
+//   للعامة إطلاقًا — التفاصيل الرمزية في سجلات الخادم/الإدارة فقط (preflight
+//   يسجلها عند الإقلاع، والحراس يسجلون حالاتهم لاحقًا).
+// HTTP: healthy=200 · maintenance=503 · recovery_required=503 · unhealthy=503.
 
 import { NextResponse } from "next/server";
 import { maintenancePublicInfo } from "@/lib/maintenance";
 import { isEpochAvailable } from "@/lib/session-epoch";
 import { getBootStatus } from "@/lib/boot-status";
-import { appVersion } from "@/lib/backup-config";
 
 export const dynamic = "force-dynamic";
 
@@ -25,43 +18,38 @@ type HealthStatus = "healthy" | "maintenance" | "recovery_required" | "unhealthy
 
 export async function GET() {
   let status: HealthStatus = "healthy";
-  let reason: string | undefined;
 
   const boot = getBootStatus();
   const mInfo = maintenancePublicInfo();
   const epochAvailable = isEpochAvailable();
 
   // 1) حالة الصيانة الحية (الأسبقية العليا — قد تتغير بعد الإقلاع)
+  // 5B.1: بلا تفاصيل sub-state في الاستجابة — الرمز التفصيلي في سجلات الخادم
   if (mInfo.state === "RECOVERY_REQUIRED" || mInfo.stateFileStatus === "corrupt") {
     status = "recovery_required";
-    reason = "recovery_required";
   } else if (mInfo.state !== "NORMAL") {
     status = "maintenance";
-    reason = `maintenance:${mInfo.state}`;
   } else if (!epochAvailable) {
-    // fail-safe 4B.1: العدّاد غير قابل للقراءة ⇒ لا جلسات ولا كتابات — غير صحي
+    // fail-safe 4B.1: العدّاد غير قابل للقراءة — غير صحي (السبب للسجل حصرًا)
+    console.error("[health] unhealthy: epoch_unavailable (تفاصيل السجل فقط)");
     status = "unhealthy";
-    reason = "epoch_unavailable";
   } else if (boot && (boot.mode === "unhealthy" || boot.details.config === "fail")) {
-    // نتيجة preflight الإقلاع (تهيئة/قاعدة/مخطط)
+    // نتيجة preflight الإقلاع — السبب التفصيلي (boot_config/database/schema/epoch)
+    // في سجل الخادم عند الإقلاع حصرًا، لا في الاستجابة العامة
     status = "unhealthy";
-    reason = boot.unhealthyReason ?? "preflight_failed";
   } else if (boot && boot.mode === "recovery_required") {
     status = "recovery_required";
-    reason = "recovery_required";
   } else if (boot && boot.mode === "maintenance") {
     status = "maintenance";
-    reason = "maintenance_at_boot";
   }
 
+  // 5B.1: الجسم العام محدود — status/app/serverTime حصرًا، بلا reason عام
   const body: Record<string, unknown> = {
     status,
     app: "ifrs-comparison-tool",
-    version: appVersion(),
     serverTime: new Date().toISOString(),
   };
-  if (reason) body.reason = reason;
 
-  const httpStatus = status === "healthy" || status === "maintenance" ? 200 : 503;
+  const httpStatus = status === "healthy" ? 200 : 503;
   return NextResponse.json(body, { status: httpStatus });
 }

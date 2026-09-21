@@ -56,6 +56,7 @@ import {
 } from "@/lib/schema-fingerprint";
 import { inspectZipBuffer, readZipEntry, type ZipInspectFail } from "@/lib/zip-secure";
 import { appendRecoveryEvent, countRecoveryEvents } from "@/lib/recovery-log";
+import { toSqliteFileUrl } from "@/lib/sqlite-url";
 import { writeAuditSafe } from "@/lib/audit";
 import { AUDIT_ACTIONS, AUDIT_ENTITY_TYPES } from "@/lib/audit-actions";
 
@@ -80,7 +81,8 @@ export class BackupError extends Error {
 /* ──────────────────────────────────────────────────────────────────────── */
 
 function tempClientFor(dbPath: string): PrismaClient {
-  return new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } }, log: [] });
+  // Phase 5B.1 — file URL عبر helper مركزي (بلا concatenation) — دعم Windows paths
+  return new PrismaClient({ datasources: { db: { url: toSqliteFileUrl(dbPath) } }, log: [] });
 }
 
 async function hashFileStream(filePath: string): Promise<{ sha256: string; bytes: number }> {

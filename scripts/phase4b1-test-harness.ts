@@ -372,6 +372,21 @@ async function main(): Promise<void> {
   line("0ب) الإعداد الأولي (مدير)", setup.status === 201);
   line("0ج) دخول المدير", await s.login(ADMIN, PASS));
 
+  // Phase 4B.3 توافق: restoreDatabase صلاحية صريحة لا تُمنح بالدور — المصفوفة
+  // تختبر المحرك فيستلزم منح المفتاح صراحةً عبر المسار الموثق (نمط 4B.3/5B.1).
+  const meId = (await s.whoami())?.id;
+  const grant = await s.api(`/api/users/${meId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      permissions: {
+        view: true, add: true, edit: true, delete: true, groups: true, export: true,
+        settings: true, manageUsers: true, manageBackups: true, restoreDatabase: true,
+      },
+    }),
+  });
+  line("0د) منح restoreDatabase صراحةً (توافق 4B.3)", grant.status === 200, String(grant.status));
+  line("0هـ) جلسة جديدة بعد المنح (تحديث توكن الصلاحيات)", await s.login(ADMIN, PASS));
+
   // ── المجموعتان A وB ─────────────────────────────────────────────────────
   const datasetA = await createDataset(s, `DatasetA-${rnd}`, 1);
   const backupA = await createBackupAndDrill(s);

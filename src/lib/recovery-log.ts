@@ -56,7 +56,12 @@ export type RecoveryEvent =
   | "ROLLBACK_STARTED"
   | "ROLLBACK_COMPLETED"
   | "RECOVERY_REQUIRED"
-  | "MANUAL_RECOVERY_COMPLETED";
+  | "MANUAL_RECOVERY_COMPLETED"
+  // Phase 5B.1 — أحداث حالة Session Epoch الحرجة (fail-closed عند الإقلاع):
+  // ملف epoch مفقود على قاعدة إنتاج مهيأة (لا إنشاء صمت — يلزم استرداد مشغّل)
+  | "EPOCH_STATE_LOST"
+  // ملف epoch موجود لكن غير قابل للقراءة (تلف/نمط غير صالح) — فشل مغلق
+  | "EPOCH_STATE_CORRUPT";
 
 export const RECOVERY_EVENT_LABELS: Record<RecoveryEvent, string> = {
   BACKUP_STARTED: "بدء إنشاء نسخة",
@@ -85,6 +90,8 @@ export const RECOVERY_EVENT_LABELS: Record<RecoveryEvent, string> = {
   ROLLBACK_COMPLETED: "اكتمل التراجع بنجاح",
   RECOVERY_REQUIRED: "تدخل تشغيلي يدوي مطلوب — الخدمة مقفلة",
   MANUAL_RECOVERY_COMPLETED: "اكتمل الاسترداد اليدوي الموثق",
+  EPOCH_STATE_LOST: "ملف Session Epoch مفقود على قاعدة مهيأة — فشل مغلق، يلزم استرداد مشغّل",
+  EPOCH_STATE_CORRUPT: "ملف Session Epoch تالف/غير قابل للقراءة — فشل مغلق",
 };
 
 export type RecoveryResult = "success" | "failure" | "aborted" | "info";

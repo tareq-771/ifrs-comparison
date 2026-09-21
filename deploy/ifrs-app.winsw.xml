@@ -1,0 +1,62 @@
+<!--
+  Phase 5B.1 — قالب خدمة Windows لتطبيق IFRS (WinSW 2.x — بنية .NET Framework المدمجة).
+  artifact داخل Git فقط — التثبيت الفعلي في 5B.2 على المضيف بعد إنشاء المستخدم
+  ifrs-svc والمجلدات الدائمة وملف الأسرار D:\IFRS-Data\config\ifrs.env.
+
+  التصميم المعتمد (تقرير 5B-Windows §F):
+    • التشغيل: node prod-server.mjs (standalone إنتاجي — next dev محظور).
+      prod-server.mjs يحمّل الأسرار من IFRS_ENV_FILE — لا أسرار في سطر أوامر
+      ولا في هذا الـXML (ملف الـenv وحده يحملها بأذونات ACL صارمة).
+    • Restart محدود: onfailure تصاعدي ثم none — يكافئ StartLimitBurst ويمنع
+      حلقة إقلاع تمحو الدليل (RECOVERY_REQUIRED لا يخرج من العملية أصلًا).
+    • stoptimeout 30s: سلوك الإيقاف الرشيق (CTRL_BREAK → Node) **غير مثبت بعد** —
+      يثبت فعليًا على المضيف في 5B.4 (لا overclaim).
+
+  التثبيت المرجعي في 5B.2 (Runbook):
+    ifrs-app-service.exe install  (WinSW binary مُعاد تسميته، بجانب هذا الـXML)
+    sc.exe config ifrs-app start= auto
+-->
+<service>
+  <id>ifrs-app</id>
+  <name>IFRS Comparison Tool</name>
+  <description>IFRS comparison production service (Next.js standalone on Node, loopback-only)</description>
+
+  <executable>C:\Program Files\nodejs\node.exe</executable>
+  <arguments>prod-server.mjs</arguments>
+  <workingdirectory>C:\Apps\ifrs-comparison\current</workingdirectory>
+
+  <!-- ملف البيئة: المصدر الوحيد للأسرار (ACL: SYSTEM+Admins full, ifrs-svc read) -->
+  <env name="IFRS_ENV_FILE" value="D:\IFRS-Data\config\ifrs.env"/>
+  <!-- NODE_ENV يفرضه prod-server.mjs حصرًا (production) — لا يُضبط هنا -->
+
+  <startmode>Automatic</startmode>
+  <delayedautostart>false</delayedautostart>
+
+  <!-- restart محدود: تصاعدي ثم توقف — لا حلقة إقلاع تمحو التشخيص.
+       عداد الفشل يُصفَّر بعد 10 دقائق من الاستقرار. -->
+  <onfailure action="RESTART" delay="10 sec"/>
+  <onfailure action="RESTART" delay="30 sec"/>
+  <onfailure action="NONE" delay="1 sec"/>
+  <resetfailure>10 min</resetfailure>
+
+  <!-- الإيقاف: مهلة 30s ثم إنهاء قسري. سلوك CTRL_BREAK/Node الرشيق
+       remains to be proven on the real host in 5B.4. -->
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>false</stopparentprocessfirst>
+
+  <!-- السجلات: موقع دائم متحكم به + تدوير (stdout/stderr الخادم) -->
+  <logpath>D:\IFRS-Data\logs\winsw\ifrs-app</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <serviceaccount>
+    <domain>.</domain>
+    <user>ifrs-svc</user>
+    <!-- كلمة مرور الحساب المحلي لا تُكتب هنا أبدًا — تُضبط عند التثبيت 5B.2
+         عبر الأمر التفاعلي أو gMSA/LocalAccount flag حسب قرار المضيف -->
+    <password></password>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+</service>

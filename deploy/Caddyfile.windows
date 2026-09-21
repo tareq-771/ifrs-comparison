@@ -1,0 +1,51 @@
+# Phase 5B.1 — قالب Caddyfile Windows (artifact داخل Git — يُثبَّت في 5B.2).
+#
+# القرار المعتمد (تقرير 5B-Windows §G/§H + Caddyfile.prod 5A — نقل حرفي للسياسات):
+#   • HTTPS 443 فقط — لا listener على 80 إطلاقًا (SSRS/HTTP.sys محصّنون).
+#   • tls internal — CA داخلي، لا ACME، لا حاجة لأي منفذ إضافي.
+#   • admin off — بلا واجهة إدارة.
+#   • placeholder اسم المضيف: <production-hostname> — الاسم النهائي يعتمد
+#     في 5B.2 (قرار 5B.1 §13: لا تثبيت اسم داخل الكود/القوالب).
+#
+# نموذج الثقة: Caddy المحيل الوحيد؛ التطبيق على loopback حصرًا
+# (HOSTNAME=127.0.0.1) والمنفذ 3000 غير قابل للوصول من LAN.
+#
+# X-Forwarded-For (قرار §12): header_up يستبدل القيمة بقيمة الاتصال المباشر
+# {remote_host} — أي XFF قادم من العميل يُمسح، لا spoofing chain. يُختبر
+# بالـassertions في scripts/phase5b1-windows-compat.ts وعلى المضيف في 5B.4.
+
+{
+    admin off
+}
+
+https://<production-hostname> {
+    tls internal
+
+    encode gzip
+
+    # حدود الجسم: حد الرفع الافتراضي للتطبيق 200MB (BACKUP_MAX_UPLOAD_MB) + هامش
+    # (قاعدة: رفع حد التطبيق يستلزم رفع هذا الحد في نفس الcommit)
+    request_body {
+        max_size 256MB
+    }
+
+    reverse_proxy 127.0.0.1:3000 {
+        # استبدال صريح لا إلحاق — منع spoofing chain من أي عميل LAN
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        # بث NDJSON (الدردشة) بلا تخزين مؤقت
+        flush_interval -1
+        transport http {
+            dial_timeout 5s
+            read_timeout 30m
+            write_timeout 30m
+        }
+    }
+
+    timeouts {
+        read_body   30m
+        write       30m
+        idle        10m
+    }
+}

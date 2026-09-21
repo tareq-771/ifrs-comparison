@@ -31,6 +31,9 @@ import {
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { ensurePrivateDir, resolveSessionEpochFilePath } from "@/lib/backup-config";
+// ملاحظة معمارية 5B.1: هذه الوحدة تدخل رسم auth.ts (readSessionEpoch) —
+// تُبقى خالية من استيرادات @prisma/client (حتى الديناميكية) كي لا تنقسم
+// وحدات رسم المصادقة في dev. فحص القاعدة المهيأة في @/lib/db-probe.
 
 const MIN_EPOCH = 1;
 const MAX_EPOCH = Number.MAX_SAFE_INTEGER; // 2^53 - 1 — فوقه overflow ⇒ fail-safe
@@ -107,6 +110,11 @@ export function bumpSessionEpoch(): number | null {
 /**
  * تهيئة الإقلاع فقط: إنشاء الملف بقيمة 1 إذا لم يوجد إطلاقًا (ذريًا).
  * لا تعالج ملفًا موجودًا تالفًا — ذلك فشل مغلق يتطلب تدخلًا يدويًا موثقًا.
+ *
+ * Phase 5B.1 (نص المستخدم §4): في production مع قاعدة إنتاج مهيأة (مستخدمون
+ * موجودون) يُمنع هذا المسار تمامًا — الإقلاع (instrumentation) لا يستدعيها
+ * هناك بل يفشل مغلقًا عبر probeDbInitialized أدناه. تبقى صالحة حصرًا لـ:
+ * بيئة التطوير + الإقلاع الأول الحقيقي لقاعدة إنتاج جديدة (بلا مستخدمين).
  */
 export function ensureEpochBootstrapped(): { created: boolean; available: boolean } {
   const file = resolveSessionEpochFilePath();
@@ -118,6 +126,31 @@ export function ensureEpochBootstrapped(): { created: boolean; available: boolea
     return { created: false, available: readSessionEpoch() !== null };
   } catch {
     return { created: false, available: false };
+  }
+}
+
+/**
+ * Phase 5B.1 — (انتقل إلى @/lib/db-probe — فصل عن رسم auth.ts، انظر أعلاه).
+ */
+
+/**
+ * Phase 5B.1 — كتابة قيمة epoch محددة (مسار استرداد المشغّل حصرًا).
+ * لا يقبل إلا عددًا صحيحًا آمنًا ≥ 1، ويكتب ذريًا (tmp + fsync + rename)،
+ * ويفشل بدون أي آثار جانبية جزئية. لا تُستدعى من أي API — سكربت المشغّل فقط.
+ * الحد الأمني لاختيار القيمة موثق في scripts/restore-operator.ts (--epoch-recover):
+ * القيمة الاستردادية = unix-seconds — أعلى حتمًا من عائلة العدّاد القديم
+ * ⇒ إبطال كامل لكل التوكنات السابقة دون قبول أي قيمة يدوية قد تكون أقل.
+ */
+export function writeSessionEpochValue(value: number): boolean {
+  try {
+    if (!Number.isSafeInteger(value) || value < MIN_EPOCH || value > MAX_EPOCH) return false;
+    const file = resolveSessionEpochFilePath();
+    writeEpochFileAtomic(file, String(value));
+    const st = statSync(file);
+    g.__sessionEpochCache = { value, mtimeMs: st.mtimeMs, size: st.size };
+    return true;
+  } catch {
+    return false;
   }
 }
 
