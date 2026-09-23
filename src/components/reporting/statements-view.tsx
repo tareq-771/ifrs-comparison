@@ -225,20 +225,21 @@ export function StatementsView() {
   const [cfStart, setCfStart] = React.useState("");
   const [cfEnd, setCfEnd] = React.useState("");
 
-  // 6.8 — روابط عميقة من مركز التقارير: ?stmt=socie&ordinal=3&startOrdinal=1&endOrdinal=5 (بعد الترطيب لتفادي hydration mismatch)
+  // 6.8 — روابط عميقة من مركز التقارير: ?stmt=socie&ordinal=3&startOrdinal=1&endOrdinal=5
+  // تُقرأ مرة عند الترطيب وتُخزَّن في ref — تُستهلك عند توفر فترات السنة (السياق يُحمَّل async).
+  const deepLinkRef = React.useRef<{ ordinal?: string; start?: string; end?: string }>({});
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     const q = new URLSearchParams(window.location.search);
     const stmt = q.get("stmt");
     if (stmt === "pnl" || stmt === "sfp" || stmt === "socie" || stmt === "cf") setStmtTab(stmt);
     const o = q.get("ordinal");
-    if (o && /^\d+$/.test(o)) setOrdinal(o);
+    if (o && /^\d+$/.test(o)) deepLinkRef.current.ordinal = o;
     const endO = q.get("endOrdinal");
     if (endO && /^\d+$/.test(endO)) {
+      deepLinkRef.current.end = endO;
       const startO = q.get("startOrdinal");
-      const s = startO && /^\d+$/.test(startO) ? startO : "1";
-      setSocieStart(s); setSocieEnd(endO);
-      setCfStart(s); setCfEnd(endO);
+      if (startO && /^\d+$/.test(startO)) deepLinkRef.current.start = startO;
     }
   }, []);
 
@@ -257,18 +258,22 @@ export function StatementsView() {
     [periods],
   );
 
-  // تهيئة الفترات عند تغير السنة
+  // تهيئة الفترات عند تغير السنة — تستهلك قيم الرابط العميق عند توفر الفترات أول مرة
   React.useEffect(() => {
     if (periods.length === 0) {
       setOrdinal(""); setSocieStart(""); setSocieEnd(""); setCfStart(""); setCfEnd("");
       return;
     }
     const last = String(periods[periods.length - 1].ordinal);
-    setOrdinal((p) => (p && periods.some((x) => String(x.ordinal) === p) ? p : last));
-    setSocieStart((p) => (p && periods.some((x) => String(x.ordinal) === p) ? p : "1"));
-    setSocieEnd((p) => (p && periods.some((x) => String(x.ordinal) === p) ? p : last));
-    setCfStart((p) => (p && periods.some((x) => String(x.ordinal) === p) ? p : "1"));
-    setCfEnd((p) => (p && periods.some((x) => String(x.ordinal) === p) ? p : last));
+    const valid = (v: string) => periods.some((x) => String(x.ordinal) === v);
+    const dl = deepLinkRef.current;
+    setOrdinal((p) => (dl.ordinal && valid(dl.ordinal) ? dl.ordinal : p && valid(p) ? p : last));
+    setSocieStart((p) => ((dl.start ?? "1") && valid(dl.start ?? "1") ? dl.start ?? "1" : p && valid(p) ? p : "1"));
+    setSocieEnd((p) => (dl.end && valid(dl.end) ? dl.end : p && valid(p) ? p : last));
+    setCfStart((p) => ((dl.start ?? "1") && valid(dl.start ?? "1") ? dl.start ?? "1" : p && valid(p) ? p : "1"));
+    setCfEnd((p) => (dl.end && valid(dl.end) ? dl.end : p && valid(p) ? p : last));
+    // الاستهلاك مرة واحدة بعد التطبيق الأول للفترات
+    delete dl.ordinal; delete dl.start; delete dl.end;
   }, [selectedFiscalYearId, periods.length]);
 
   const loadStatements = React.useCallback(async () => {

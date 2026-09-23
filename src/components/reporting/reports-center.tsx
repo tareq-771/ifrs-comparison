@@ -6,7 +6,6 @@
 // الحالية من خدماتها المعتمدة حصرًا عبر روابط عميقة ?view=... — الصلاحيات تبقى مفروضة من الخادم.
 
 import * as React from "react";
-import Link from "next/link";
 import {
   ArrowLeftRight, FileBarChart, FileSpreadsheet, Layers, Landmark, Scale, Target, TrendingUp, Waves, Info,
 } from "lucide-react";
@@ -17,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
+import type { HomeView } from "@/components/reporting/dashboard-view";
 import { useSession } from "next-auth/react";
 
 interface ReportTypeCard {
@@ -24,7 +24,8 @@ interface ReportTypeCard {
   title: string;
   description: string;
   icon: React.ReactNode;
-  href: (view: string) => string;
+  /** باراميترات الرابط العميق داخل تبويب موجود (لا صفحات وهمية) */
+  params: (ordinal: string) => Record<string, string | undefined>;
   /** يظهر فقط مع صلاحية عرض التقارير الفعلية؟ */
   requiresReportingPermission: boolean;
   orientation: "portrait" | "landscape";
@@ -36,7 +37,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "ميزان المراجعة",
     description: "المصدر الأساسي للأرقام الفعلية — استيراد، تصنيف، اعتماد، طباعة A4 أفقي.",
     icon: <Scale className="size-4" />,
-    href: () => "/?view=trial-balance",
+    params: () => ({}),
     requiresReportingPermission: true,
     orientation: "landscape",
   },
@@ -45,7 +46,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "قائمة الربح أو الخسارة والدخل الشامل الآخر",
     description: "Profit or Loss & OCI — تراكمي أو حركة فترة، مع تفصيل الحسابات.",
     icon: <TrendingUp className="size-4" />,
-    href: (v) => `/?view=statements${v ? `&stmt=pnl&ordinal=${v}` : ""}`,
+    params: (v) => ({ stmt: "pnl", ordinal: v }),
     requiresReportingPermission: true,
     orientation: "portrait",
   },
@@ -54,7 +55,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "قائمة المركز المالي",
     description: "Statement of Financial Position — as-of نهاية الفترة مع المعادلة المحاسبية.",
     icon: <Landmark className="size-4" />,
-    href: (v) => `/?view=statements${v ? `&stmt=sfp&ordinal=${v}` : ""}`,
+    params: (v) => ({ stmt: "sfp", ordinal: v }),
     requiresReportingPermission: true,
     orientation: "portrait",
   },
@@ -63,7 +64,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "قائمة التغيرات في حقوق الملكية",
     description: "SOCIE — افتتاحي/حركات/ختامي لكل مكوّن، بلا plug.",
     icon: <FileBarChart className="size-4" />,
-    href: (v) => `/?view=statements${v ? `&stmt=socie&endOrdinal=${v}` : ""}`,
+    params: (v) => ({ stmt: "socie", endOrdinal: v }),
     requiresReportingPermission: true,
     orientation: "portrait",
   },
@@ -72,7 +73,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "قائمة التدفقات النقدية (IAS 7)",
     description: "طريقة غير مباشرة — أنشطة ثلاثة + مطابقة نقد ظاهرة.",
     icon: <Waves className="size-4" />,
-    href: (v) => `/?view=statements${v ? `&stmt=cf&endOrdinal=${v}` : ""}`,
+    params: (v) => ({ stmt: "cf", endOrdinal: v }),
     requiresReportingPermission: true,
     orientation: "portrait",
   },
@@ -81,7 +82,7 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "فعلي مقابل موازنة",
     description: "Actual vs Budget — شهر/ربع/نصف/سنوي/YTD، فارق رقمي منفصل عن ف/غ.",
     icon: <Target className="size-4" />,
-    href: (v) => `/?view=budget&tab=variance${v ? `&ordinal=${v}` : ""}`,
+    params: (v) => ({ tab: "variance", ordinal: v }),
     requiresReportingPermission: true,
     orientation: "landscape",
   },
@@ -90,14 +91,14 @@ const REPORT_TYPES: ReportTypeCard[] = [
     title: "التقارير الموحدة الأولية (Preliminary)",
     description: "ورقة عمل لكل شركة ← قبل الاستبعادات ← الاستبعادات ← الموحد — بلا NCI/شهرة.",
     icon: <Layers className="size-4" />,
-    href: () => "/?view=consolidation",
+    params: () => ({}),
     requiresReportingPermission: true,
     orientation: "landscape",
   },
 ];
 
 /** بذرة الرابط العميق الصحيحة حسب حالة الملاحة (لا صفحات وهمية — كلها تبويبات موجودة). */
-export function ReportsCenter() {
+export function ReportsCenter({ onNavigate }: { onNavigate: (view: HomeView, params?: Record<string, string | undefined>) => void }) {
   const { data: session } = useSession();
   const {
     companies, companiesLoading, selectedCompanyId, setSelectedCompanyId, selectedCompany,
@@ -213,23 +214,24 @@ export function ReportsCenter() {
                 <Badge variant="outline" className="text-[10px]">
                   طباعة A4 {r.orientation === "landscape" ? "أفقي" : "رأسي"}
                 </Badge>
-                <Link
-                  href={r.href(ordinal)}
+                <button
+                  type="button"
+                  onClick={() => onNavigate(r.key === "trial-balance" ? "trial-balance" : r.key === "consolidated" ? "consolidation" : r.key === "avb" ? "budget" : "statements", r.params(ordinal))}
                   aria-label={`فتح ${r.title}`}
                   className="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50/60 px-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-950/50"
                 >
                   فتح التقرير <ArrowLeftRight className="size-3 rotate-180" />
-                </Link>
+                </button>
               </CardContent>
             </Card>
           ))}
           <Card className="border-dashed sm:col-span-2 lg:col-span-3">
-            <CardContent className="flex items-start gap-2 p-4 text-xs leading-5 text-muted-foreground">
+            <CardContent className="flex flex-wrap items-start gap-2 p-4 text-xs leading-5 text-muted-foreground">
               <Info className="mt-0.5 size-3.5 shrink-0" />
-              أداة مقارنة القوائم السابقة متاحة كأداة مستقلة:
-              <Link href="/?view=compare" className="underline">أدوات المقارنة (مقارنة Excel)</Link>.
-              لقطات التقارير المعتمدة غير القابلة للتغيير (immutable approved snapshots) مرحلة لاحقة —
-              العرض الحالي يقرأ دائمًا من أحدث مراجعة معتمدة ومن الموازنة المعتمدة حصرًا.
+              <span>أداة مقارنة القوائم السابقة متاحة كأداة مستقلة:</span>
+              <button type="button" onClick={() => onNavigate("compare")} className="underline">أدوات المقارنة (مقارنة Excel)</button>.
+              <span>لقطات التقارير المعتمدة غير القابلة للتغيير (immutable approved snapshots) مرحلة لاحقة —
+              العرض الحالي يقرأ دائمًا من أحدث مراجعة معتمدة ومن الموازنة المعتمدة حصرًا.</span>
             </CardContent>
           </Card>
         </div>

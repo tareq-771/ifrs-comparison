@@ -76,10 +76,16 @@ export default function Home() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const navigate = React.useCallback((next: HomeView) => {
+  // 6.8 — navigate يدعم باراميترات إضافية للروابط العميقة من مركز التقارير
+  const navigate = React.useCallback((next: HomeView, params?: Record<string, string | undefined>) => {
     setView(next);
-    const url = next === "dashboard" ? "/" : `/?${VIEW_PARAM}=${next}`;
-    window.history.pushState(null, "", url);
+    const q = new URLSearchParams();
+    if (next !== "dashboard") q.set(VIEW_PARAM, next);
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v !== undefined && v !== "") q.set(k, v);
+    }
+    const qs = q.toString();
+    window.history.pushState(null, "", qs ? `/?${qs}` : "/");
   }, []);
 
   const canOpenAdmin =
@@ -204,7 +210,7 @@ export default function Home() {
             <ConsolidationView />
           )}
           {view === "reports" && (
-            <ReportsCenter />
+            <ReportsCenter onNavigate={navigate} />
           )}
         </main>
 
