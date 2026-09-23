@@ -247,7 +247,7 @@ export default function LoginPage() {
               تسجيل الدخول
             </h1>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              نظام مطابقة قوائم الحسابات وفق IFRS
+              نظام التقارير المالية الموحدة
             </p>
           </div>
         </div>

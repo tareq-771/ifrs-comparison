@@ -26,6 +26,21 @@ export const AUDIT_ACTIONS = {
   USER_DISABLED: "USER_DISABLED",
   USER_ENABLED: "USER_ENABLED",
   USER_DELETED: "USER_DELETED",
+  // Phase 6.1 (RECOVERY) — الأساس المالي: الشركات والسنوات والفترات وسياسة الإقفال
+  COMPANY_CREATED: "COMPANY_CREATED",
+  COMPANY_UPDATED: "COMPANY_UPDATED",
+  COMPANY_DEACTIVATED: "COMPANY_DEACTIVATED",
+  COMPANY_REACTIVATED: "COMPANY_REACTIVATED",
+  COMPANY_DELETE_DENIED: "COMPANY_DELETE_DENIED",
+  CLOSING_POLICY_UPDATED: "CLOSING_POLICY_UPDATED",
+  FISCAL_YEAR_CREATED: "FISCAL_YEAR_CREATED",
+  FISCAL_YEAR_BULK_CREATED: "FISCAL_YEAR_BULK_CREATED",
+  FISCAL_YEAR_CLOSED: "FISCAL_YEAR_CLOSED",
+  FISCAL_YEAR_LOCKED: "FISCAL_YEAR_LOCKED",
+  FISCAL_YEAR_UNLOCKED: "FISCAL_YEAR_UNLOCKED",
+  FISCAL_YEAR_REOPENED: "FISCAL_YEAR_REOPENED",
+  FISCAL_YEAR_PROVISIONAL_CONFIRMED: "FISCAL_YEAR_PROVISIONAL_CONFIRMED",
+  FISCAL_PERIOD_STATUS_CHANGED: "FISCAL_PERIOD_STATUS_CHANGED",
   ROLE_CHANGED: "ROLE_CHANGED",
   PERMISSIONS_CHANGED: "PERMISSIONS_CHANGED",
   LOGIN_SUCCEEDED: "LOGIN_SUCCEEDED",
@@ -94,6 +109,12 @@ export const AUDIT_ENTITY_TYPES = {
   User: "User",
   Auth: "Auth",
   Backup: "Backup", // Phase 4A — الكيان = backupId
+  // Phase 6.1 (RECOVERY) — كيانات الأساس المالي
+  Company: "Company",
+  ClosingPolicy: "ClosingPolicy",
+  FiscalYear: "FiscalYear",
+  FiscalPeriod: "FiscalPeriod",
+  Backfill: "Backfill",
 } as const;
 
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[keyof typeof AUDIT_ENTITY_TYPES];
@@ -103,6 +124,11 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   Group: "مجموعة",
   User: "مستخدم",
   Auth: "مصادقة",
+  Company: "شركة",
+  ClosingPolicy: "سياسة إقفال",
+  FiscalYear: "سنة مالية",
+  FiscalPeriod: "فترة محاسبية",
+  Backfill: "ربط خلفي",
 };
 
 // ترتيب أولوية اختيار كود العملية عند تعدد التغييرات في طلب واحد (الأخطر أولًا)

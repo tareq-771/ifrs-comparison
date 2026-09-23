@@ -623,3 +623,60 @@ Stage Summary:
 - بوابة 5B.2 اجتازت: كل متابعات 5B.1 العشر معالجة بأدلة — القوالب والأدوات جاهزة للتنفيذ اليدوي على Windows (5B.3 تهيئة مضيف/بيانات، 5B.4 LAN+متانة+restart، 5B.5 نسخ مجدولة)
 - ما زال design-only/مؤجلًا للمضيف: WinSW إيقاف رشيق، Junctions/ACLs، Caddy XDG، اسم المضيف/القناع، مسار D:\ الفعلي — موثقة R-3
 - commit واحد لـ5B.2 بلا push (لا مصادقة GitHub في Z.ai) — بانتظار مراجعة المستخدم قبل أي خطوة
+
+---
+Task ID: 5B.3
+Agent: Z.ai main (orchestrator)
+Task: Phase 5B.3 — Preflight/Runbook report before any executive change on Windows production host; then step-by-step PowerShell (one step at a time, stop-and-wait).
+
+Work Log:
+- User confirmed 5B.2 closed: working copy received on Windows at D:\IFRS\ifrs-comparison-prod, HEAD==origin/master==9faa978, divergence 0 0, clean tree.
+- Re-grounded preflight in code @9faa978: prod-server.mjs (IFRS_ENV_FILE strict parser, NODE_ENV=production forced, loopback-only bind default 127.0.0.1 + FATAL non-loopback), production-config.ts (NEXTAUTH_SECRET MISSING/TOO_SHORT<32/PLACEHOLDER/WEAK_PATTERN fail-closed; DATABASE_URL/VAR_DIR/BACKUP_DIR absolute+exists+outside-release-tree; RESTORE_ENGINE_ENABLED explicit 0/1), backup-config.ts (VAR_DIR-derived: auth/session-epoch, maintenance/state.json, recovery/recovery-log.jsonl + operation.lock, restore-staging; swap dir = DB dir same volume), instrumentation.ts (prod+missing epoch on initialized DB ⇒ fail-closed NO silent create, EPOCH_STATE_LOST recovery event, operator --epoch-recover; bootstrap-create only for zero-user fresh DB), deploy/bootstrap-windows.md (DB creation = prisma migrate deploy via Layer B CLI only, then first boot, then SETUP_BOOTSTRAP_ENABLED first admin, then remove flag).
+- Layout note: runbook template assumes C:\Apps\src + C:\Apps\ifrs-comparison\releases; user moved source to D:\IFRS\ifrs-comparison-prod; C: has ~9.8GB free ⇒ build+releases on D: proposed as deviation D-1 (decision pending user approval). Template data paths D:\IFRS-Data + D:\IFRS-Backups remain outside code tree (valid).
+- Step 1 (read-only host facts snapshot) delivered to user; STOP-and-wait protocol started.
+
+Stage Summary:
+- No code changed; no commit made in 5B.3 yet; HEAD still 9faa978 on Z.ai side.
+- Preflight is 100% read-only until user approves layout decision + first-write steps (dirs/ACLs/secret generation).
+- Constraints honored: no restore, no deletions, no prod DB re-creation, no prisma db push (deploy-migrate gate blocks structurally), NEXTAUTH_SECRET generated once on host outside Git (never printed), epoch must never auto-reset to 1 (fail-closed + operator recovery), SQLite live DB local NTFS only (no SMB/NAS), SSRS:80 untouched.
+
+---
+Task ID: 6.2D-WLT-RECOVERY (Windows Local Test package — RECOVERY CHECK + fast completion)
+Agent: main (Z.ai Code)
+Task: استكمال إخراج نسخة التجربة Windows من آخر نقطة سليمة بعد إيقاف يدوي أثناء "Rebuild minimal node_modules" — بلا إعادة عمل سابق، بلا نسخ node_modules، بلا أي git write.
+
+Work Log:
+- RECOVERY CHECK: staging/ZIP غير موجودين إطلاقًا؛ أثر الجلسة المقطوعة = 4 قواعد gate طازجة schema-only في /tmp/verify-62/db + stubs تالفة لعميل Prisma (23B) في /tmp/my-project/node_modules (كانت مخفَّضة لعنصرين: @prisma+prisma فقط)
+- استرجاع السكيما: schema.prisma المستعاد كان قديمًا (5B.2، Sep 20) — أُعيد بناؤه من سكيما حزمة 6.1 المعتمدة + DDL الترحيلات 6.2A/6.2B حرفيًا (+علاقات عكسية Company/FiscalYear)؛ نسخة قديمة محفوظة /tmp/verify-62/schema.prisma.stale-5b2.bak
+- توليد Prisma Client 6.19.2 عبر bunx مثبّت الإصدار من CWD محايد (تجاوز bug تحميل config في /tmp/my-project)
+- فجوات استرجاعية رُقعت بنمط الموجود حرفيًا: permissions.ts (+manageAccountNature/manageTrialBalances/manageCompanies/manageFiscalYears/reopenFiscalYears/lockFiscalYears/managePeriods/companyIds/viewAllCompanies + 7 دوال can*)، session.ts (+requireManageAccountNature/TrialBalances/Companies/FiscalYears/Periods)، audit-actions.ts (+14 كود 6.1 + 5 كيانات + تسميات)
+- بوابات 6.2 الأربع على قواعد طازجة معزولة (مرتين — قبل وبعد ترقيع الصلاحيات): 30/30، 16/16، 9/9، 6/6 — كل الإثباتات المحاسبية (مارس=80/YTD=300، as-of=125، override-wins، عزل، لا FULLY_MAPPED صامتة)
+- قاعدة الحزمة phase62d-local-test.db من migrate deploy حصرًا + بذرة DEMO عبر دوال الخادم الرسمية (writeFiscalYearWithPeriods + createNatureRule): admin/Preview-62D-Admin!، DEMO01، FY2026 بـ12 فترة OPEN، 10 قواعد mapping؛ نسخة نقية backup.db
+- 4 ملفات Excel عينات (openpyxl) متوازنة CUMULATIVE_YTD يناير/فبراير/مارس + حركة مارس PERIOD_MOVEMENT، متحقق منها بمحاكاة محلل التطبيق (xlsx-js-style + منطق readExcelFile)؛ الخادم يرفض الصفوف الصفرية fail-closed ⇒ استُبعد 2303 من يناير/فبراير (سلوك موثق)
+- سكربتات Windows: START-LOCAL-TEST.cmd (npm ci من package-lock.json مولّد، ثنائي prisma/next المحلي بلا npx، حاجز custom.db برسالة LOCAL TEST SAFETY BLOCK، منفذ 3000→3001 بلا قتل، سر اختبار صريح)، RESET-LOCAL-TEST.cmd
+- README-ARABIC-TEST.md (خطوات 1–17 مع From/To) + RECOVERY-SOURCE-NOTE.md؛ Branding «نظام التقارير المالية الموحدة» في layout/login/رؤوس القوائم (staging فقط)
+- ZIP خفيف 1.2MB بلا node_modules/.git/custom.db/secrets/WAL + استخراج مستقل /tmp/ifrs-phase-6.2d-package-verification + npm ci (EXIT=0، 588 حزمة) + prisma generate بالثنائي المحلي
+- Smoke E2E من المستخرج حصرًا: 19/19 (دخول، DEMO01، FY2026، resolve، preview/save/commit ×3 تراكمي + حركة، شهر/تراكمي، مقارنة فترات، P&L 2,500,000 ربح minor، SFP متوازنة 29M=12.5M+16.5M، Audit، backup 404 كقيد موثق)
+- typecheck نهائي: 92 خطأ = خط الأساس الموثق حرفيًا (صفر أخطاء جديدة)
+
+Stage Summary:
+- الحزمة النهائية: /tmp/ifrs-phase-6.2d-windows-local-test.zip (1.2MB) SHA256=b2db7361492072cde72fbdc572f52d074c1728b19fe12bf44d93ede14e355e77
+- تصحيح أخير: إزالة بقايا WAL/SHM الناتجة عن فحص readonly (336 ملفًا، 0 مداخل ممنوعة، integrity ok، DB checksum مطابق b40d04b6…)؛ شهادة 19/19 سارية على محتوى الحزمة النهائية (الفرق الوحيد = حذف sidecars غير البرمجية)
+- قيود موثقة: مسارات /api/backups مفقودة من الشجرة المستعادة (طبقة lib موجودة)؛ انحراف patch versions بين bun.lock وpackage-lock.json (نفس majors؛ مختبر بالمستخرج)
+- صفر git writes؛ صفر لمس custom.db/production؛ /tmp/my-project بقي مصدر الاستعادة (تعديلات الاسترجاع الموثقة فيه فقط: permissions/session/audit-actions + schema المستعاد)
+
+---
+Task ID: RECOVERY-62D
+Agent: main (Z.ai Code)
+Task: استعادة 6.1+6.2A→6.2D من /tmp/my-project إلى Git + Branding + التحقق + Recovery commit
+
+Work Log:
+- مقارنة الشجرتين: 44 ملف src جديد + 3 معدلة (permissions/session/audit-actions) + 8 scripts + 3 migrations + 4 docs + schema.prisma (199→488)؛ package.json وكل الإعدادات متطابقة؛ مسارات backups الموضوعية في الشجرة المستعادة مطابقة حرفياً لـ HEAD (8 routes) — لا شيء مفقود
+- نسخ آمن مع استبعاد: .env، db/*.db*، backups/، zips/bundles، upload/، var/، tool-results/، download/
+- Branding: العنوان + login ⇒ «نظام التقارير المالية الموحدة»، إزالة شعار Z.ai CDN من metadata، icon.svg محايد مهني جديد، صفر أثر للاسم القديم
+- ترقيع فجوتي استرداد في backup-config.ts: PINNED_CURRENT_CANONICAL_FINGERPRINT أُعيد حسابه آلياً من قاعدة معزولة من الترحيلات حصراً (csha256:9c2fe217...) عبر phase62a-fingerprint.ts + إضافة REQUIRED_P61_TABLES (جداول 6.1 من migration.sql)
+- prisma generate (6.19.2) ✅، lint exit 0 ✅، typecheck 95 (صفر في كود 6.x الجديد؛ الباقي خط الأساس + skills/examples)
+- البوابات الأربع على قواعد معزولة طازجة من migrations حصراً: 62A=30/30، 62B=16/16، 62C=9/9، 62D=6/6
+
+Stage Summary:
+- Recovery commit أنجز؛ الأساس المالي 6.2D داخل Git أخيراً؛ custom.db و production لم يُلمسا؛ الضبابية الوحيدة: typecheck الكلي 95 مقابل 92 الموثق (الفرق skills/examples خارج الحزمة سابقاً)

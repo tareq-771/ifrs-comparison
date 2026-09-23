@@ -80,6 +80,18 @@ model Report {
   bsFile2Headers String @default("[]")
   bsFile2Cols  String   @default("{}")
 
+  // ── Phase 6.1 — ربط الأساس المالي (حقول إضافية nullable بحتة — لا تكسر أي تدفق قديم) ──
+  // الشركة المرتبطة (nullable = تقرير غير مربوط بعد — backfillStatus يوضح السبب).
+  // Restrict عمدًا: وجود تقرير مرتبط يمنع حذف الشركة (لا SetNull ولا Cascade —
+  // التاريخ المالي لا يُفقد بصمت).
+  companyId       String?
+  company         Company?        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  // الفترة المحاسبية المرتبطة (نهاية الفترة المالية periodEnd تقع ضمنها)
+  fiscalPeriodId  String?
+  fiscalPeriod    FiscalPeriod?   @relation(fields: [fiscalPeriodId], references: [id], onDelete: Restrict)
+  // حالة الربط الخلفي (backfill): MAPPED | NO_PERIOD | NO_COMPANY | PENDING — null = قبل تشغيل الأداة
+  backfillStatus  String?
+
   // Group association (nullable — reports without a group are "ungrouped")
   groupId     String?
   group       Group?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
@@ -145,6 +157,131 @@ model Report {
   @@index([updatedAt])
   @@index([cycle])
   @@index([groupId, status])
+  // فهارس الأساس المالي (6.1)
+  @@index([companyId])
+  @@index([fiscalPeriodId])
+  @@index([backfillStatus])
+}
+
+// ── Phase 6.1 — كيان الشركة (الأساس المالي) ──────────────────────────────────
+// الهوية الآلية = code (وحيد) — الأسماء المعروضة (nameAr/nameEn) توصيف فقط ولا
+// تُستخدم مفاتيح هوية أبدًا (قرار 6.0A: فصل الهوية الآلية عن التسمية المعروضة).
+// العملة ISO-4217-ready (سجل عملات موسّع في src/lib/currencies.ts) — nullable
+// حتى أول استخدام مالي؛ لا تحويل عملات ولا ترجمة ولا توحيد في 6.1.
+// الحذف الصلب: شركة غير مستخدمة تمامًا فقط (لا تقارير/سنوات/سياسة/ربط legacy) —
+// وإلا فالسياسة هي التعطيل INACTIVE مع بقاء الرؤية التاريخية.
+model Company {
+  id                 String   @id @default(cuid())
+  code               String   @unique            // هوية آلية وحيدة (لا أسماء محلية)
+  nameAr             String                      // الاسم المعروض بالعربية (إلزامي)
+  nameEn             String   @default("")       // الاسم المعروض بالإنجليزية (اختياري)
+  status             String   @default("ACTIVE") // ACTIVE | INACTIVE — إبطال يحفظ الرؤية التاريخية
+  functionalCurrency String   @default("")       // ISO-4217 (YER/SAR/USD...) — "" = غير محددة بعد
+  reportingCurrency  String   @default("")       // ISO-4217 — افتراضيًا تُشتق من الوظيفية عند الضبط
+  notes              String   @default("")
+  // ربط حتمي ثابت بمجموعة العمل القديمة (backfill 6.1) — يضمن عدم تكرار الشركات
+  // عند إعادة تشغيل أداة الربط مهما فُقدت ملفات VAR_DIR (المصدر = قاعدة البيانات).
+  legacyGroupId      String?  @unique
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  fiscalYears        FiscalYear[]
+  closingPolicy      CompanyClosingPolicy?
+  reports            Report[]
+
+  // ── Phase 6.2 back-relations ──
+  accountNatureRules   AccountNatureRule[]
+  accountMappingOverrides AccountMappingOverride[]
+  trialBalanceImports  TrialBalanceImport[]
+
+  @@index([status])
+  @@index([legacyGroupId])
+}
+
+// ── Phase 6.1 — السنة المالية ────────────────────────────────────────────────
+// لا افتراض سنوات ميلادية ولا افتراض 12 فترة (سنوات انتقالية/قصيرة مدعومة) —
+// تغطية الفترات تُولّد وتُتحقق في الخدمة (src/lib/fiscal-year.ts).
+// onDelete Restrict: سنة لها فترات (أو تقارير مرتبطة عبر الفترات) لا تُحذف تتابعيًا.
+model FiscalYear {
+  id             String   @id @default(cuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  code           String                       // هوية آلية داخل الشركة (وحيد لكل شركة)
+  displayNameAr  String   @default("")        // عرض فقط — ليس هوية
+  displayNameEn  String   @default("")
+  startDate      String                       // date-only "YYYY-MM-DD" (نمط المشروع — بلا timezone)
+  endDate        String                       // date-only
+  periodCount    Int                          // عدد الفترات المولّدة فعليًا (1..24 — لا افتراض 12)
+  status         String   @default("OPEN")    // OPEN | CLOSED | LOCKED — انتقالات مُتحقق منها خادميًا
+  origin         String   @default("USER_CREATED") // USER_CREATED | PROVISIONAL_IMPORTED (حاويات استيراد مؤقتة تتطلب تأكيد المدير)
+  confirmedAt    DateTime?                    // تأكيد الحاوية المؤقتة
+  confirmedByName String  @default("")
+
+  // snapshots المنفذين للإغلاق/القفل/إعادة الفتح (نمط Workflow المحلي)
+  closedById      String?
+  closedByName    String  @default("")
+  closedAt        DateTime?
+  lockedById      String?
+  lockedByName    String  @default("")
+  lockedAt        DateTime?
+  reopenedById    String?
+  reopenedByName  String  @default("")
+  reopenedAt      DateTime?
+  reopenReason    String  @default("")        // إلزامي عند إعادة الفتح (REOPEN)
+  unlockReason    String  @default("")        // إلزامي عند فك القفل (UNLOCK)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  periods        FiscalPeriod[]
+  trialBalanceImports TrialBalanceImport[]
+
+  @@unique([companyId, code])
+  @@index([companyId, startDate])
+  @@index([status])
+}
+
+// ── Phase 6.1 — الفترة المحاسبية (شهرية) ─────────────────────────────────────
+// الهوية الآلية = ordinal/code داخل السنة؛ أسماء الأشهر العربية تسمية عرض فقط.
+// ربع/نصف/YTD/سنوي لا تُخزَّن إطلاقًا — تُشتق لاحقًا (قرار معماري 6.0).
+model FiscalPeriod {
+  id                  String   @id @default(cuid())
+  fiscalYearId        String
+  fiscalYear          FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  ordinal             Int                      // 1..N — ترتيب آلي (أساس المقارنة الترتيبية لاحقًا)
+  code                String                   // مشتق حتمي من فترة البداية "YYYY-MM"
+  startDate           String                   // date-only
+  endDate             String                   // date-only
+  status              String   @default("OPEN") // OPEN | CLOSED
+  zeroActivityDeclared Boolean @default(false) // إعلان «لا حركة» صريح من المشغّل
+  displayLabel        String   @default("")    // عرض عربي فقط — ليس هوية
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  reports             Report[]
+
+  @@unique([fiscalYearId, ordinal])
+  @@index([fiscalYearId])
+  @@index([startDate, endDate])
+  @@index([status])
+}
+
+// ── Phase 6.1 — سياسة إقفال الشركة (قائمة مكوّنات مطلوبة) ────────────────────
+// المكوّنات المسموحة أوليًا: TRIAL_BALANCE | INCOME_STATEMENT | BALANCE_SHEET
+// (سجل موسّع في src/lib/closing-policy.ts). طباعة القوائم المالية نفسها لا تُبنى
+// في 6.1 — التقييم يُبلغ المكوّنات كغير متاحة (بلا أي بيانات اعتماد مُختلقة).
+// Restrict: سياسة قائمة تمنع حذف الشركة (شركة عليها سياسة = ليست فارغة).
+model CompanyClosingPolicy {
+  id                 String   @id @default(cuid())
+  companyId          String   @unique
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  requiredComponents String   @default("[]")  // JSON array من الأكواد الموثقة فقط
+  updatedById        String?
+  updatedByName      String   @default("")    // snapshot آخر مُحدِّث (نمط المشروع)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
 
 // ── Workflow History (append-only) ──
@@ -196,4 +333,156 @@ model AuditLog {
   @@index([action])
   @@index([entityType])
   @@index([entityId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.2A — بنية القوائم المالية وقواعد طبيعة الحسابات (مستعادة من DDL الترحيل)
+// RECOVERY NOTE: schema.prisma الأصلي لـ 6.2 فُقد مع الجلسة؛ أُعيد بناء هذا الملف من
+// (1) سكيما حزمة 6.1 المعتمدة + (2) migration.sql للترحيلات 6.2A/6.2B حرفيًا.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── بنود القوائم المالية (32 بندًا نظاميًا) — شجرة عبر parentId ────────────────
+model FinancialStatementLine {
+  id             String   @id @default(cuid())
+  code           String   @unique           // هوية آلية (مثل BS-ASSETS)
+  nameAr         String                     // الاسم المعروض بالعربية
+  nameEn         String?                    // اختياري
+  statementType  String                     // PNL | SFP | OCI — نوع القائمة
+  parentId       String?
+  displayOrder   Int      @default(0)
+  isSubtotal     Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  parent   FinancialStatementLine?  @relation("FSLTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children FinancialStatementLine[] @relation("FSLTree")
+
+  natureRules         AccountNatureRule[]
+  mappingOverrides    AccountMappingOverride[]
+
+  @@index([statementType, displayOrder])
+}
+
+// ── قواعد طبيعة الحسابات: جذور نظامية (companyId=null) + بادئات الشركات ────────
+// resolver: ACCOUNT_OVERRIDE → COMPANY_PREFIX → SYSTEM_ROOT
+model AccountNatureRule {
+  id                  String   @id @default(cuid())
+  companyId           String?                    // null = جذر نظامي (للقراءة فقط)
+  prefix              String                     // أطول بادئة تفوز
+  mainCategory        String?                    // ASSET | LIABILITY | EQUITY | EXPENSE | REVENUE
+  classification      String?                    // BALANCE | FLOW | null
+  aggregationBehavior String                     // سلوك التجميع الزمني
+  statementLineId     String?
+  source              String   @default("SYSTEM") // SYSTEM | COMPANY
+  note                String   @default("")
+  isActive            Boolean  @default(true)
+  version             Int      @default(1)
+  createdById         String?
+  createdByName       String   @default("")
+  updatedById         String?
+  updatedByName       String   @default("")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  company       Company?                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  statementLine FinancialStatementLine? @relation(fields: [statementLineId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, prefix])
+  @@index([companyId, isActive])
+  @@index([prefix])
+  @@index([statementLineId])
+}
+
+// ── تجاوزات التصنيف على مستوى الحساب الفردي (تفوز على كل البادئات) ─────────────
+model AccountMappingOverride {
+  id                  String   @id @default(cuid())
+  companyId           String
+  accountCode         String                     // كود الحساب الكامل
+  classification      String                     // BALANCE | FLOW
+  aggregationBehavior String
+  statementLineId     String?
+  note                String   @default("")
+  isActive            Boolean  @default(true)
+  version             Int      @default(1)
+  createdById         String?
+  createdByName       String   @default("")
+  updatedById         String?
+  updatedByName       String   @default("")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  company       Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  statementLine FinancialStatementLine? @relation(fields: [statementLineId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, accountCode])
+  @@index([companyId, isActive])
+  @@index([accountCode])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.2B — ميزان المراجعة (BigInt amountMinor كسلاسل JSON + Data Type صريح)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── استيراد ميزان المراجعة (DRAFT → COMMITTED عبر مسار معتمد) ─────────────────
+model TrialBalanceImport {
+  id               String   @id @default(cuid())
+  companyId        String
+  fiscalYearId     String
+  fromDate         String                     // date-only "YYYY-MM-DD"
+  toDate           String                     // date-only
+  startOrdinal     Int                        // ordinal فترة البداية
+  endOrdinal       Int                        // ordinal فترة النهاية
+  dataType         String                     // CUMULATIVE_YTD | PERIOD_MOVEMENT
+  status           String   @default("DRAFT") // DRAFT | COMMITTED
+  originalFileName String   @default("")
+  fileHash         String   @default("")
+  payloadHash      String   @default("")
+  totalDebitMinor  BigInt
+  totalCreditMinor BigInt
+  lineCount        Int
+  note             String   @default("")
+  version          Int      @default(1)
+  createdById      String?
+  createdByName    String   @default("")
+  updatedById      String?
+  updatedByName    String   @default("")
+  committedAt      DateTime?
+  committedById    String?
+  committedByName  String   @default("")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  fiscalYear FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  lines      TrialBalanceLine[]
+
+  @@unique([companyId, fiscalYearId, fromDate, toDate, dataType])
+  @@index([companyId])
+  @@index([fiscalYearId])
+}
+
+// ── سطور الاستيراد (snapshot حتمي للاستيراد — بلا timestamps) ──────────────────
+model TrialBalanceLine {
+  id                  String  @id @default(cuid())
+  importId            String
+  rowIndex            Int
+  accountCode         String
+  accountName         String  @default("")
+  debitMinor          BigInt
+  creditMinor         BigInt
+  netMinor            BigInt
+  mappedPrefix        String?   // snapshot نتيجة resolver لحظة الاستيراد
+  mappingSource       String?   // ACCOUNT_OVERRIDE | COMPANY_PREFIX | SYSTEM_ROOT | UNMAPPED
+  mappingStatus       String?   // FULLY_MAPPED | ROOT_ONLY | NEEDS_DETAILED_CLASSIFICATION | NEEDS_CLASSIFICATION
+  mainCategory        String?
+  classification      String?
+  aggregationBehavior String?
+  statementLineCode   String?
+
+  import TrialBalanceImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([importId])
+  @@index([accountCode])
 }

@@ -2,6 +2,11 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import {
   canManageBackups,
+  canManageAccountNature,
+  canManageTrialBalances,
+  canManageCompanies,
+  canManageFiscalYears,
+  canManagePeriods,
   canRestoreDatabase,
   parsePermissions,
   type Permissions,
@@ -53,6 +58,63 @@ export async function requirePermission(
 export async function requireManageBackups(): Promise<SessionUser> {
   const user = await requireAuth();
   if (!canManageBackups(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
+  return user;
+}
+
+/**
+ * Phase 6.2A (RECOVERY) — بوابة صلاحية إدارة طبيعة الحسابات.
+ * المدير ضمنيًا بالدور؛ غيره بمفتاح manageAccountNature الصريح حصرًا.
+ */
+export async function requireManageAccountNature(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManageAccountNature(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
+  return user;
+}
+
+/**
+ * Phase 6.2B (RECOVERY) — بوابة صلاحية إدارة ميزان المراجعة.
+ * المدير ضمنيًا بالدور؛ غيره بمفتاح manageTrialBalances الصريح حصرًا.
+ */
+export async function requireManageTrialBalances(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManageTrialBalances(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
+  return user;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — بوابة صلاحية إدارة الشركات.
+ */
+export async function requireManageCompanies(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManageCompanies(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
+  return user;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — بوابة صلاحية إدارة السنوات المالية.
+ */
+export async function requireManageFiscalYears(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManageFiscalYears(user.permissions, user.role)) {
+    throw new Error("Forbidden");
+  }
+  return user;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — بوابة صلاحية إدارة الفترات المحاسبية.
+ */
+export async function requireManagePeriods(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canManagePeriods(user.permissions, user.role)) {
     throw new Error("Forbidden");
   }
   return user;

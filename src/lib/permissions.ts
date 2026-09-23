@@ -37,6 +37,50 @@ export interface Permissions {
    */
   restoreDatabase?: boolean;
   /**
+   * Phase 6.2A (RECOVERY): إدارة قواعد طبيعة الحسابات وبنود القوائم المالية.
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور (نمط assignWorkflow).
+   */
+  manageAccountNature?: boolean;
+  /**
+   * Phase 6.2B (RECOVERY): إدارة استيراد ميزان المراجعة واعتماده.
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور (نمط assignWorkflow).
+   */
+  manageTrialBalances?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): إدارة الشركات (إنشاء/تعديل/تعطيل/سياسة الإقفال).
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور (نمط assignWorkflow).
+   */
+  manageCompanies?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): إدارة السنوات المالية (إنشاء/تعديل حالة).
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور.
+   */
+  manageFiscalYears?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): إعادة فتح سنة مالية مغلقة/مقفلة (بسبب إلزامي).
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور.
+   */
+  reopenFiscalYears?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): إقفال/قفل السنوات المالية.
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور.
+   */
+  lockFiscalYears?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): إدارة الفترات المحاسبية (إعلان لا حاجة/إقفال).
+   * المدير (role=admin) يمتلكها ضمنيًا بالدور.
+   */
+  managePeriods?: boolean;
+  /**
+   * Phase 6.1 (RECOVERY): نطاق رؤية الشركات — [] = لا شركات محددة (سلوك قديم)،
+   * and viewAllCompanies تتجاوز القائمة (fail-closed: الصمت = لا رؤية).
+   */
+  companyIds?: string[];
+  /**
+   * Phase 6.1 (RECOVERY): رؤية كل الشركات صراحةً — المدير يمتلكها ضمنيًا بالدور.
+   */
+  viewAllCompanies?: boolean;
+  /**
    * Optional list of group IDs the user is allowed to see in the main page.
    *
    * Semantics:
@@ -65,6 +109,15 @@ export const DEFAULT_USER_PERMISSIONS: Permissions = {
   reopenReport: false,
   manageBackups: false,
   restoreDatabase: false,
+  manageAccountNature: false,
+  manageTrialBalances: false,
+  manageCompanies: false,
+  manageFiscalYears: false,
+  reopenFiscalYears: false,
+  lockFiscalYears: false,
+  managePeriods: false,
+  companyIds: [],
+  viewAllCompanies: false,
   groupIds: [],
 };
 
@@ -166,4 +219,56 @@ export function canManageBackups(perms: Permissions, role: string): boolean {
  */
 export function canRestoreDatabase(perms: Permissions): boolean {
   return perms.restoreDatabase === true;
+}
+
+/**
+ * Phase 6.2A (RECOVERY) — إدارة طبيعة الحسابات: المدير ضمنيًا بالدور،
+ * وغيره بمفتاح manageAccountNature الصريح حصرًا.
+ */
+export function canManageAccountNature(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.manageAccountNature === true;
+}
+
+/**
+ * Phase 6.2B (RECOVERY) — إدارة ميزان المراجعة: المدير ضمنيًا بالدور،
+ * وغيره بمفتاح manageTrialBalances الصريح حصرًا.
+ */
+export function canManageTrialBalances(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.manageTrialBalances === true;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — إدارة الشركات: المدير ضمنيًا بالدور،
+ * وغيره بمفتاح manageCompanies الصريح حصرًا.
+ */
+export function canManageCompanies(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.manageCompanies === true;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — إدارة السنوات المالية.
+ */
+export function canManageFiscalYears(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.manageFiscalYears === true;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — إعادة فتح سنوات مالية (بسبب إلزامي).
+ */
+export function canReopenFiscalYears(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.reopenFiscalYears === true;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — إقفال/قفل سنوات مالية.
+ */
+export function canLockFiscalYears(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.lockFiscalYears === true;
+}
+
+/**
+ * Phase 6.1 (RECOVERY) — إدارة الفترات المحاسبية.
+ */
+export function canManagePeriods(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.managePeriods === true;
 }

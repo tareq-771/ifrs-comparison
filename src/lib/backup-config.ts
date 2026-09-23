@@ -127,6 +127,15 @@ export const ALLOWED_ZIP_ENTRIES: readonly string[] = ["database.db", "manifest.
 /** الجداول الإلزامية الخمسة (تُتحقق عبر استعلامات Prisma الفعلية). */
 export const REQUIRED_TABLE_COUNTS = ["user", "group", "report", "workflowHistory", "auditLog"] as const;
 
+/** جداول الأساس المالي 6.1 الإلزامية (حوكمة الشركات والسنوات والفترات وسياسات الإقفال) — بوابات 6.1+. */
+export const REQUIRED_P61_TABLES: readonly string[] = [
+  "Company",
+  "FiscalYear",
+  "FiscalPeriod",
+  "CompanyClosingPolicy",
+  "Report",
+];
+
 /* ──────────────────────────────────────────────────────────────────────── */
 /*  الهوية: إصدار التطبيق والمخطط                                           */
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -187,7 +196,7 @@ const KNOWN_SCHEMAS: KnownSchema[] = [
  * أي migration شرعية مستقبلًا (4B+) تعني تحديث هذا الثابت في نفس الـ commit.
  */
 export const PINNED_CURRENT_CANONICAL_FINGERPRINT: string | null =
-  "csha256:bffa026102bcb2419b68af50654ce806c22dc08e069dd3a1203b184db4b4af3f";
+  "csha256:9c2fe217e7c2236980a07202d99dafd93f59b5bd3af0736dcb49bb8185ad766c";
 
 interface SchemaIdentity {
   canonical: string;
