@@ -3,8 +3,9 @@
 // القواعد:
 //   - "/" تتطلب جلسة مسجلة (غير المسجل يُحوَّل إلى /login)
 //   - "/admin" تتطلب جلسة سارية + واحدة من: دور admin، صلاحية manageUsers،
-//     صلاحية manageBackups (4B.3 — فصل الصلاحيات: حامل النسخ يدير النسخ من الواجهة
-//     دون أن يكون مديرًا؛ ما يراه داخل الصفحة يحدده صفحة admin نفسها)
+//     صلاحية manageBackups (4B.3 — فصل الصلاحيات)، أو إحدى صلاحيات الأساس المالي
+//     (6.7 — manageCompanies/manageFiscalYears/managePeriods/manageAccountNature):
+//     ما يراه المستخدم داخل الصفحة تحدده صفحة admin نفسها (تبويبات حسب الصلاحية)
 //   - مسارات /api محمية ذاتيًا داخل معالجاتها (requireAuth/requireAdmin) ولا تمر من هنا
 //   - /login عامة دائمًا (وبها تدفق الإعداد الأولي عند عدم وجود مستخدمين)
 //
@@ -30,12 +31,18 @@ export default async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // /admin: دور المدير، أو صلاحية manageUsers صريحة، أو صلاحية manageBackups صريحة
-  // (نفس دلالة canManageBackups: المدير ضمنيًا بالدور — 4B.3 يفتح الصفحة لحاملي النسخ)
+  // /admin: دور المدير، أو إحدى صلاحيات الإدارة الصريحة (الصفحة نفسها تفصل التبويبات)
   if (pathname === "/admin" || pathname.startsWith("/admin/")) {
     const role = typeof token.role === "string" ? token.role : "user";
     const perms = parsePermissions(typeof token.permissions === "string" ? token.permissions : null);
-    const canOpen = role === "admin" || perms.manageUsers === true || canManageBackups(perms, role);
+    const canOpen =
+      role === "admin" ||
+      perms.manageUsers === true ||
+      canManageBackups(perms, role) ||
+      perms.manageCompanies === true ||
+      perms.manageFiscalYears === true ||
+      perms.managePeriods === true ||
+      perms.manageAccountNature === true;
     if (!canOpen) {
       return NextResponse.redirect(new URL("/", req.url));
     }

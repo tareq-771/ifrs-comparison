@@ -25,6 +25,8 @@ import {
   Users as UsersIcon,
   FolderOpen,
   ArchiveRestore,
+  Building2,
+  BookMarked,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,10 +55,16 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AuditTrailTab } from "@/components/admin/audit-trail";
 import { BackupManagerTab } from "@/components/admin/backup-manager";
+import { FoundationTab } from "@/components/admin/foundation-tab";
+import { AccountNatureTab } from "@/components/admin/account-nature-tab";
 import {
   parsePermissions,
   DEFAULT_USER_PERMISSIONS,
   canManageBackups,
+  canManageCompanies,
+  canManageFiscalYears,
+  canManagePeriods,
+  canManageAccountNature,
   type Permissions,
 } from "@/lib/permissions";
 
@@ -83,7 +91,14 @@ interface GroupRow {
   updatedAt: string;
 }
 
-const PERMISSION_KEYS: { key: Exclude<keyof Permissions, "groupIds">; label: string; desc: string }[] = [
+interface CompanyOption {
+  id: string;
+  code: string;
+  nameAr: string;
+  status: string;
+}
+
+const PERMISSION_KEYS: { key: Exclude<keyof Permissions, "groupIds" | "companyIds">; label: string; desc: string }[] = [
   { key: "view", label: "عرض", desc: "تصفّح التقارير" },
   { key: "add", label: "إضافة", desc: "حفظ التقارير" },
   { key: "edit", label: "تعديل", desc: "تعديل التقارير" },
@@ -93,6 +108,15 @@ const PERMISSION_KEYS: { key: Exclude<keyof Permissions, "groupIds">; label: str
   { key: "settings", label: "الإعدادات", desc: "تعديل البادئات" },
   { key: "manageUsers", label: "إدارة المستخدمين", desc: "الوصول لهذه الصفحة" },
   { key: "manageBackups", label: "النسخ الاحتياطي", desc: "إنشاء/تحقق/Drill/تنزيل النسخ (Phase 4A)" },
+  // 6.1–6.6 — صلاحيات الأساس المالي (المدير يمتلكها ضمنيًا بالدور)
+  { key: "manageCompanies", label: "إدارة الشركات", desc: "إنشاء وتعديل الشركات وسياسات الإقفال (6.1)" },
+  { key: "manageFiscalYears", label: "إدارة السنوات المالية", desc: "إنشاء السنوات والفترات وإقفالها (6.1)" },
+  { key: "managePeriods", label: "إدارة الفترات", desc: "فتح/إقفال الفترات المحاسبية (6.1)" },
+  { key: "lockFiscalYears", label: "إقفال السنوات (LOCK)", desc: "قفل نهائي للسنة المالية (6.1)" },
+  { key: "reopenFiscalYears", label: "إعادة فتح السنوات", desc: "إعادة فتح سنة مقفلة — بسبب موثق (6.1)" },
+  { key: "manageAccountNature", label: "دليل الحسابات والتصنيف", desc: "قواعد البادئات وتجاوزات الحسابات (6.2A)" },
+  { key: "manageTrialBalances", label: "ميزان المراجعة والموازنة", desc: "استيراد/اعتماد ميزان المراجعة والمراجعات والموازنات والتقارير الموحدة (6.2B–6.6)" },
+  { key: "viewAllCompanies", label: "رؤية كل الشركات", desc: "تجاوز نطاق الشركات — رؤية كل الشركات (6.1)" },
   // 4B.3 — صلاحية مستقلة عالية الخطورة: لا تُمنح مع المدير تلقائيًا (Explicit High-Risk)
   {
     key: "restoreDatabase",
@@ -112,8 +136,10 @@ export default function AdminPage() {
 
   const [users, setUsers] = React.useState<UserRow[]>([]);
   const [groups, setGroups] = React.useState<GroupRow[]>([]);
+  const [companies, setCompanies] = React.useState<CompanyOption[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadingGroups, setLoadingGroups] = React.useState(false);
+  const [loadingCompanies, setLoadingCompanies] = React.useState(false);
 
   // Create/Edit dialog state
   const [editorOpen, setEditorOpen] = React.useState(false);
@@ -143,11 +169,27 @@ export default function AdminPage() {
   const showBackupsTab = canManageBackups(perms, currentUserRole);
   // 4B.3 — صفحة الإدارة تفتح لصاحب manageUsers أو manageBackups (فصل الصلاحيات):
   // حامل النسخ فقط يرى تبويب النسخ حصرًا، وحامل manageUsers يرى المستخدمين.
-  const canOpenAdminPage = perms.manageUsers || showBackupsTab;
+  // 6.7 — إضافة: حاملو صلاحيات الأساس المالي (الشركات/السنوات/التصنيف) يفتحون اللوحة لتبويباتهم حصرًا.
+  const showFoundationTab = canManageCompanies(perms, currentUserRole) || canManageFiscalYears(perms, currentUserRole) || canManagePeriods(perms, currentUserRole);
+  const showNatureTab = canManageAccountNature(perms, currentUserRole);
+  const canOpenAdminPage = perms.manageUsers || showBackupsTab || showFoundationTab || showNatureTab;
   // تبويب التدقيق: الـAPI خلف requireAdmin (دور) — يُخفى لغير المدير دورًا.
   const showAuditTab = currentUserRole === "admin";
   const showUsersTab = perms.manageUsers;
-  const defaultTab = showUsersTab ? "users" : "backups";
+  const defaultTab = showUsersTab ? "users" : showFoundationTab ? "foundation" : showNatureTab ? "nature" : "backups";
+
+  // 6.7 — ترابط عميق ?tab= (روابط من لوحة المعلومات: /admin?tab=foundation|nature|users|audit|backups)
+  const [activeTab, setActiveTab] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && (
+      (t === "users" && showUsersTab) || (t === "audit" && showAuditTab) || (t === "backups" && showBackupsTab) ||
+      (t === "foundation" && showFoundationTab) || (t === "nature" && showNatureTab)
+    )) {
+      setActiveTab(t);
+    }
+  }, [showUsersTab, showAuditTab, showBackupsTab, showFoundationTab, showNatureTab]);
 
   React.useEffect(() => {
     if (status === "loading") return;
@@ -215,12 +257,31 @@ export default function AdminPage() {
     }
   }
 
+  /* ── Fetch companies for the company-scope multi-select (6.7) ── */
+  async function fetchCompanies() {
+    setLoadingCompanies(true);
+    try {
+      const res = await fetch("/api/companies", { cache: "no-store" });
+      if (!res.ok) {
+        setCompanies([]);
+        return;
+      }
+      const rows = (await res.json()) as CompanyOption[];
+      setCompanies(Array.isArray(rows) ? rows : []);
+    } catch {
+      setCompanies([]);
+    } finally {
+      setLoadingCompanies(false);
+    }
+  }
+
   /* ── Open create dialog ── */
   function openCreate() {
     setEditingUser(null);
     setForm(emptyForm());
     setShowPassword(false);
     setEditorOpen(true);
+    void fetchCompanies();
   }
 
   /* ── Open edit dialog ── */
@@ -238,6 +299,7 @@ export default function AdminPage() {
     });
     setShowPassword(false);
     setEditorOpen(true);
+    void fetchCompanies();
   }
 
   /* ── Save (create or update) ── */
@@ -384,7 +446,7 @@ export default function AdminPage() {
                 لوحة الإدارة
               </h1>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 sm:text-xs">
-                إدارة الحسابات والصلاحيات وسجل التدقيق
+                إدارة الحسابات والصلاحيات وسجل التدقيق والشركات والسنوات المالية ودليل التصنيف
               </p>
             </div>
           </div>
@@ -421,12 +483,9 @@ export default function AdminPage() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
-        <Tabs defaultValue={defaultTab} className="w-full">
-          <TabsList  className={cn(
-              "mb-4 grid w-full",
-              showUsersTab && showAuditTab && showBackupsTab && "grid-cols-3",
-              showUsersTab && !showBackupsTab && "grid-cols-2",
-              !showUsersTab && "grid-cols-1",
+        <Tabs value={activeTab ?? defaultTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className={cn(
+              "mb-4 flex w-full flex-wrap",
               "sm:w-fit"
             )}
           >
@@ -446,6 +505,18 @@ export default function AdminPage() {
               <TabsTrigger value="backups" className="gap-1.5">
                 <DatabaseBackup className="size-3.5" />
                 النسخ الاحتياطي
+              </TabsTrigger>
+            )}
+            {showFoundationTab && (
+              <TabsTrigger value="foundation" className="gap-1.5">
+                <Building2 className="size-3.5" />
+                الشركات والسنوات المالية
+              </TabsTrigger>
+            )}
+            {showNatureTab && (
+              <TabsTrigger value="nature" className="gap-1.5">
+                <BookMarked className="size-3.5" />
+                دليل الحسابات والتصنيف
               </TabsTrigger>
             )}
           </TabsList>
@@ -705,6 +776,18 @@ export default function AdminPage() {
           {showBackupsTab && (
             <TabsContent value="backups" className="mt-0">
               <BackupManagerTab />
+            </TabsContent>
+          )}
+
+          {showFoundationTab && (
+            <TabsContent value="foundation" className="mt-0">
+              <FoundationTab />
+            </TabsContent>
+          )}
+
+          {showNatureTab && (
+            <TabsContent value="nature" className="mt-0">
+              <AccountNatureTab />
             </TabsContent>
           )}
         </Tabs>
@@ -987,6 +1070,85 @@ export default function AdminPage() {
                 </div>
               )}
             </div>
+            {/* Company scope (multi-select) — 6.7: نطاق الشركات للأساس المالي */}
+            {form.role !== "admin" && (form.permissions.viewAllCompanies === true ? (
+              <div className="rounded-lg border border-dashed border-emerald-200 bg-emerald-50/50 px-3 py-2 text-center text-[11px] text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/20 dark:text-emerald-400">
+                صلاحية «رؤية كل الشركات» مفعّلة — نطاق الشركات لا يُقيّد هذا المستخدم.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="flex items-center gap-1.5">
+                    <Building2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                    نطاق الشركات المسموح به
+                  </Label>
+                  <span className="text-[10px] text-slate-400">
+                    {(Array.isArray(form.permissions.companyIds) ? form.permissions.companyIds : []).length === 0
+                      ? "بلا تحديد → لا يرى أي شركة (fail-closed)"
+                      : `${(Array.isArray(form.permissions.companyIds) ? form.permissions.companyIds : []).length} شركة محددة`}
+                  </span>
+                </div>
+                {loadingCompanies ? (
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-3 text-[11px] text-slate-400 dark:border-slate-700">
+                    <Loader2 className="size-3.5 animate-spin" /> جارٍ تحميل الشركات…
+                  </div>
+                ) : companies.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-3 text-center text-[11px] text-slate-400 dark:border-slate-700 dark:bg-slate-900/40">
+                    لا توجد شركات معرفة بعد.
+                  </div>
+                ) : (
+                  <div className="scroll-thin max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                    {companies.map((c) => {
+                      const current = Array.isArray(form.permissions.companyIds) ? form.permissions.companyIds : [];
+                      const checked = current.includes(c.id);
+                      return (
+                        <label
+                          key={c.id}
+                          htmlFor={`scope-company-${c.id}`}
+                          className="flex cursor-pointer items-center gap-2 rounded-md p-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                        >
+                          <Checkbox
+                            id={`scope-company-${c.id}`}
+                            checked={checked}
+                            onCheckedChange={(v) =>
+                              setForm((f) => ({
+                                ...f,
+                                permissions: {
+                                  ...f.permissions,
+                                  companyIds: v
+                                    ? [...current, c.id]
+                                    : current.filter((cid) => cid !== c.id),
+                                },
+                              }))
+                            }
+                          />
+                          <div className="leading-tight">
+                            <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">{c.nameAr}</div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 tnum">{c.code}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                    <div className="flex items-center gap-3 pt-1 text-[10px] text-slate-400">
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, permissions: { ...f.permissions, companyIds: companies.map((c) => c.id) } }))}
+                        className="text-emerald-600 underline-offset-2 hover:underline dark:text-emerald-400"
+                      >
+                        تحديد الكل
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, permissions: { ...f.permissions, companyIds: [] } }))}
+                        className="text-slate-500 underline-offset-2 hover:underline dark:text-slate-400"
+                      >
+                        مسح التحديد
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
 
           <DialogFooter>

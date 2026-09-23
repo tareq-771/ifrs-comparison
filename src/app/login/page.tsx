@@ -316,7 +316,7 @@ function LoginCard({
     <Card className="border-slate-200/80 shadow-xl shadow-slate-900/5 dark:border-slate-800 dark:shadow-black/20">
       <CardHeader>
         <CardTitle className="text-lg text-slate-800 dark:text-slate-100">مرحباً بك</CardTitle>
-        <CardDescription className="text-slate-500 dark:text-slate-400">سجّل دخولك للوصول إلى نظام المطابقة</CardDescription>
+        <CardDescription className="text-slate-500 dark:text-slate-400">سجّل دخولك للوصول إلى نظام التقارير المالية الموحدة</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
