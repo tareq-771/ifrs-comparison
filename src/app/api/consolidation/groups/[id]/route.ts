@@ -1,22 +1,18 @@
-// Phase 6.6 — POST /api/consolidation/adjustments (قيد توحيد/استبعاد متوازن)
-// 6.7 — GET ?groupId= (قائمة القيود للمجموعة — للعرض والإدارة)
+// 6.7 — GET /api/consolidation/groups/[id] (تفاصيل: أعضاء/بنود/خرائط/قيود) + PATCH (اسم)
 import { NextRequest, NextResponse } from "next/server";
 import { requireManageTrialBalances } from "@/lib/session";
 import { guardRead, guardWrite } from "@/lib/api-guard";
 import { getClientIp } from "@/lib/audit";
 import { TrialBalanceError } from "@/lib/trial-balance";
-import { createConsolidationAdjustment, listConsolidationAdjustments } from "@/lib/consolidation-server";
+import { getConsolidationGroupDetail, updateConsolidationGroup } from "@/lib/consolidation-server";
 
-export async function GET(req: NextRequest) {
-  return guardRead("/api/consolidation/adjustments", async () => {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  return guardRead("/api/consolidation/groups/[id]", async () => {
     try {
       const user = await requireManageTrialBalances();
-      const groupId = req.nextUrl.searchParams.get("groupId")?.trim() ?? "";
-      if (!groupId) {
-        return NextResponse.json({ error: "groupId إلزامي.", code: "COMPANY_REQUIRED" }, { status: 400 });
-      }
-      const rows = await listConsolidationAdjustments(user, groupId);
-      return NextResponse.json(rows);
+      const { id } = await params;
+      const detail = await getConsolidationGroupDetail(user, id);
+      return NextResponse.json(detail);
     } catch (error) {
       if (error instanceof TrialBalanceError) {
         const status = error.code === "NOT_FOUND" ? 403 : 400;
@@ -29,16 +25,17 @@ export async function GET(req: NextRequest) {
   });
 }
 
-export async function POST(req: NextRequest) {
-  return guardWrite("/api/consolidation/adjustments", async () => {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  return guardWrite("/api/consolidation/groups/[id]", async () => {
     try {
       const user = await requireManageTrialBalances();
+      const { id } = await params;
       const body = await req.json().catch(() => ({}));
-      const result = await createConsolidationAdjustment({ user, ip: getClientIp(req), input: body });
-      return NextResponse.json(result, { status: 201 });
+      const result = await updateConsolidationGroup({ user, ip: getClientIp(req), groupId: id, input: body });
+      return NextResponse.json(result);
     } catch (error) {
       if (error instanceof TrialBalanceError) {
-        const status = error.code === "NOT_BALANCED" ? 422 : error.code === "NOT_FOUND" ? 403 : 400;
+        const status = error.code === "NOT_FOUND" ? 403 : error.code === "INVALID_LINE" ? 400 : 400;
         return NextResponse.json({ error: error.message, code: error.code }, { status });
       }
       const msg = error instanceof Error ? error.message : "خطأ";

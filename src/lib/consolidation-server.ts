@@ -377,3 +377,359 @@ export async function getConsolidatedStatements(
 }
 
 const companyCodeCache = new Map<string, string>();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 6.7 — إدارة المجموعات (بيانات أساس) — طبقة ربط فوق نماذج 6.6 دون تغيير سلوكها:
+ *   - بذر بنود جماعية افتراضية من البنود المرجعية النشطة (PNL + SFP، غير المجموعية)
+ *     مع خرائط هوية (companyLineCode = groupLine.code) لكل شركة عضو — لأن أكواد
+ *     بنود الشركات في snapshots ميزان المراجعة هي نفس أكواد البنود المرجعية.
+ *   - fail-closed: المستخدم يجب أن يرى كل الشركات الأعضاء (نفس دلالة assertGroupAccess).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** بذر بنود المجموعة + خرائط الهوية لشركات محددة — داخل معاملة واحدة. */
+async function seedReportingStructure(
+  tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+  groupId: string,
+  companyIds: readonly string[]
+): Promise<number> {
+  const existing = await tx.groupReportingLine.findMany({ where: { groupId }, select: { code: true, displayOrder: true, statementType: true } });
+  const existingCodes = new Set(existing.map((l) => l.code));
+  const ref = await tx.financialStatementLine.findMany({
+    where: { isActive: true, isSubtotal: false, statementType: { in: ["PROFIT_OR_LOSS", "STATEMENT_OF_FINANCIAL_POSITION"] } },
+    orderBy: [{ statementType: "asc" }, { displayOrder: "asc" }],
+    select: { code: true, nameAr: true, statementType: true, displayOrder: true },
+  });
+  let seeded = 0;
+  for (const l of ref) {
+    if (existingCodes.has(l.code)) continue;
+    await tx.groupReportingLine.create({
+      data: { groupId, code: l.code, nameAr: l.nameAr, statementType: l.statementType, displayOrder: l.displayOrder },
+    });
+    seeded += 1;
+  }
+  const allLines = await tx.groupReportingLine.findMany({ where: { groupId }, select: { id: true, code: true } });
+  for (const companyId of companyIds) {
+    const have = await tx.groupReportingMapping.findMany({ where: { groupId, companyId }, select: { companyLineCode: true } });
+    const haveSet = new Set(have.map((m) => m.companyLineCode));
+    const rows = allLines
+      .filter((l) => !haveSet.has(l.code))
+      .map((l) => ({ groupId, companyId, companyLineCode: l.code, groupLineId: l.id }));
+    if (rows.length > 0) await tx.groupReportingMapping.createMany({ data: rows });
+  }
+  return seeded;
+}
+
+function parseOwnership(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100) return null;
+  return n;
+}
+
+function parseDateOnly(v: unknown): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+}
+
+/** قائمة المجموعات المرئية — المجموعة تظهر فقط إذا كان المستخدم يرى كل شركاتها (fail-closed). */
+export async function listConsolidationGroups(user: SessionUser) {
+  const groups = await db.consolidationGroup.findMany({
+    where: { status: "ACTIVE" },
+    orderBy: { createdAt: "asc" },
+    include: {
+      memberships: { include: { company: { select: { id: true, code: true, nameAr: true, status: true } } } },
+      _count: { select: { adjustments: true } },
+    },
+  });
+  const visible: Array<Record<string, unknown>> = [];
+  for (const g of groups) {
+    const members = g.memberships;
+    if (members.length > 0 && !members.every((m) => companyVisible(user, m.companyId))) continue;
+    if (members.length === 0 && user.role !== "admin" && user.permissions.viewAllCompanies !== true) continue;
+    visible.push({
+      id: g.id,
+      code: g.code,
+      nameAr: g.nameAr,
+      status: g.status,
+      memberCount: members.length,
+      members: members.map((m) => ({
+        membershipId: m.id,
+        companyId: m.companyId,
+        companyCode: m.company?.code ?? m.companyId,
+        companyNameAr: m.company?.nameAr ?? "",
+        ownershipPercentage: m.ownershipPercentage,
+        effectiveFrom: m.effectiveFrom,
+        effectiveTo: m.effectiveTo,
+      })),
+      adjustmentsCount: g._count.adjustments,
+    });
+  }
+  return visible;
+}
+
+export interface CreateConsolidationGroupArgs {
+  user: SessionUser;
+  ip: string | null;
+  input: {
+    code?: unknown;
+    nameAr?: unknown;
+    members?: unknown; // [{ companyId, effectiveFrom, effectiveTo?, ownershipPercentage? }]
+  };
+}
+
+/** إنشاء مجموعة + أعضائها + بذر البنود والخرائط — المعاملة الواحدة. */
+export async function createConsolidationGroup(args: CreateConsolidationGroupArgs) {
+  const { user, ip, input } = args;
+  const code = typeof input.code === "string" ? input.code.trim().toUpperCase() : "";
+  const nameAr = typeof input.nameAr === "string" ? input.nameAr.trim() : "";
+  if (!/^[A-Z0-9_-]{2,40}$/.test(code)) fail("INVALID_LINE", "كود المجموعة إلزامي (حروف لاتينية/أرقام 2-40).");
+  if (!nameAr) fail("INVALID_LINE", "اسم المجموعة بالعربية إلزامي.");
+  const dup = await db.consolidationGroup.findUnique({ where: { code } });
+  if (dup) fail("DUPLICATE_IMPORT", "كود المجموعة مستخدم بالفعل.");
+
+  const rawMembers = Array.isArray(input.members) ? (input.members as Array<Record<string, unknown>>) : [];
+  if (rawMembers.length === 0) fail("INVALID_LINE", "أضف شركة عضو واحدة على الأقل.");
+  const seen = new Set<string>();
+  const members: Array<{ companyId: string; effectiveFrom: string; effectiveTo: string | null; ownershipPercentage: number | null }> = [];
+  for (const m of rawMembers) {
+    const companyId = typeof m.companyId === "string" ? m.companyId.trim() : "";
+    const effectiveFrom = parseDateOnly(m.effectiveFrom);
+    if (!companyId || !effectiveFrom) fail("INVALID_LINE", "كل عضو يتطلب companyId وتاريخ سريان (date-only).");
+    const effectiveToRaw = parseDateOnly(m.effectiveTo);
+    const ownership = parseOwnership(m.ownershipPercentage);
+    if (ownership === null && m.ownershipPercentage !== null && m.ownershipPercentage !== undefined && m.ownershipPercentage !== "") {
+      fail("INVALID_LINE", "نسبة الملكية يجب أن تكون عددًا صحيحًا بين 0 و 100.");
+    }
+    if (seen.has(companyId)) fail("INVALID_LINE", "لا يمكن تكرار نفس الشركة في الإنشاء.");
+    seen.add(companyId);
+    const company = await db.company.findUnique({ where: { id: companyId }, select: { id: true, status: true } });
+    if (!company) fail("NOT_FOUND", `الشركة غير موجودة: ${companyId}`);
+    if (!companyVisible(user, companyId)) fail("NOT_FOUND", "لا تملك رؤية كل الشركات الأعضاء — fail-closed.");
+    members.push({ companyId, effectiveFrom, effectiveTo: effectiveToRaw || null, ownershipPercentage: ownership });
+  }
+
+  const row = await db.$transaction(async (tx) => {
+    const created = await tx.consolidationGroup.create({
+      data: { code, nameAr, createdBy: user.username },
+    });
+    for (const m of members) {
+      await tx.groupCompanyMembership.create({
+        data: { groupId: created.id, companyId: m.companyId, effectiveFrom: m.effectiveFrom, effectiveTo: m.effectiveTo, ownershipPercentage: m.ownershipPercentage },
+      });
+    }
+    await seedReportingStructure(tx, created.id, members.map((m) => m.companyId));
+    await writeAudit(tx, {
+      user,
+      action: "CONSOLIDATION_GROUP_CREATED",
+      entityType: "ConsolidationGroup",
+      entityId: created.id,
+      description: `إنشاء مجموعة توحيد ${code} — ${members.length} شركة عضو`,
+      metadata: { code, nameAr, members: members.map((m) => ({ companyId: m.companyId, effectiveFrom: m.effectiveFrom, ownershipPercentage: m.ownershipPercentage })) },
+      ip,
+    });
+    return created;
+  });
+  return { id: row.id, code: row.code, nameAr: row.nameAr, membersCount: members.length };
+}
+
+/** تفاصيل مجموعة — الأعضاء والبنود والخرائط والقيود. */
+export async function getConsolidationGroupDetail(user: SessionUser, groupId: string) {
+  const group = await assertGroupAccess(user, groupId);
+  const memberships = await db.groupCompanyMembership.findMany({
+    where: { groupId },
+    include: { company: { select: { id: true, code: true, nameAr: true, status: true } } },
+    orderBy: { effectiveFrom: "asc" },
+  });
+  const lines = await db.groupReportingLine.findMany({
+    where: { groupId },
+    orderBy: [{ statementType: "asc" }, { displayOrder: "asc" }],
+    select: { id: true, code: true, nameAr: true, statementType: true, displayOrder: true, isActive: true },
+  });
+  const mappings = await db.groupReportingMapping.findMany({
+    where: { groupId },
+    select: { id: true, companyId: true, companyLineCode: true, groupLineId: true },
+  });
+  const adjustments = await db.consolidationAdjustment.findMany({
+    where: { groupId },
+    orderBy: { createdAt: "desc" },
+    include: { lines: { select: { id: true, groupLineId: true, debitMinor: true, creditMinor: true } } },
+  });
+  return {
+    id: group.id,
+    code: group.code,
+    nameAr: group.nameAr,
+    status: group.status,
+    createdBy: group.createdBy,
+    members: memberships.map((m) => ({
+      membershipId: m.id,
+      companyId: m.companyId,
+      companyCode: m.company?.code ?? m.companyId,
+      companyNameAr: m.company?.nameAr ?? "",
+      ownershipPercentage: m.ownershipPercentage,
+      effectiveFrom: m.effectiveFrom,
+      effectiveTo: m.effectiveTo,
+    })),
+    reportingLines: lines,
+    mappingsCount: mappings.length,
+    mappings: mappings.map((m) => ({ ...m, companyLineCode: m.companyLineCode })),
+    adjustments: adjustments.map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      eliminationType: a.eliminationType,
+      fiscalYearId: a.fiscalYearId,
+      startDate: a.startDate,
+      endDate: a.endDate,
+      reason: a.reason,
+      status: a.status,
+      preparedBy: a.preparedBy,
+      postedBy: a.postedBy,
+      postedAt: a.postedAt ? a.postedAt.toISOString() : null,
+      createdAt: a.createdAt.toISOString(),
+      lines: a.lines.map((l) => ({
+        id: l.id,
+        groupLineId: l.groupLineId,
+        groupLineCode: lines.find((ln) => ln.id === l.groupLineId)?.code ?? null,
+        debitMinor: l.debitMinor.toString(),
+        creditMinor: l.creditMinor.toString(),
+      })),
+    })),
+  };
+}
+
+export interface AddGroupMemberArgs {
+  user: SessionUser;
+  ip: string | null;
+  groupId: string;
+  input: { companyId?: unknown; effectiveFrom?: unknown; effectiveTo?: unknown; ownershipPercentage?: unknown };
+}
+
+/** إضافة عضو لمجموعة قائمة + بذر خرائط الهوية له. */
+export async function addGroupMember(args: AddGroupMemberArgs) {
+  const { user, ip, groupId, input } = args;
+  await assertGroupAccess(user, groupId);
+  const companyId = typeof input.companyId === "string" ? input.companyId.trim() : "";
+  const effectiveFrom = parseDateOnly(input.effectiveFrom);
+  if (!companyId || !effectiveFrom) fail("INVALID_LINE", "companyId وتاريخ السريان إلزاميان.");
+  const effectiveTo = parseDateOnly(input.effectiveTo) || null;
+  const ownership = parseOwnership(input.ownershipPercentage);
+  if (ownership === null && input.ownershipPercentage !== null && input.ownershipPercentage !== undefined && input.ownershipPercentage !== "") {
+    fail("INVALID_LINE", "نسبة الملكية يجب أن تكون عددًا صحيحًا بين 0 و 100.");
+  }
+  const company = await db.company.findUnique({ where: { id: companyId }, select: { id: true, code: true, status: true } });
+  if (!company) fail("NOT_FOUND", "الشركة غير موجودة.");
+  if (!companyVisible(user, companyId)) fail("NOT_FOUND", "لا تملك رؤية هذه الشركة — fail-closed.");
+  const dup = await db.groupCompanyMembership.findUnique({
+    where: { groupId_companyId_effectiveFrom: { groupId, companyId, effectiveFrom } },
+  });
+  if (dup) fail("DUPLICATE_IMPORT", "العضوية بنفس تاريخ السريان موجودة.");
+  const row = await db.$transaction(async (tx) => {
+    const membership = await tx.groupCompanyMembership.create({
+      data: { groupId, companyId, effectiveFrom, effectiveTo, ownershipPercentage: ownership },
+    });
+    await seedReportingStructure(tx, groupId, [companyId]);
+    await writeAudit(tx, {
+      user,
+      action: "CONSOLIDATION_MEMBER_ADDED",
+      entityType: "GroupCompanyMembership",
+      entityId: membership.id,
+      description: `إضافة الشركة ${company.code} عضوًا في المجموعة (سريان ${effectiveFrom})`,
+      metadata: { groupId, companyId, effectiveFrom, effectiveTo, ownershipPercentage: ownership },
+      ip,
+    });
+    return membership;
+  });
+  return { membershipId: row.id, groupId, companyId, effectiveFrom: row.effectiveFrom, effectiveTo: row.effectiveTo, ownershipPercentage: row.ownershipPercentage };
+}
+
+export interface RemoveGroupMemberArgs {
+  user: SessionUser;
+  ip: string | null;
+  groupId: string;
+  membershipId: string;
+  reason?: string;
+}
+
+/** إزالة عضوية (سجل العضوية فقط — القيود والتقارير التاريخية تبقى). */
+export async function removeGroupMember(args: RemoveGroupMemberArgs) {
+  const { user, ip, groupId, membershipId } = args;
+  await assertGroupAccess(user, groupId);
+  const membership = await db.groupCompanyMembership.findUnique({ where: { id: membershipId } });
+  if (!membership || membership.groupId !== groupId) fail("NOT_FOUND", "العضوية غير موجودة في هذه المجموعة.");
+  await db.$transaction(async (tx) => {
+    await tx.groupCompanyMembership.delete({ where: { id: membershipId } });
+    await writeAudit(tx, {
+      user,
+      action: "CONSOLIDATION_MEMBER_REMOVED",
+      entityType: "GroupCompanyMembership",
+      entityId: membershipId,
+      description: `إزالة عضوية الشركة من المجموعة${args.reason ? ` — ${args.reason}` : ""}`,
+      metadata: { groupId, companyId: membership.companyId, effectiveFrom: membership.effectiveFrom },
+      ip,
+    });
+  });
+  return { success: true };
+}
+
+export interface UpdateConsolidationGroupArgs {
+  user: SessionUser;
+  ip: string | null;
+  groupId: string;
+  input: { nameAr?: unknown; status?: unknown; reason?: unknown };
+}
+
+/** تحديث اسم/حالة المجموعة (ACTIVE | INACTIVE). */
+export async function updateConsolidationGroup(args: UpdateConsolidationGroupArgs) {
+  const { user, ip, groupId, input } = args;
+  const group = await assertGroupAccess(user, groupId);
+  const nameAr = typeof input.nameAr === "string" && input.nameAr.trim() ? input.nameAr.trim() : group.nameAr;
+  const status = input.status === "ACTIVE" || input.status === "INACTIVE" ? input.status : group.status;
+  if (status === "INACTIVE") fail("INVALID_LINE", "تعطيل المجموعة غير مدعوم في هذه المرحلة — استخدم الإدارة المباشر إن لزم.");
+  const row = await db.$transaction(async (tx) => {
+    const updated = await tx.consolidationGroup.update({ where: { id: groupId }, data: { nameAr, status } });
+    await writeAudit(tx, {
+      user,
+      action: "CONSOLIDATION_GROUP_UPDATED",
+      entityType: "ConsolidationGroup",
+      entityId: groupId,
+      description: `تحديث بيانات مجموعة ${group.code}`,
+      before: { nameAr: group.nameAr, status: group.status },
+      after: { nameAr, status },
+      ip,
+    });
+    return updated;
+  });
+  return { id: row.id, code: row.code, nameAr: row.nameAr, status: row.status };
+}
+
+/** قائمة قيود التسوية/الاستبعاد لمجموعة (للعرض والإدارة). */
+export async function listConsolidationAdjustments(user: SessionUser, groupId: string) {
+  await assertGroupAccess(user, groupId);
+  const adjustments = await db.consolidationAdjustment.findMany({
+    where: { groupId },
+    orderBy: { createdAt: "desc" },
+    include: { lines: { select: { id: true, groupLineId: true, debitMinor: true, creditMinor: true } } },
+  });
+  const lineCodes = new Map<string, string>();
+  const lines = await db.groupReportingLine.findMany({ where: { groupId }, select: { id: true, code: true } });
+  for (const l of lines) lineCodes.set(l.id, l.code);
+  return adjustments.map((a) => ({
+    id: a.id,
+    kind: a.kind,
+    eliminationType: a.eliminationType,
+    fiscalYearId: a.fiscalYearId,
+    startDate: a.startDate,
+    endDate: a.endDate,
+    reason: a.reason,
+    status: a.status,
+    preparedBy: a.preparedBy,
+    postedBy: a.postedBy,
+    postedAt: a.postedAt ? a.postedAt.toISOString() : null,
+    createdAt: a.createdAt.toISOString(),
+    lines: a.lines.map((l) => ({
+      id: l.id,
+      groupLineCode: lineCodes.get(l.groupLineId) ?? null,
+      debitMinor: l.debitMinor.toString(),
+      creditMinor: l.creditMinor.toString(),
+    })),
+  }));
+}
