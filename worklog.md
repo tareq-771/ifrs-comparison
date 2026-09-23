@@ -737,3 +737,19 @@ Work Log:
 
 Stage Summary:
 - الموازنة نسخ محكومة بلا Unlock، فعلي مقابل موازنة كامل بالتراكبات الزمنية، ف/غ قاعدة مركزية واحدة منفصلة عن الرقم
+
+---
+Task ID: 6.6
+Agent: main (Z.ai Code)
+Task: Phase 6.6 — Consolidation foundation and preliminary group reporting
+
+Work Log:
+- Migration 20260923144500_phase66_consolidation_foundation (ADD-ONLY): ConsolidationGroup + GroupCompanyMembership (effectiveFrom/To + ownershipPercentage أساس) + GroupReportingLine + GroupReportingMapping (بند قائمة الشركة → البند الجماعي — أكواد حسابات مختلفة تلتقي) + ConsolidationAdjustment (journal متوازن kind=ADJUSTMENT|ELIMINATION + eliminationType للتعريفات بين الشركات: AR_AP/Sales_Purchases/Loans/Dividends) + AdjustmentLine
+- lib/consolidation-server.ts: محاذاة الفترات بالتواريخ (سنة كل شركة مشتقة من مدى التقرير) + شركة بلا بيانات ⇒ INCOMPLETE_DATA لا صفر صامت + تجميع قبل الاستبعادات + قيود POSTED حصراً في الإجماليات + ورقة عمل قابلة للتتبع لكل شركة + معادلة SFP بفارق صريح بلا plug + صلاحيات: رؤية كل الأعضاء fail-closed + قيود القيود في التدقيق
+- API: POST /api/consolidation/{statements,adjustments} (422 للقيد غير المتوازن)
+- بوابة phase66 على dev-66-gate.db: 8/8 — أكواد مختلفة كلياً (4101 مقابل 70101) تلتقي جماعياً، استبعاد بيع/شراء متوازن يحفظ الربح ثابتاً، رفض غير المتوازن، عزل فترة، فجوة معلنة، عزل صلاحيات
+- PIN: csha256:ef3fb50b...؛ انحدار 62A/62C = 30/30 و9/9؛ lint 0؛ typecheck 95 = خط الأساس (صفر في كود 6.6)
+- ملاحظة STATUS: أثناء العمل تحقق توقف ظاهري ~30 دقيقة — فحص: لا عمليات معلقة (فقط خادم التطوير)؛ الاستئناف كان من آخر نقطة مكتملة (إصلاح توقعين خاطئين في البوابة — الكود كان صحيحاً)
+
+Stage Summary:
+- Consolidation-ready working model + قوائم موحدة مبدئية PRELIMINARY؛ NC/شهرة/استحواذ/عملة/ملكية المعقدة موثقة كمراحل لاحقة؛ أساس التوحيد داخل Git

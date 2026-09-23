@@ -12,8 +12,8 @@ async function main() {
     console.error("DATABASE_URL إلزامي — لن تعمل الأداة على أي قاعدة افتراضية.");
     process.exit(1);
   }
-  if (!/dev-62[a-d]|dev-63[a-z]?|dev-64[a-z]?|dev-65[a-z]?|phase62[a-d]|phase63[a-z]?|phase64[a-z]?|phase65[a-z]?/.test(url)) {
-    console.error("رفض: البصمة تُحسب على قواعد 6.2x…6.5 المعزولة حصرًا (dev-62a*…dev-65*).");
+  if (!/dev-62[a-d]|dev-63[a-z]?|dev-64[a-z]?|dev-65[a-z]?|dev-66[a-z]?|phase62[a-d]|phase63[a-z]?|phase64[a-z]?|phase65[a-z]?|phase66[a-z]?/.test(url)) {
+    console.error("رفض: البصمة تُحسب على قواعد 6.2x…6.6 المعزولة حصرًا (dev-62a*…dev-66*).");
     process.exit(1);
   }
   const client = new PrismaClient({ datasources: { db: { url } } });

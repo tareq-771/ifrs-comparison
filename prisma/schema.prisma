@@ -203,6 +203,10 @@ model Company {
   // ── Phase 6.5 back-relations ──
   budgets                  Budget[]
 
+  // ── Phase 6.6 back-relations ──
+  groupMemberships         GroupCompanyMembership[]
+  groupLineMappings        GroupReportingMapping[]
+
   @@index([status])
   @@index([legacyGroupId])
 }
@@ -679,4 +683,113 @@ model BudgetLine {
   @@unique([budgetId, statementLineCode, fiscalPeriodId])
   @@index([budgetId])
   @@index([statementLineCode])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.6 — أساس التوحيد والتقرير الجماعي المبدئي (PRELIMINARY)
+// كل شركة تحتفظ بدليلها وبنودها؛ الربط الجماعي على مستوى بند القائمة للشركة →
+// البند الجماعي (لا اشتراط تطابق أكواد الحسابات). Eliminations/Adjustments
+// قيود يدوية متوازنة (journal) بتدقيق — لا توحيد IFRS كامل في هذه المرحلة.
+// ══════════════════════════════════════════════════════════════════════════════
+
+model ConsolidationGroup {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  nameAr        String
+  status        String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdBy     String   @default("")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  memberships        GroupCompanyMembership[]
+  reportingLines     GroupReportingLine[]
+  groupMappings      GroupReportingMapping[]
+  adjustments        ConsolidationAdjustment[]
+
+  @@index([status])
+}
+
+model GroupCompanyMembership {
+  id                  String   @id @default(cuid())
+  groupId             String
+  group               ConsolidationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  companyId           String
+  company             Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  effectiveFrom       String                        // date-only
+  effectiveTo         String?                       // null = مفتوحة
+  ownershipPercentage Int?                          // أساس فقط (0-100) — بلا محرك ملكية معقد
+  note                String   @default("")
+
+  @@unique([groupId, companyId, effectiveFrom])
+  @@index([groupId])
+  @@index([companyId])
+}
+
+model GroupReportingLine {
+  id            String  @id @default(cuid())
+  groupId       String
+  group         ConsolidationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  code          String                        // هوية داخل المجموعة
+  nameAr        String
+  statementType String                        // PROFIT_OR_LOSS | STATEMENT_OF_FINANCIAL_POSITION
+  displayOrder  Int     @default(0)
+  isActive      Boolean @default(true)
+
+  mappings      GroupReportingMapping[]
+  adjustmentLines AdjustmentLine[]
+
+  @@unique([groupId, code])
+  @@index([groupId, statementType])
+}
+
+model GroupReportingMapping {
+  id             String  @id @default(cuid())
+  groupId        String
+  group          ConsolidationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  companyId      String
+  company        Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyLineCode String                     // بند قائمة الشركة (مثل PNL-REVENUE)
+  groupLineId    String
+  groupLine      GroupReportingLine @relation(fields: [groupLineId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, companyId, companyLineCode])
+  @@index([companyId, companyLineCode])
+  @@index([groupLineId])
+}
+
+// قيد يدوي متوازن (journal) — ADJUSTMENT | ELIMINATION (بنوعه: تعريفات بين الشركات)
+model ConsolidationAdjustment {
+  id              String   @id @default(cuid())
+  groupId         String
+  group           ConsolidationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  kind            String   @default("ADJUSTMENT") // ADJUSTMENT | ELIMINATION
+  eliminationType String?  // INTERCOMPANY_AR_AP | INTERCOMPANY_SALES_PURCHASES | INTERCOMPANY_LOANS | INTERCOMPANY_DIVIDENDS | OTHER
+  fiscalYearId    String?                       // سياق الفترة (سنة الشركة المرجعية للمجموعة)
+  startDate       String                        // date-only — تغطية القيد
+  endDate         String
+  reason          String                        // إلزامي
+  status          String   @default("DRAFT")    // DRAFT | POSTED — POSTED حصرًا يدخل الإجماليات
+  preparedBy      String   @default("")
+  postedBy        String   @default("")
+  postedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  lines AdjustmentLine[]
+
+  @@index([groupId, status])
+  @@index([groupId, startDate, endDate])
+}
+
+model AdjustmentLine {
+  id           String  @id @default(cuid())
+  adjustmentId String
+  adjustment   ConsolidationAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  groupLineId  String
+  groupLine    GroupReportingLine @relation(fields: [groupLineId], references: [id], onDelete: Restrict)
+  debitMinor   BigInt
+  creditMinor  BigInt
+
+  @@index([adjustmentId])
+  @@index([groupLineId])
 }
