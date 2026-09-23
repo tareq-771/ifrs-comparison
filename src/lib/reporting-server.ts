@@ -55,14 +55,32 @@ async function loadContext(companyId: string, fiscalYearId: string, ordinal: num
   return { fy, period };
 }
 
+/**
+ * 6.3 — الافتراضي للتقارير: لكل (مدى، نوع بيانات) تُستخدم أحدث نسخة معتمدة حصرًا؛
+ * النسخ المعتمدة الأقدم تبقى محفوظة قابلة للتتبع لكنها لا تشارك في قيم التقرير.
+ */
+function selectDefaultCommittedImports<T extends { fromDate: string; toDate: string; dataType: string; revisionNumber: number }>(
+  imports: readonly T[]
+): T[] {
+  const latestByRange = new Map<string, T>();
+  for (const imp of imports) {
+    const key = `${imp.fromDate}|${imp.toDate}|${imp.dataType}`;
+    const current = latestByRange.get(key);
+    if (!current || imp.revisionNumber > current.revisionNumber) {
+      latestByRange.set(key, imp);
+    }
+  }
+  return Array.from(latestByRange.values());
+}
+
 /** جلب نقاط كل الحسابات من الاستيرادات المعتمدة حصرًا (لا مسودات في التقارير أبدًا). */
 export async function loadCommittedAccountPoints(
   companyId: string,
   fiscalYearId: string
 ): Promise<Map<string, AccountPoints>> {
-  const imports = await db.trialBalanceImport.findMany({
+  const importsAll = await db.trialBalanceImport.findMany({
     where: { companyId, fiscalYearId, status: "COMMITTED" },
-    orderBy: [{ fromDate: "asc" }],
+    orderBy: [{ fromDate: "asc" }, { revisionNumber: "asc" }],
     select: {
       id: true,
       fromDate: true,
@@ -71,6 +89,7 @@ export async function loadCommittedAccountPoints(
       endOrdinal: true,
       dataType: true,
       createdAt: true,
+      revisionNumber: true,
       lines: {
         orderBy: { rowIndex: "asc" },
         select: {
@@ -86,6 +105,8 @@ export async function loadCommittedAccountPoints(
       },
     },
   });
+  // 6.3 — لكل (مدى، نوع) أحدث مراجعة معتمدة فقط تشارك في القيم (القاعدة المركزية)
+  const imports = selectDefaultCommittedImports(importsAll);
   const byAccount = new Map<string, AccountPoints>();
   // الترتيب تصاعديًا حسب fromDate ⇒ الاستيراد الأحدث يستبدل snapshot العرض (آخر كتابة يفوز بالعرض فقط، لا بالقيم).
   for (const imp of imports) {
@@ -129,6 +150,68 @@ function assertReportScope(user: SessionUser, companyId: string): void {
   }
 }
 
+/* ── Phase 6.3 — إثبات المصدر (Provenance): أي نسخ ميزان بُني عليها التقرير ── */
+
+export interface ReportingProvenanceEntry {
+  importId: string;
+  revisionNumber: number;
+  supersedesImportId: string | null;
+  committedAt: string | null;
+  committedByName: string;
+  fromDate: string;
+  toDate: string;
+  startOrdinal: number;
+  endOrdinal: number;
+  dataType: string;
+  lineCount: number;
+}
+
+export interface ReportingProvenance {
+  basis: "LATEST_COMMITTED_REVISION";
+  imports: ReportingProvenanceEntry[];
+}
+
+/** إثبات مصدر التقارير: أحدث المراجعات المعتمدة لكل (مدى، نوع) — معرف النسخة ورقمها وزمن اعتمادها. */
+export async function loadReportingProvenance(
+  companyId: string,
+  fiscalYearId: string
+): Promise<ReportingProvenance> {
+  const imports = await db.trialBalanceImport.findMany({
+    where: { companyId, fiscalYearId, status: "COMMITTED" },
+    orderBy: [{ fromDate: "asc" }, { revisionNumber: "asc" }],
+    select: {
+      id: true,
+      revisionNumber: true,
+      supersedesImportId: true,
+      committedAt: true,
+      committedByName: true,
+      fromDate: true,
+      toDate: true,
+      startOrdinal: true,
+      endOrdinal: true,
+      dataType: true,
+      lineCount: true,
+    },
+  });
+  const defaults = selectDefaultCommittedImports(imports);
+  return {
+    basis: "LATEST_COMMITTED_REVISION",
+    imports: defaults.map((i) => ({
+      importId: i.id,
+      revisionNumber: i.revisionNumber,
+      supersedesImportId: i.supersedesImportId,
+      committedAt: i.committedAt ? i.committedAt.toISOString() : null,
+      committedByName: i.committedByName,
+      fromDate: i.fromDate,
+      toDate: i.toDate,
+      startOrdinal: i.startOrdinal,
+      endOrdinal: i.endOrdinal,
+      dataType: i.dataType,
+      lineCount: i.lineCount,
+    })),
+  };
+}
+
 export interface PeriodComparisonRow {
   accountCode: string;
   accountName: string;
@@ -152,6 +235,7 @@ export interface PeriodComparisonResult {
   previousPeriod: { ordinal: number; startDate: string; endDate: string; displayLabel: string } | null;
   rows: PeriodComparisonRow[];
   summary: { total: number; currentComplete: number; currentIncomplete: number; unclassifiedAccounts: number };
+  provenance: ReportingProvenance;
 }
 
 /** «الفترة الحالية مقابل الفترة السابقة» من البيانات المحفوظة — لا اختراع فترة سابقة. */
@@ -183,6 +267,7 @@ export async function getSavedPeriodComparison(
       : null;
 
   const accounts = await loadCommittedAccountPoints(companyId, fiscalYearId);
+  const provenance = await loadReportingProvenance(companyId, fiscalYearId);
   const rows: PeriodComparisonRow[] = [];
   let currentComplete = 0;
   let currentIncomplete = 0;
@@ -237,6 +322,7 @@ export async function getSavedPeriodComparison(
     previousPeriod,
     rows,
     summary: { total: rows.length, currentComplete, currentIncomplete, unclassifiedAccounts },
+    provenance,
   };
 }
 
@@ -260,6 +346,7 @@ export interface MonthVsCumulativeResult {
   period: { ordinal: number; startDate: string; endDate: string; displayLabel: string };
   rows: MonthVsCumulativeRow[];
   summary: { total: number; complete: number; incomplete: number; unclassifiedAccounts: number };
+  provenance: ReportingProvenance;
 }
 
 /** «الشهر مقابل التراكمي» من البيانات المحفوظة — BALANCE تُعرض كرصيد إقفال (as-of) بلا جمع. */
@@ -282,6 +369,7 @@ export async function getSavedMonthVsCumulative(
   if (!company) throw new TrialBalanceError("NOT_FOUND", "الشركة غير موجودة.");
 
   const accounts = await loadCommittedAccountPoints(companyId, fiscalYearId);
+  const provenance = await loadReportingProvenance(companyId, fiscalYearId);
   const rows: MonthVsCumulativeRow[] = [];
   let complete = 0;
   let incomplete = 0;
@@ -334,5 +422,6 @@ export async function getSavedMonthVsCumulative(
     period: { ordinal: ctx.period.ordinal, startDate: ctx.period.startDate, endDate: ctx.period.endDate, displayLabel: ctx.period.displayLabel },
     rows,
     summary: { total: rows.length, complete, incomplete, unclassifiedAccounts },
+    provenance,
   };
 }

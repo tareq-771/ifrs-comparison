@@ -13,6 +13,7 @@ import {
   safeValue,
 } from "@/lib/trial-balance-data";
 import { TrialBalanceError } from "@/lib/trial-balance";
+import { loadReportingProvenance, type ReportingProvenance } from "@/lib/reporting-server";
 import {
   buildFinancialPosition,
   buildProfitOrLoss,
@@ -94,6 +95,8 @@ export interface StatementsResult {
     pnl: { title: string; periodLabel: string };
     sfp: { title: string; periodLabel: string };
   };
+  // Phase 6.3 — إثبات المصدر: أي نسخ ميزان مراجعة بُنيت عليها القائمتان
+  provenance: ReportingProvenance;
   profitOrLoss: ReturnType<typeof buildProfitOrLoss>;
   financialPosition: ReturnType<typeof buildFinancialPosition>;
 }
@@ -170,5 +173,6 @@ export async function getStatements(
     },
     profitOrLoss,
     financialPosition,
+    provenance: await loadReportingProvenance(companyId, fiscalYearId),
   };
 }

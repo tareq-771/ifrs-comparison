@@ -363,6 +363,7 @@ model FinancialStatementLine {
   mappingOverrides    AccountMappingOverride[]
 
   @@index([statementType, displayOrder])
+  @@index([parentId])
 }
 
 // ── قواعد طبيعة الحسابات: جذور نظامية (companyId=null) + بادئات الشركات ────────
@@ -419,6 +420,7 @@ model AccountMappingOverride {
   @@unique([companyId, accountCode])
   @@index([companyId, isActive])
   @@index([accountCode])
+  @@index([statementLineId])
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -426,6 +428,10 @@ model AccountMappingOverride {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── استيراد ميزان المراجعة (DRAFT → COMMITTED عبر مسار معتمد) ─────────────────
+// Phase 6.3 — Revision Governance: المعتمد لا يُعدّل في مكانه ولا يُحذف؛ أي تغيير
+// يمر عبر مسار revision: إنشاء مسودة مراجعة (revisionNumber+1، سبب إلزامي،
+// supersedesImportId يشير للمعتمد السابق) → VALIDATE → COMMIT. النسخ المعتمدة
+// التاريخية تبقى كاملة وقابلة للتتبع عبر سلسلة supersedesImportId.
 model TrialBalanceImport {
   id               String   @id @default(cuid())
   companyId        String
@@ -436,6 +442,10 @@ model TrialBalanceImport {
   endOrdinal       Int                        // ordinal فترة النهاية
   dataType         String                     // CUMULATIVE_YTD | PERIOD_MOVEMENT
   status           String   @default("DRAFT") // DRAFT | COMMITTED
+  // ── Phase 6.3 — حقول حوكمة المراجعات ──
+  revisionNumber     Int     @default(1)  // 1 = الاستيراد الأول في سلسلته؛ كل مراجعة تزيد 1
+  supersedesImportId String?              // المعتمد السابق الذي تحلّ محلّه هذه النسخة (سلسلة تتبع)
+  revisionReason     String  @default("") // سبب إنشاء المراجعة — إلزامي للمراجعات، فارغ للاستيراد الأول
   originalFileName String   @default("")
   fileHash         String   @default("")
   payloadHash      String   @default("")
@@ -457,10 +467,17 @@ model TrialBalanceImport {
   company    Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   fiscalYear FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
   lines      TrialBalanceLine[]
+  // سلسلة المراجعات: كل نسخة تشير للمعتمد السابق — Restrict يمنع حذف حلقة من السلسلة
+  supersedes     TrialBalanceImport?  @relation("TBRevisionChain", fields: [supersedesImportId], references: [id], onDelete: Restrict)
+  supersededBy   TrialBalanceImport[] @relation("TBRevisionChain")
 
-  @@unique([companyId, fiscalYearId, fromDate, toDate, dataType])
+  // الهوية داخل السلسلة: نفس الشركة/السنة/المدى/النوع + رقم مراجعة مميز
+  // (استبدال القيد القديم الذي كان يمنع أي نسخة ثانية لنفس المدى)
+  @@unique([companyId, fiscalYearId, fromDate, toDate, dataType, revisionNumber])
   @@index([companyId])
   @@index([fiscalYearId])
+  @@index([companyId, status, revisionNumber])
+  @@index([supersedesImportId])
 }
 
 // ── سطور الاستيراد (snapshot حتمي للاستيراد — بلا timestamps) ──────────────────

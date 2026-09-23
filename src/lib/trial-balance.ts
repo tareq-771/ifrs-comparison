@@ -86,7 +86,13 @@ export type TrialBalanceErrorCode =
   | "FISCAL_LIFECYCLE"
   | "VERSION_CONFLICT"
   | "NOT_FOUND"
-  | "COPY_UNAVAILABLE";
+  | "COPY_UNAVAILABLE"
+  // Phase 6.3 — حوكمة المراجعات
+  | "INVALID_STATE"
+  | "REASON_REQUIRED"
+  | "REVISION_SOURCE_NOT_LATEST"
+  | "REVISION_DRAFT_EXISTS"
+  | "REVISION_STALE";
 
 export class TrialBalanceError extends Error {
   code: TrialBalanceErrorCode;

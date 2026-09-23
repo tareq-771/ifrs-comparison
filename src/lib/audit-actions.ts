@@ -60,6 +60,14 @@ export const AUDIT_ACTIONS = {
   DATABASE_RESTORE_ABORTED: "DATABASE_RESTORE_ABORTED",
   DATABASE_RESTORE_COMPLETED: "DATABASE_RESTORE_COMPLETED",
   DATABASE_RESTORE_ROLLED_BACK: "DATABASE_RESTORE_ROLLED_BACK",
+  // Phase 6.2B (RECOVERY) — ميزان المراجعة (أكواد مستخدمة فعليًا — تسجيلها يثبّت التسميات)
+  TRIAL_BALANCE_SAVED: "TRIAL_BALANCE_SAVED",
+  TRIAL_BALANCE_COMMITTED: "TRIAL_BALANCE_COMMITTED",
+  TRIAL_BALANCE_REVALIDATED: "TRIAL_BALANCE_REVALIDATED",
+  TRIAL_BALANCE_DELETED: "TRIAL_BALANCE_DELETED",
+  // Phase 6.3 — حوكمة مراجعات ميزان المراجعة
+  TRIAL_BALANCE_REVISION_CREATED: "TRIAL_BALANCE_REVISION_CREATED",
+  TRIAL_BALANCE_REVISION_COMMITTED: "TRIAL_BALANCE_REVISION_COMMITTED",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -101,6 +109,13 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   DATABASE_RESTORE_ABORTED: "إلغاء منظم لعملية الاستعادة قبل التبديل — القاعدة لم تُلمس",
   DATABASE_RESTORE_COMPLETED: "اكتمال استعادة قاعدة البيانات (استبدال ذري + تحقق بعدي)",
   DATABASE_RESTORE_ROLLED_BACK: "اكتمال التراجع التلقائي إلى نسخة الأمان قبل الاستعادة",
+  // Phase 6.2B/6.3
+  TRIAL_BALANCE_SAVED: "حفظ ميزان مراجعة",
+  TRIAL_BALANCE_COMMITTED: "اعتماد ميزان مراجعة",
+  TRIAL_BALANCE_REVALIDATED: "إعادة تحقق خريطة ميزان مراجعة",
+  TRIAL_BALANCE_DELETED: "حذف مسودة ميزان مراجعة",
+  TRIAL_BALANCE_REVISION_CREATED: "إنشاء مسودة مراجعة لميزان مراجعة معتمد",
+  TRIAL_BALANCE_REVISION_COMMITTED: "اعتماد مراجعة ميزان مراجعة (نسخة جديدة تصبح المعتمدة)",
 };
 
 export const AUDIT_ENTITY_TYPES = {

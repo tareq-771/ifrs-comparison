@@ -49,6 +49,10 @@ const IMPORT_SELECT = {
   endOrdinal: true,
   dataType: true,
   status: true,
+  // ── Phase 6.3 — حوكمة المراجعات ──
+  revisionNumber: true,
+  supersedesImportId: true,
+  revisionReason: true,
   originalFileName: true,
   fileHash: true,
   payloadHash: true,
@@ -366,11 +370,19 @@ export interface CreateTrialBalanceArgs {
     note?: unknown;
     replaceExisting?: unknown;
     reason?: unknown;
+    // Phase 6.3 — عند تعبئته: الطلب = استبدال سطور مسودة مراجعة قائمة (لا استيراد جديد)
+    revisionTargetId?: unknown;
+    version?: unknown;
   };
 }
 
 export async function createTrialBalance(args: CreateTrialBalanceArgs) {
   const { user, ip, input } = args;
+  // Phase 6.3 — وضع الاستيراد داخل مسودة مراجعة: استبدال السطور كاملة بدل إنشاء استيراد جديد
+  const revisionTargetId = typeof input.revisionTargetId === "string" ? input.revisionTargetId.trim() : "";
+  if (revisionTargetId) {
+    return replaceRevisionDraftLines({ user, ip, id: revisionTargetId, input });
+  }
   const companyId = typeof input.companyId === "string" ? input.companyId.trim() : "";
   if (!companyId) throw new TrialBalanceError("COMPANY_REQUIRED", "الشركة إلزامية للاستيراد.");
   assertCompanyScope(user, companyId);
@@ -393,24 +405,27 @@ export async function createTrialBalance(args: CreateTrialBalanceArgs) {
   const status = normalized.balanced ? TB_STATUSES.DRAFT : TB_STATUSES.UNBALANCED;
   const replaceExisting = input.replaceExisting === true;
 
-  // سياسة التكرار المحافظة
-  const existing = await db.trialBalanceImport.findUnique({
+  // سياسة التكرار المحافظة (6.3) — السلسلة: نفس الشركة/السنة/المدى/النوع بعدة نسخ مرقمة؛
+  // المعتمد لا يُستبدل إطلاقًا (مسار المراجعة الصريح)، والمسودة الأخيرة وحدها قابلة للاستبدال.
+  const chainLatest = await db.trialBalanceImport.findFirst({
     where: {
-      companyId_fiscalYearId_fromDate_toDate_dataType: {
-        companyId,
-        fiscalYearId: fiscal.fiscalYearId,
-        fromDate: ctx.startPeriod.startDate,
-        toDate: ctx.endPeriod.endDate,
-        dataType: input.dataType as string,
-      },
+      companyId,
+      fiscalYearId: fiscal.fiscalYearId,
+      fromDate: ctx.startPeriod.startDate,
+      toDate: ctx.endPeriod.endDate,
+      dataType: input.dataType as string,
     },
-    select: { id: true, status: true, version: true },
+    orderBy: { revisionNumber: "desc" },
+    select: { id: true, status: true, version: true, revisionNumber: true },
   });
+  const existing = chainLatest
+    ? { id: chainLatest.id, status: chainLatest.status, version: chainLatest.version }
+    : null;
   if (existing) {
     if (existing.status === TB_STATUSES.COMMITTED) {
       throw new TrialBalanceError(
         "DUPLICATE_COMMITTED",
-        "يوجد ميزان معتمد لنفس الشركة/السنة/المدى/النوع — لا استبدال للمعتمد (مسار Revision لاحقًا حسب الـ workflow)."
+        "يوجد ميزان معتمد لنفس الشركة/السنة/المدى/النوع — لا استبدال للمعتمد؛ استخدم مسار المراجعة (Revision) الصريح."
       );
     }
     if (!replaceExisting) {
@@ -514,6 +529,314 @@ export async function createTrialBalance(args: CreateTrialBalanceArgs) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Phase 6.3 — استبدال سطور مسودة المراجعة (الرفع المصحح داخل المراجعة)
+ * المدى/النوع/الشركة/السنة ثابتة من المعتمد المصدر — يتغير المحتوى حصرًا.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export interface ReplaceRevisionDraftLinesArgs {
+  user: SessionUser;
+  ip: string | null;
+  id: string;
+  input: {
+    version?: unknown;
+    fromDate?: unknown;
+    toDate?: unknown;
+    dataType?: unknown;
+    lines?: unknown;
+    originalFileName?: unknown;
+    fileHash?: unknown;
+    note?: unknown;
+    reason?: unknown;
+  };
+}
+
+export async function replaceRevisionDraftLines(args: ReplaceRevisionDraftLinesArgs) {
+  const { user, ip, id, input } = args;
+  const draft = await db.trialBalanceImport.findUnique({ where: { id }, select: IMPORT_SELECT });
+  if (!draft || !companyVisible(user, draft.companyId)) {
+    throw new TrialBalanceError("NOT_FOUND", "مسودة المراجعة غير موجودة.");
+  }
+  assertCompanyScope(user, draft.companyId);
+  if (draft.status !== TB_STATUSES.DRAFT || !draft.supersedesImportId) {
+    throw new TrialBalanceError(
+      "INVALID_STATE",
+      "استبدال السطور يتطلب مسودة مراجعة قائمة (revision draft) — المعتمد لا يُعدّل والمسودات العادية لها مسارها."
+    );
+  }
+  const version = Number(input.version);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new TrialBalanceError("VERSION_CONFLICT", "نسخة المسودة (version) إلزامية لاستبدال السطور.");
+  }
+  assertDataType(input.dataType);
+  if ((input.dataType as string) !== draft.dataType) {
+    throw new TrialBalanceError(
+      "INVALID_DATA_TYPE",
+      `نوع بيانات المراجعة ثابت من المصدر المعتمد (${draft.dataType}) — لا تغيير النوع داخل مسودة المراجعة.`
+    );
+  }
+  const fiscal = await loadFiscalYear(db, draft.companyId, draft.fiscalYearId);
+  const ctx = resolveFiscalContext({ ...fiscal.fy }, fiscal.periods, input.fromDate, input.toDate);
+  if (ctx.startPeriod.startDate !== draft.fromDate || ctx.endPeriod.endDate !== draft.toDate) {
+    throw new TrialBalanceError(
+      "INVALID_DATE_RANGE",
+      `مدى المراجعة ثابت من المصدر المعتمد (${draft.fromDate} → ${draft.toDate}) — لا تغيير للمدى داخل مسودة المراجعة.`
+    );
+  }
+  const company = await db.company.findUnique({
+    where: { id: draft.companyId },
+    select: { id: true, code: true, nameAr: true, functionalCurrency: true },
+  });
+  if (!company) throw new TrialBalanceError("NOT_FOUND", "الشركة غير موجودة.");
+  const minorUnits = minorUnitsForCurrency(company.functionalCurrency);
+  const normalized = normalizeTrialBalanceLines(
+    Array.isArray(input.lines) ? (input.lines as never[]) : [],
+    minorUnits
+  );
+  const payloadHash = computePayloadHash(normalized.lines);
+  const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 300) : "";
+  const fileName = typeof input.originalFileName === "string" ? input.originalFileName.trim().slice(0, 255) : "";
+  const fileHash = typeof input.fileHash === "string" ? input.fileHash.trim().slice(0, 128) : "";
+  const note = typeof input.note === "string" ? input.note.trim().slice(0, 500) : "";
+
+  return db.$transaction(async (tx) => {
+    const updated = await tx.trialBalanceImport.updateMany({
+      where: { id, version },
+      data: {
+        status: normalized.balanced ? TB_STATUSES.DRAFT : TB_STATUSES.UNBALANCED,
+        version: version + 1, // نمط المشروع: كل تحديث ناجح يزيد النسخة (optimistic locking)
+        totalDebitMinor: normalized.totalDebitMinor,
+        totalCreditMinor: normalized.totalCreditMinor,
+        lineCount: normalized.lineCount,
+        payloadHash,
+        originalFileName: fileName,
+        fileHash,
+        note,
+        updatedById: user.id,
+        updatedByName: user.username,
+      },
+    });
+    if (updated.count === 0) {
+      throw new TrialBalanceError("VERSION_CONFLICT", "تعارض نسخ: مسودة المراجعة تغيّرت — أعد التحميل.");
+    }
+    await tx.trialBalanceLine.deleteMany({ where: { importId: id } });
+    const mappings = await buildMappingSnapshots(tx, draft.companyId, normalized.lines);
+    await tx.trialBalanceLine.createMany({
+      data: normalized.lines.map((l, i) => ({
+        importId: id,
+        rowIndex: l.rowIndex,
+        accountCode: l.accountCode,
+        accountName: l.accountName,
+        debitMinor: l.debitMinor,
+        creditMinor: l.creditMinor,
+        netMinor: l.netMinor,
+        ...SNAPSHOT_FIELDS(mappings[i]),
+      })),
+    });
+    const meta = {
+      companyId: draft.companyId,
+      companyCode: company.code,
+      fiscalYearCode: draft.fiscalYear.code,
+      revisionDraft: true,
+      revisionNumber: draft.revisionNumber,
+      supersedesImportId: draft.supersedesImportId,
+      revisionReason: draft.revisionReason || undefined,
+      fromDate: draft.fromDate,
+      toDate: draft.toDate,
+      dataType: draft.dataType,
+      lineCount: normalized.lineCount,
+      totalDebitMinor: normalized.totalDebitMinor.toString(),
+      totalCreditMinor: normalized.totalCreditMinor.toString(),
+      balanced: normalized.balanced,
+      payloadHash,
+      minorUnits,
+      reason: reason || undefined,
+    };
+    await writeAudit(tx, {
+      user,
+      action: "TRIAL_BALANCE_SAVED",
+      entityType: "TrialBalanceImport",
+      entityId: id,
+      description: `استبدال سطور مسودة المراجعة #${draft.revisionNumber} لميزان ${company.code} (${draft.fromDate} → ${draft.toDate}) — ${normalized.lineCount} سطرًا — ${normalized.balanced ? "متوازن" : "غير متوازن"}`,
+      after: meta,
+      metadata: meta,
+      ip,
+    });
+    const fresh = await tx.trialBalanceImport.findUnique({ where: { id }, select: IMPORT_SELECT });
+    if (!fresh) throw new TrialBalanceError("NOT_FOUND", "مسودة المراجعة اختفت أثناء الاستبدال.");
+    return {
+      import: { ...importToDTO(fresh), committedAt: null, createdAt: fresh.createdAt.toISOString(), updatedAt: fresh.updatedAt.toISOString() },
+      duplicatePayloadWarning: null,
+    };
+  });
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Phase 6.3 — حوكمة المراجعات: COMMITTED → CREATE REVISION → DRAFT → VALIDATE → COMMIT
+ * - المراجعة تُنشأ من أحدث نسخة معتمدة حصرًا (لا تفريخ من التاريخ)
+ * - سبب المراجعة إلزامي، ورقم المراجعة يزيد 1، والمعتمد السابق لا يُمس ولا يُعدّل
+ * - حوكمة السنة: LOCKED يمنع المراجعة العادية (و6.1 controls تبقى حاكمة عند الاعتماد)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export interface CreateTrialBalanceRevisionArgs {
+  user: SessionUser;
+  ip: string | null;
+  id: string; // معرّف النسخة المعتمدة المصدر
+  input: { reason?: unknown };
+}
+
+export async function createTrialBalanceRevision(args: CreateTrialBalanceRevisionArgs) {
+  const { user, ip, id, input } = args;
+  const source = await db.trialBalanceImport.findUnique({ where: { id }, select: IMPORT_SELECT });
+  if (!source || !companyVisible(user, source.companyId)) {
+    throw new TrialBalanceError("NOT_FOUND", "ميزان المراجعة غير موجود.");
+  }
+  assertCompanyScope(user, source.companyId);
+  if (source.status !== TB_STATUSES.COMMITTED) {
+    throw new TrialBalanceError("INVALID_STATE", "المراجعة تُنشأ من نسخة معتمدة حصرًا — المسودات تُعدّل مباشرة.");
+  }
+  const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 300) : "";
+  if (!reason) {
+    throw new TrialBalanceError("REASON_REQUIRED", "سبب المراجعة إلزامي — لا تُنشأ مراجعة بلا سبب موثق.");
+  }
+  // حوكمة السنة المالية: LOCKED يمنع المراجعة العادية فورًا (بلا أي استثناء صامت)
+  if (source.fiscalYear.status === "LOCKED") {
+    throw new TrialBalanceError(
+      "FISCAL_LIFECYCLE",
+      `السنة المالية ${source.fiscalYear.code} مقفلة (LOCKED) — لا مراجعة عادية؛ يلزم مسار حوكمة صريح لفك القفل أولًا.`
+    );
+  }
+
+  return db.$transaction(async (tx) => {
+    // السلسلة الكاملة لنفس (الشركة/السنة/المدى/النوع) — مرتبة ترتيبيًا
+    const chain = await tx.trialBalanceImport.findMany({
+      where: {
+        companyId: source.companyId,
+        fiscalYearId: source.fiscalYearId,
+        fromDate: source.fromDate,
+        toDate: source.toDate,
+        dataType: source.dataType,
+      },
+      select: { id: true, revisionNumber: true, status: true },
+      orderBy: { revisionNumber: "asc" },
+    });
+    const latestCommitted = [...chain].reverse().find((r) => r.status === TB_STATUSES.COMMITTED);
+    if (!latestCommitted || latestCommitted.id !== source.id) {
+      throw new TrialBalanceError(
+        "REVISION_SOURCE_NOT_LATEST",
+        "المراجعة تُنشأ من أحدث نسخة معتمدة في سلسلتها حصرًا — لا تفريخ من نسخة تاريخية."
+      );
+    }
+    const openDraft = chain.find((r) => r.status !== TB_STATUSES.COMMITTED);
+    if (openDraft) {
+      throw new TrialBalanceError(
+        "REVISION_DRAFT_EXISTS",
+        `توجد مسودة مراجعة مفتوحة (رقم ${openDraft.revisionNumber}) — أنهِها أو احذفها قبل إنشاء مراجعة جديدة.`
+      );
+    }
+    const nextRevision = chain[chain.length - 1].revisionNumber + 1;
+
+    // بذر السطور من المعتمد المصدر كنقطة بداية (snapshot المجمّد يُنسخ كما هو — لا إعادة حل صامتة)
+    const sourceLines = await tx.trialBalanceLine.findMany({
+      where: { importId: source.id },
+      orderBy: { rowIndex: "asc" },
+      select: LINE_SELECT,
+    });
+
+    const draft = await tx.trialBalanceImport.create({
+      data: {
+        companyId: source.companyId,
+        fiscalYearId: source.fiscalYearId,
+        fromDate: source.fromDate,
+        toDate: source.toDate,
+        startOrdinal: source.startOrdinal,
+        endOrdinal: source.endOrdinal,
+        dataType: source.dataType,
+        status: TB_STATUSES.DRAFT,
+        revisionNumber: nextRevision,
+        supersedesImportId: source.id,
+        revisionReason: reason,
+        originalFileName: "",
+        fileHash: "",
+        payloadHash: source.payloadHash,
+        totalDebitMinor: source.totalDebitMinor,
+        totalCreditMinor: source.totalCreditMinor,
+        lineCount: source.lineCount,
+        note: "",
+        createdById: user.id,
+        createdByName: user.username,
+        updatedById: user.id,
+        updatedByName: user.username,
+      },
+      select: IMPORT_SELECT,
+    });
+    if (sourceLines.length > 0) {
+      await tx.trialBalanceLine.createMany({
+        data: sourceLines.map((l) => ({
+          importId: draft.id,
+          rowIndex: l.rowIndex,
+          accountCode: l.accountCode,
+          accountName: l.accountName,
+          debitMinor: l.debitMinor,
+          creditMinor: l.creditMinor,
+          netMinor: l.netMinor,
+          mappedPrefix: l.mappedPrefix,
+          mappingSource: l.mappingSource,
+          mappingStatus: l.mappingStatus,
+          mainCategory: l.mainCategory,
+          classification: l.classification,
+          aggregationBehavior: l.aggregationBehavior,
+          statementLineCode: l.statementLineCode,
+        })),
+      });
+    }
+
+    const before = {
+      importId: source.id,
+      revisionNumber: source.revisionNumber,
+      status: source.status,
+      payloadHash: source.payloadHash,
+    };
+    const after = {
+      importId: draft.id,
+      revisionNumber: nextRevision,
+      status: draft.status,
+      revisionReason: reason,
+    };
+    const meta = {
+      companyId: source.companyId,
+      companyCode: source.company.code,
+      fiscalYearCode: source.fiscalYear.code,
+      fiscalYearStatus: source.fiscalYear.status,
+      fromDate: source.fromDate,
+      toDate: source.toDate,
+      dataType: source.dataType,
+      sourceImportId: source.id,
+      oldRevisionNumber: source.revisionNumber,
+      newRevisionNumber: nextRevision,
+      reason,
+      lineCount: source.lineCount,
+    };
+    await writeAudit(tx, {
+      user,
+      action: "TRIAL_BALANCE_REVISION_CREATED",
+      entityType: "TrialBalanceImport",
+      entityId: draft.id,
+      description: `إنشاء مسودة مراجعة #${nextRevision} لميزان معتمد ${source.company.code} (${source.fromDate} → ${source.toDate}) ${source.dataType} تحلّ محلّ المراجعة #${source.revisionNumber} — السطور مبذورة من المعتمد (${source.lineCount} سطرًا)`,
+      before,
+      after,
+      metadata: meta,
+      ip,
+    });
+    return {
+      ...importToDTO(draft),
+      committedAt: null,
+      createdAt: draft.createdAt.toISOString(),
+      updatedAt: draft.updatedAt.toISOString(),
+    };
+  });
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * الاعتماد (COMMIT) — تجميد نهائي مع حراس دورة الحياة
  * ────────────────────────────────────────────────────────────────────────── */
 
@@ -611,14 +934,45 @@ export async function commitTrialBalance(args: CommitTrialBalanceArgs) {
       payloadHash: fresh.payloadHash,
       reason: reason || undefined,
     };
+    // Phase 6.3 — اعتماد المراجعة: حراس السلسلة + كود تدقيق مخصص + before/after
+    const isRevision = !!fresh.supersedesImportId;
+    if (isRevision) {
+      const chainMax = await tx.trialBalanceImport.findFirst({
+        where: {
+          companyId: fresh.companyId,
+          fiscalYearId: fresh.fiscalYearId,
+          fromDate: fresh.fromDate,
+          toDate: fresh.toDate,
+          dataType: fresh.dataType,
+        },
+        orderBy: { revisionNumber: "desc" },
+        select: { revisionNumber: true },
+      });
+      if (!chainMax || chainMax.revisionNumber !== fresh.revisionNumber) {
+        throw new TrialBalanceError("REVISION_STALE", "تعارض سلسلة المراجعات: توجد نسخة أحدث — لا اعتماد لنسخة قديمة.");
+      }
+    }
+    const revisionMeta = isRevision
+      ? {
+          sourceImportId: fresh.supersedesImportId,
+          oldRevisionNumber: fresh.revisionNumber - 1,
+          newRevisionNumber: fresh.revisionNumber,
+          revisionReason: fresh.revisionReason || undefined,
+        }
+      : {};
     await writeAudit(tx, {
       user,
-      action: "TRIAL_BALANCE_COMMITTED",
+      action: isRevision ? "TRIAL_BALANCE_REVISION_COMMITTED" : "TRIAL_BALANCE_COMMITTED",
       entityType: "TrialBalanceImport",
       entityId: fresh.id,
-      description: `اعتماد ميزان مراجعة ${fresh.company.code} (${fresh.fromDate} → ${fresh.toDate}) ${fresh.dataType} — ${fresh.lineCount} سطرًا — تجميد snapshot الخريطة`,
-      after: meta,
-      metadata: meta,
+      description: isRevision
+        ? `اعتماد مراجعة #${fresh.revisionNumber} لميزان ${fresh.company.code} (${fresh.fromDate} → ${fresh.toDate}) ${fresh.dataType} — تصبح أحدث المعتمدين في التقارير مع بقاء المراجعة #${fresh.revisionNumber - 1} سليمة للتتبع`
+        : `اعتماد ميزان مراجعة ${fresh.company.code} (${fresh.fromDate} → ${fresh.toDate}) ${fresh.dataType} — ${fresh.lineCount} سطرًا — تجميد snapshot الخريطة`,
+      before: isRevision
+        ? { importId: fresh.id, revisionNumber: fresh.revisionNumber, status: "DRAFT" }
+        : undefined,
+      after: { ...meta, ...revisionMeta },
+      metadata: { ...meta, ...revisionMeta },
       ip,
     });
     return { ...importToDTO(fresh), committedAt: fresh.committedAt!.toISOString(), createdAt: fresh.createdAt.toISOString(), updatedAt: fresh.updatedAt.toISOString() };

@@ -14,7 +14,7 @@
 import * as React from "react";
 import { useSession } from "next-auth/react";
 import {
-  CheckCircle2, ClipboardCheck, Eye, FileSpreadsheet, Loader2, RefreshCw, ShieldCheck, Trash2, TriangleAlert,
+  CheckCircle2, ClipboardCheck, Eye, FileSpreadsheet, GitBranch, Loader2, RefreshCw, ShieldCheck, Trash2, TriangleAlert,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,8 @@ interface RawLine { accountCode: string; accountName: string; debit: unknown; cr
 interface ImportRow {
   id: string; companyId: string; fiscalYearId: string; fromDate: string; toDate: string;
   startOrdinal: number; endOrdinal: number; dataType: string; status: string;
+  // Phase 6.3 — حوكمة المراجعات
+  revisionNumber: number; supersedesImportId: string | null; revisionReason: string;
   originalFileName: string; fileHash: string; payloadHash: string;
   totalDebitMinor: string; totalCreditMinor: string; lineCount: number; note: string; version: number;
   company?: { code: string; nameAr: string; functionalCurrency: string } | null;
@@ -127,6 +129,10 @@ export function TrialBalanceTab() {
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  // Phase 6.3 — حوار إنشاء مراجعة لميزان معتمد
+  const [revisionTarget, setRevisionTarget] = React.useState<ImportRow | null>(null);
+  const [revisionReason, setRevisionReason] = React.useState("");
+  const [revisionOpen, setRevisionOpen] = React.useState(false);
   const [note, setNote] = React.useState("");
 
   const fy = fiscalYears.find((f) => f.id === fiscalYearId) ?? null;
@@ -282,6 +288,30 @@ export function TrialBalanceTab() {
     } catch (e) {
       toast({ title: "فشل الاعتماد", description: e instanceof Error ? e.message : "", variant: "destructive" });
       await loadImports();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Phase 6.3 — إنشاء مسودة مراجعة لميزان معتمد (بلا overwrite — النسخة السابقة تبقى سليمة)
+  const createRevision = async () => {
+    if (!revisionTarget) return;
+    setBusyId(revisionTarget.id);
+    try {
+      const res = await fetch(`/api/trial-balances/${revisionTarget.id}/revision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: revisionReason.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      toast({ title: "أُنشئت مسودة المراجعة", description: "السطور مبذورة من المعتمد — عدّل المحتوى ثم اعتمد لتصبح المراجعة الجديدة." });
+      setRevisionOpen(false);
+      setRevisionTarget(null);
+      setRevisionReason("");
+      await loadImports();
+    } catch (e) {
+      toast({ title: "فشل إنشاء المراجعة", description: e instanceof Error ? e.message : "", variant: "destructive" });
     } finally {
       setBusyId(null);
     }
@@ -460,7 +490,7 @@ export function TrialBalanceTab() {
             <ClipboardCheck className="size-4" />
             ميزانيات المراجعة المحفوظة
           </CardTitle>
-          <CardDescription>المعتمد (COMMITTED) مجمّد لا يُستبدل ولا يُحذف — المسودة قابلة للاستبدال والحذف بتدقيق.</CardDescription>
+          <CardDescription>المعتمد (COMMITTED) مجمّد لا يُستبدل ولا يُحذف — أي تصحيح يمر عبر «مراجعة» مرقّمة (مسار 6.3) مع بقاء النسخ السابقة سليمة للتتبع.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="max-h-96 overflow-y-auto rounded-md border">
@@ -489,12 +519,22 @@ export function TrialBalanceTab() {
                         <TriangleAlert className="ms-1 inline size-3.5 text-rose-600" aria-label="غير متوازن" />
                       )}
                     </TableCell>
-                    <TableCell><Badge className={STATUS_BADGE[r.status] ?? ""}>{TB_STATUS_LABELS[r.status as keyof typeof TB_STATUS_LABELS] ?? r.status}</Badge></TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Badge className={STATUS_BADGE[r.status] ?? ""}>{TB_STATUS_LABELS[r.status as keyof typeof TB_STATUS_LABELS] ?? r.status}</Badge>
+                        <Badge variant="outline" className="font-mono text-[10px]" title={r.revisionReason || "الاستيراد الأول"}>مراجعة #{r.revisionNumber}</Badge>
+                      </div>
+                    </TableCell>
                     <TableCell className="text-left">
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="ghost" size="sm" aria-label="عرض التفاصيل" onClick={() => openDetail(r)} disabled={busyId === r.id}>
                           <Eye className="size-3.5" />
                         </Button>
+                        {canManage && r.status === "COMMITTED" && (
+                          <Button variant="ghost" size="sm" aria-label="إنشاء مراجعة" onClick={() => { setRevisionTarget(r); setRevisionReason(""); setRevisionOpen(true); }} disabled={busyId === r.id}>
+                            <GitBranch className="size-3.5 text-amber-600" />
+                          </Button>
+                        )}
                         {canManage && r.status === "DRAFT" && (
                           <>
                             <Button variant="ghost" size="sm" aria-label="إعادة تحقق الخريطة" onClick={() => revalidateImport(r)} disabled={busyId === r.id}>
@@ -648,6 +688,42 @@ export function TrialBalanceTab() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailOpen(false)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Phase 6.3 — حوار إنشاء مراجعة لميزان معتمد ── */}
+      <Dialog open={revisionOpen} onOpenChange={setRevisionOpen}>
+        <DialogContent className="max-w-lg" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>إنشاء مراجعة لميزان معتمد</DialogTitle>
+            <DialogDescription>
+              {revisionTarget?.company?.code} — <span className="font-mono" dir="ltr">{revisionTarget?.fromDate} → {revisionTarget?.toDate}</span> ({revisionTarget?.dataType}) — المراجعة الحالية #{revisionTarget?.revisionNumber}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="rounded-md bg-muted p-3 leading-6">
+              ستُنشأ <span className="font-semibold">مسودة مراجعة جديدة (رقم {revisionTarget ? revisionTarget.revisionNumber + 1 : "—"})</span> مبذورة بسطور النسخة المعتمدة.
+              النسخة المعتمدة الحالية تبقى سليمة تمامًا ولا تُعدّل ولا تُحذف، ولن تتأثر التقارير حتى تعتمد المراجعة الجديدة.
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="tb-revision-reason">سبب المراجعة (إلزامي)</Label>
+              <Input
+                id="tb-revision-reason"
+                value={revisionReason}
+                onChange={(e) => setRevisionReason(e.target.value)}
+                maxLength={300}
+                placeholder="مثال: تصحيح مبلغ المبيعات بعد كشف خطأ إدخال"
+              />
+              {!revisionReason.trim() && <p className="text-xs text-muted-foreground">لا تُنشأ مراجعة بلا سبب موثق — السبب يُسجل في التدقيق.</p>}
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setRevisionOpen(false)} disabled={!!busyId}>إلغاء</Button>
+            <Button onClick={createRevision} disabled={!!busyId || !revisionReason.trim()}>
+              {busyId ? <Loader2 className="size-4 animate-spin" /> : <GitBranch className="size-4" />}
+              إنشاء مسودة المراجعة
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

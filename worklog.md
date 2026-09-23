@@ -680,3 +680,22 @@ Work Log:
 
 Stage Summary:
 - Recovery commit أنجز؛ الأساس المالي 6.2D داخل Git أخيراً؛ custom.db و production لم يُلمسا؛ الضبابية الوحيدة: typecheck الكلي 95 مقابل 92 الموثق (الفرق skills/examples خارج الحزمة سابقاً)
+
+---
+Task ID: 6.3
+Agent: main (Z.ai Code)
+Task: Phase 6.3 — Trial Balance Revision Governance (حوكمة مراجعات ميزان المراجعة)
+
+Work Log:
+- Schema ADD-ONLY: revisionNumber/supersedesImportId/revisionReason على TrialBalanceImport + سلسلة self-relation Restrict + استبدال القيد الفريد ليشمل revisionNumber (إعادة بناء محافظة بـ INSERT SELECT — نفس نمط 6.1) + إصلاح انحراف استرداد (فهرسان معلنان في DDL 6.2A ناقصان في schema)
+- migration: 20260923104500_phase63_tb_revision_governance (مولّد آلياً بـ migrate diff — فرق نقي بلا أي drift)
+- backup-config: تحديث PINNED_CURRENT_CANONICAL_FINGERPRINT (csha256:e2f03ef5...) من قاعدة معزولة حصراً + توسيع نمط أداة البصمة لقبول dev-63*
+- trial-balance-server: createTrialBalanceRevision (لا تفريخ من التاريخ + سبب إلزامي + LOCKED يمنع + بذر سطور المعتمد) + replaceRevisionDraftLines (استبدال السطور المصحح داخل المسودة — المدى/النوع ثابتان، version+1) + commit مراجعي الواعي (REVISION_STALE guard + كود تدقيق مخصص + before/after) + سياسة تكرار سلسلة-واعية
+- reporting-server: قاعدة مركزية selectDefaultCommittedImports (أحدث معتمد لكل مدى/نوع) + loadReportingProvenance (importId/revisionNumber/committedAt/committedBy) — provenance موصول بالتقارير الثلاثة (statements/period-comparison/month-vs-cumulative)
+- audit-actions: تسجيل أكواد TB الأربعة الموجودة + كودي 6.3 (REVISION_CREATED/REVISION_COMMITTED) بتسميات عربية
+- API: POST /api/trial-balances/[id]/revision (201/409/403/400) + UI: زر «إنشاء مراجعة» على المعتمد + شارة مراجعة #N + حوار سبب إلزامي
+- Gate phase63-trial-balance-revision.ts على dev-63-gate.db معزولة: 13/13 PASS (K1-K10 + G0/G1/G-tail) — إصلاحان أثناء التطوير: version+1 في الاستبدال، وتصحيح بيانات البوابة نفسها (توازن + إشارة net)
+- انحدار: 62A=30/30، 62B=16/16، 62C=9/9، 62D=6/6 (مع ترحيل 6.3 في السلسلة) + lint 0 + typecheck 95 = خط الأساس (صفر في كود 6.3)
+
+Stage Summary:
+- المعتمد غير قابل للتعديل/الحذف؛ المراجعة: CREATE→DRAFT→REPLACE LINES→VALIDATE→COMMIT؛ التقارير من أحدث معتمد مع إثبات مصدر كامل؛ التاريخ قابل للتتبع عبر السلسلة والتدقيق؛ custom.db لم يُلمس
