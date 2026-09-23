@@ -92,7 +92,12 @@ export type TrialBalanceErrorCode =
   | "REASON_REQUIRED"
   | "REVISION_SOURCE_NOT_LATEST"
   | "REVISION_DRAFT_EXISTS"
-  | "REVISION_STALE";
+  | "REVISION_STALE"
+  // Phase 6.5 — الموازنات
+  | "INCOMPLETE_DATA"
+  | "INVALID_BUDGET_TYPE"
+  | "INVALID_TRANSITION"
+  | "INVALID_LINE";
 
 export class TrialBalanceError extends Error {
   code: TrialBalanceErrorCode;

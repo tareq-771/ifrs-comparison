@@ -200,6 +200,9 @@ model Company {
   cashFlowMappings         CashFlowMapping[]
   cashFlowAccountOverrides CashFlowAccountOverride[]
 
+  // ── Phase 6.5 back-relations ──
+  budgets                  Budget[]
+
   @@index([status])
   @@index([legacyGroupId])
 }
@@ -241,6 +244,7 @@ model FiscalYear {
 
   periods        FiscalPeriod[]
   trialBalanceImports TrialBalanceImport[]
+  budgets        Budget[]
 
   @@unique([companyId, code])
   @@index([companyId, startDate])
@@ -609,4 +613,70 @@ model CashFlowAccountOverride {
   @@index([companyId, isActive])
   @@index([accountCode])
   @@index([lineId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.5 — أساس الموازنات وفعلي مقابل الموازنة
+// الموازنة تُخزن مرة واحدة لكل (شركة، سنة مالية، نسخة، سيناريو) — وليس لكل تقرير.
+// سير العمل: DRAFT → SUBMITTED → APPROVED → LOCKED (نهائي غير قابل للتعديل).
+// البنود على مستوى بنود القوائم المالية (reporting lines) + فترة مخصصة — BigInt minor.
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Budget {
+  id             String   @id @default(cuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  fiscalYearId   String
+  fiscalYear     FiscalYear @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  versionNumber  Int      @default(1)
+  status         String   @default("DRAFT") // DRAFT | SUBMITTED | APPROVED | LOCKED
+  budgetType     String                     // ANNUAL | MONTHLY | QUARTERLY | SEMI_ANNUAL
+  scenario       String   @default("BASE")  // BASE | CONSERVATIVE | OPTIMISTIC — وسم لا سياسة
+  name           String   @default("")
+  note           String   @default("")
+  revisionReason String   @default("")      // سبب إنشاء النسخة الجديدة
+  supersedesBudgetId String?
+  version        Int      @default(1)
+  createdById    String?
+  createdByName  String   @default("")
+  updatedById    String?
+  updatedByName  String   @default("")
+  submittedById  String?
+  submittedByName String  @default("")
+  submittedAt    DateTime?
+  approvedById   String?
+  approvedByName String   @default("")
+  approvedAt     DateTime?
+  lockedById     String?
+  lockedByName   String   @default("")
+  lockedAt       DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lines BudgetLine[]
+  supersedes Budget?   @relation("BudgetRevisionChain", fields: [supersedesBudgetId], references: [id], onDelete: Restrict)
+  supersededBy Budget[] @relation("BudgetRevisionChain")
+
+  // فترة بداية/نهاية تغطية الموازنة (ordinals) — ANNUAL = 1..periodCount
+  startOrdinal Int @default(1)
+  endOrdinal   Int @default(12)
+
+  @@unique([companyId, fiscalYearId, versionNumber, scenario])
+  @@index([companyId, fiscalYearId, status])
+  @@index([status])
+  @@index([supersedesBudgetId])
+}
+
+model BudgetLine {
+  id                String  @id @default(cuid())
+  budgetId          String
+  budget            Budget  @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  statementLineCode String                     // بند القائمة المالية — ليس كود حساب
+  fiscalPeriodId    String?                    // الفترة المخصصة (null = مبلغ سنوي غير موزع)
+  amountMinor       BigInt
+  note              String  @default("")
+
+  @@unique([budgetId, statementLineCode, fiscalPeriodId])
+  @@index([budgetId])
+  @@index([statementLineCode])
 }

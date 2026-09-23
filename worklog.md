@@ -719,3 +719,21 @@ Work Log:
 
 Stage Summary:
 - SOCIE + IAS7 foundation مكتملان بمحاسبة صحيحة: أحدث مراجعة معتمدة حصراً، فجوات INCOMPLETE_DATA معلنة لا مختلقة، الفروق تُعرض، العزل fail-closed، بلا أي hard-code لأكواد الحسابات
+
+---
+Task ID: 6.5
+Agent: main (Z.ai Code)
+Task: Phase 6.5 — Budget foundation + Actual-vs-Budget
+
+Work Log:
+- Migration 20260923131500_phase65_budget_foundation (ADD-ONLY): Budget (شركة/سنة/نسخة/سيناريو + workflow snapshots + supersedes chain) + BudgetLine (statementLineCode + fiscalPeriodId + amountMinor BigInt) — إعادة توليد نظيفة بعد اكتشاف ترحيل فارغ (تولّد قبل إصلاح علاقات عكسية) — درس: لا تولّد diff على schema غير صالح
+- lib/budget.ts (نقية): الانتقالات الشرعية DRAFT→SUBMITTED→APPROVED→LOCKED (+RETURN)، توزيع EQUAL بلا فقد minor، قاعدة ف/غ المركزية الوحيدة، مدى ordinals لMONTH/QUARTER/SEMI_ANNUAL/ANNUAL/YTD، طرق المقترح الخمس
+- lib/budget-server.ts: create/update-lines(DRAFT فقط)/transition(fail-closed+version)/revision(versionNumber+1 مع بذر البنود)/delete(مسودات)/list/variance/proposal
+- variance: الفعلي من أحدث المراجعات المعتمدة + موازنة APPROVED/LOCKED فقط + تطبيع الحجم الطبيعي (إيراد −net، مصروف +net) + BALANCE as-of إقفالي + طبيعة البند من تصنيف حساباته (بلا hard-code) + فارق رقمي منفصل عن ف/غ
+- تصحيح جوهري: إشارة الفعلي للإيراد تُطبَّع قبل المقارنة (قاعدة AA تعمل بالإشارة الطبيعية)
+- 6 مسارات API + أكواد تدقيق Budget الثمانية + INCOMPLETE_DATA/INVALID_LINE/... في اتحاد الأكواد
+- بوابة phase65 على dev-65-gate.db: 8/8 (BigInt 2^53+1 دقيق، مقترح نمو 20%، يوليو غير تقويمية، ف/غ بالإشارة الطبيعية)
+- انحدار 62A-D نظيف؛ lint 0؛ typecheck 95 = خط الأساس؛ PIN: csha256:a3927248...
+
+Stage Summary:
+- الموازنة نسخ محكومة بلا Unlock، فعلي مقابل موازنة كامل بالتراكبات الزمنية، ف/غ قاعدة مركزية واحدة منفصلة عن الرقم

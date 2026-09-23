@@ -68,6 +68,15 @@ export const AUDIT_ACTIONS = {
   // Phase 6.3 — حوكمة مراجعات ميزان المراجعة
   TRIAL_BALANCE_REVISION_CREATED: "TRIAL_BALANCE_REVISION_CREATED",
   TRIAL_BALANCE_REVISION_COMMITTED: "TRIAL_BALANCE_REVISION_COMMITTED",
+  // Phase 6.5 — الموازنات
+  BUDGET_CREATED: "BUDGET_CREATED",
+  BUDGET_UPDATED: "BUDGET_UPDATED",
+  BUDGET_SUBMITTED: "BUDGET_SUBMITTED",
+  BUDGET_APPROVED: "BUDGET_APPROVED",
+  BUDGET_LOCKED: "BUDGET_LOCKED",
+  BUDGET_RETURNED_TO_DRAFT: "BUDGET_RETURNED_TO_DRAFT",
+  BUDGET_REVISION_CREATED: "BUDGET_REVISION_CREATED",
+  BUDGET_DELETED: "BUDGET_DELETED",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -116,6 +125,15 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   TRIAL_BALANCE_DELETED: "حذف مسودة ميزان مراجعة",
   TRIAL_BALANCE_REVISION_CREATED: "إنشاء مسودة مراجعة لميزان مراجعة معتمد",
   TRIAL_BALANCE_REVISION_COMMITTED: "اعتماد مراجعة ميزان مراجعة (نسخة جديدة تصبح المعتمدة)",
+  // Phase 6.5
+  BUDGET_CREATED: "إنشاء موازنة (مسودة)",
+  BUDGET_UPDATED: "تحديث بنود مسودة موازنة",
+  BUDGET_SUBMITTED: "إرسال موازنة للاعتماد",
+  BUDGET_APPROVED: "اعتماد موازنة",
+  BUDGET_LOCKED: "قفل موازنة (نهائي)",
+  BUDGET_RETURNED_TO_DRAFT: "إرجاع موازنة إلى مسودة",
+  BUDGET_REVISION_CREATED: "إنشاء نسخة موازنة جديدة",
+  BUDGET_DELETED: "حذف مسودة موازنة",
 };
 
 export const AUDIT_ENTITY_TYPES = {
@@ -130,6 +148,7 @@ export const AUDIT_ENTITY_TYPES = {
   FiscalYear: "FiscalYear",
   FiscalPeriod: "FiscalPeriod",
   Backfill: "Backfill",
+  Budget: "Budget",
 } as const;
 
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[keyof typeof AUDIT_ENTITY_TYPES];
@@ -144,6 +163,7 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   FiscalYear: "سنة مالية",
   FiscalPeriod: "فترة محاسبية",
   Backfill: "ربط خلفي",
+  Budget: "موازنة",
 };
 
 // ترتيب أولوية اختيار كود العملية عند تعدد التغييرات في طلب واحد (الأخطر أولًا)

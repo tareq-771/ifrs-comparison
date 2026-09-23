@@ -196,7 +196,7 @@ const KNOWN_SCHEMAS: KnownSchema[] = [
  * أي migration شرعية مستقبلًا (4B+) تعني تحديث هذا الثابت في نفس الـ commit.
  */
 export const PINNED_CURRENT_CANONICAL_FINGERPRINT: string | null =
-  "csha256:441f465c1ee703e0765a9696db35c9c8212f2d0d1aaceb21ce2b91eac363919e";
+  "csha256:a3927248f8eab693990555907a376411f51c87c49574e2e1b3119aeea598c1c0";
 
 interface SchemaIdentity {
   canonical: string;
