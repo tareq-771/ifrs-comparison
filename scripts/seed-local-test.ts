@@ -1,10 +1,12 @@
-// 6.7 — بذر قاعدة اختبار محلية معزولة (Windows Local Test Package / بيئات العرض الآمنة).
+// 6.8 — بذر قاعدة اختبار محلية معزولة (Windows Local Test Package / بيئات العرض الآمنة).
 // أمان صارم: ترفض أي DATABASE_URL لا يحتوي "local-test" — لا تلمس custom.db إطلاقًا.
 // المحتوى: مدير اختبار + شركتان + سنوات وفترات + قواعد تصنيف متوافقة مع الجذور 1-4
 //          + ميزان مراجعة معتمد (مراجعة 2 بعد تصنيف كامل) + موازنة معتمدة + مجموعة توحيد.
-// تشغيل: DATABASE_URL=file:<path>/phase67-local-test.db bun scripts/seed-local-test.ts
+// تشغيل: DATABASE_URL=file:<path>/phase68-local-test.db bun scripts/seed-local-test.ts
 import { PrismaClient } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
+
+const ADMIN_PASSWORD = process.env.LOCAL_TEST_ADMIN_PASSWORD ?? "Preview-68-Admin!";
 
 async function main() {
   const url = process.env.DATABASE_URL ?? "";
@@ -14,7 +16,7 @@ async function main() {
   const db = new PrismaClient({ log: [], datasources: { db: { url } } });
 
   // 1) مستخدم مدير اختبار (بيانات اعتماد اختبار معلنة في README — ليست إنتاج)
-  const passwordHash = await bcrypt.hash("Preview-67-Admin!", 10);
+  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
   await db.user.create({
     data: {
       username: "admin",
@@ -109,7 +111,7 @@ async function main() {
     },
   });
 
-  console.log("SEEDED OK: admin / Preview-67-Admin! — شركتان + ميزان معتمد + موازنة + مجموعة");
+  console.log(`SEEDED OK: admin / ${ADMIN_PASSWORD} — شركتان + ميزان معتمد + موازنة + مجموعة`);
   await db.$disconnect();
 }
 

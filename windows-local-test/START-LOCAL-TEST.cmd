@@ -1,26 +1,26 @@
 @echo off
 setlocal EnableExtensions
-title Unified Financial Reporting System - Phase 6.7 LOCAL TEST (localhost only)
+title Unified Financial Reporting System - Phase 6.8 LOCAL TEST (localhost only)
 cd /d "%~dp0"
 
 echo ==============================================================
-echo  Unified Financial Reporting System - Phase 6.7
+echo  Unified Financial Reporting System - Phase 6.8
 echo  WINDOWS LOCAL TEST PACKAGE - LOCALHOST ONLY
-echo  Isolated test database : db\phase67-local-test.db
+echo  Isolated test database : db\phase68-local-test.db
 echo  This package NEVER uses production custom.db.
 echo ==============================================================
 echo.
 
 rem ---- [1/7] SAFETY GUARD: production database is never allowed --------------
-set "DBNAME=phase67-local-test.db"
-set "DBPATH=%~dp0db\phase67-local-test.db"
+set "DBNAME=phase68-local-test.db"
+set "DBPATH=%~dp0db\phase68-local-test.db"
 echo %DBPATH% | findstr /i "custom.db" >nul 2>nul
 if not errorlevel 1 (
   echo LOCAL TEST SAFETY BLOCK: Production database is not allowed.
   goto fail
 )
 if not exist "%DBPATH%" (
-  echo [ERROR] Isolated test database db\phase67-local-test.db was not found.
+  echo [ERROR] Isolated test database db\phase68-local-test.db was not found.
   echo         Run RESET-LOCAL-TEST.cmd, or re-extract the ZIP if the backup
   echo         copy is missing too.
   goto fail
@@ -100,7 +100,7 @@ rem ---- Isolated LOCAL TEST environment - process-level, overrides any .env --
 set "DBURL=%DBPATH:\=/%"
 set "DATABASE_URL=file:%DBURL%"
 rem -- TEST-ONLY disposable secret. NEVER use this value in production.
-set "NEXTAUTH_SECRET=67-local-test-only-0123456789abcdef0123456789abcdef"
+set "NEXTAUTH_SECRET=68-local-test-only-0123456789abcdef0123456789abcdef"
 set "NEXTAUTH_URL=http://127.0.0.1:%PORT%"
 
 echo.
@@ -109,7 +109,7 @@ echo  [OK] Starting LOCAL TEST server ...
 echo  Bind address : 127.0.0.1 only - NOT reachable from the LAN
 echo  URL          : http://127.0.0.1:%PORT%
 echo  Login        : admin
-echo  Password     : Preview-67-Admin!
+echo  Password     : Preview-68-Admin!
 echo  TEST CREDENTIALS - NOT FOR PRODUCTION
 echo  Stop server  : press Ctrl+C in this window.
 echo  First start compiles the app - wait for the Ready line.

@@ -789,3 +789,23 @@ Work Log:
 
 Stage Summary:
 - 6.7 ملتزمة في 6 التزامات منطقية (1f42b37→…)؛ كل المسارات تعمل فعليًا؛ بلا migrations جديدة (UI/integration فقط)؛ بداية الحزمة windows-local-test
+
+---
+Task ID: 6.8
+Agent: main (Z.ai Code)
+Task: Phase 6.8 — Unified Reporting, Print & Export Foundation
+
+Work Log:
+- PRE-FLIGHT: HEAD=88181ae (Phase 6.7) مؤكد؛ runtime debris مميّز عن source؛ custom.db لم يُلمس ولا دخل أي commit
+- 6.8A (3471caa): lib/report-header.ts (بنّاء ReportHeaderMeta نقي قابل للاختبار — الاسم الرسمي/الشركة/التقرير/السنة/الفترة بتواريخ فعلية/العملة/نوع البيانات CUMULATIVE_YTD-PERIOD_MOVEMENT/الحالة Draft-Approved-Preliminary-Incomplete/تاريخ طباعة latn/documentTitle — صفر hard-code) + components/reporting/report-print.tsx (PrintButton A4 portrait/landscape عبر حقن @page size + document.title + تجريد dark قبل الطباعة؛ منفذ #print-root واحد يُملأ من .print-area النشطة عند beforeprint — الطباعة تعمل من التبويبات والحوارات معًا؛ ReportHeader + ReportStatusBadge يظهران متطابقين على الشاشة والورق؛ toolbar دائمًا no-print) + @media print موحد في globals.css (إخفاء كل شيء عدا المنفذ، تكرار thead، منع قص الصفوف، فك overflow/max-h/sticky لمنع قص الأعمدة، هوامش مهنية، RTL/عربية/tnum محفوظة، print-color-adjust exact، لا BigInt→Number) — توصيل: القوائم الأربع (portrait) + حوار تفاصيل ميزان المراجعة (landscape مع بيانات الحوكمة)؛ إسكات lint موروث في verify-prisma-client.js (require مقصود)
+- 6.8B (e6be861): VariancePanel تقرير إدارة فعلي (ترويسة موحدة بمدى مشتق من فترات السنة الفعلية، dataType حسب granularity، إشعار «لا موازنة معتمدة» صادق، INCOMPLETE_DATA بالترويسة، A4 أفقي، تصدير CSV بقيم minor نصية حرفيًا) + ConsolidatedReportPanel قابل للطباعة (حالة PRELIMINARY/INCOMPLETE_DATA صادقة + إشعار نطاق أولي + إشعار فرق المعادلة + A4 أفقي + تصدير ورقة العمل CSV حيث INCOMPLETE تبقى نصًا لا صفرًا والأعمدة منفصلة) + ReportsCenter (Company→FY→Period→ReportType على 7 أنواع متاحة مع روابط عميقة وملاحظة snapshots لاحقة) + lib/report-export.ts (CSV RFC4180 بمحارف عربية BOM + سجل صيغ كنقطة توسع وحيدة لPDF/Excel/Word لاحقًا بلا اعتماديات جديدة)
+- بوابة 6.8 (0cbdc65): scripts/phase68-report-print.ts على dev-68-gate.db معزولة (migrations حصرًا) — 14/14 PASS: H1 ترويسة من DTO بلا hard-code، H2 سنة غير تقويمية، H3/H14 منفذ+RTL+إخفاء التحكم، H4 landscape، H5 portrait، H6 INCOMPLETE_DATA ظاهرة، H7 UNCLASSIFIED نص لا رقم، H8 preliminary، H9 عضو بلا بيانات لا صفر صامت، H10 استبعادات منفصلة بهوية before+adj=consolidated، H11 BigInt>2^53 دقيق عبر formatMinor+CSV (90,071,992,547,409.93)، H12 ف/غ ثابتة، H13 عزل fail-closed، H15 ملفات البوابات — إصلاحان في البوابة نفسها أثناء التطوير: توازن fixture الميزان (700k=800k أُصلح إلى مدين=دائن) وتوقع H11 الحسابي
+- انحدار كامل على قواعد معزولة طازجة: 62A=30/30، 62B=16/16، 62C=9/9، 62D=6/6، 63=13/13، 64=9/9، 65=8/8، 66=8/8، 67=19/19 — المجموع مع بوابة 6.8: 126 فحصًا أخضر
+- E2E متصفحي على dev-ui-test.db معزولة (خادم مؤقت ثم استعادة custom.db فورًا): دخول → مركز التقارير → روابط عميقة للقوائم؛ اكتُشف وأُصلح (d9f9c0b): Link داخل نفس المسار لا يبدّل عرض SPA ⇒ navigate(onNavigate+params)؛ deep-link ordinal كان يُكتب فوقه لتأخر تحميل السياق ⇒ deepLinkRef يُستهلك عند وصول الفترات — تحقق: ?ordinal=3 ⇒ فترة 3 بقيم حقيقية 300,000/100,000؛ beforeprint يملأ المنفذ والترويسة داخله وdark يُزال؛ PDF فعلي متحقق بصريًا (ترويسة موحدة + جدول + بلا تحكم + RTL)؛ AvB بالترويسة والإشعارات وCSV؛ التوحيد الأولي بحالة صادقة وأعضاء بلا صفر صامت؛ طباعة من داخل حوار TB تعمل؛ موبايل 390px سليم؛ صفر أخطاء console
+- 6.8C: seed-local-test.ts كلمة مرور بارامترية (LOCAL_TEST_ADMIN_PASSWORD، افتراضي Preview-68-Admin!) + START/RESET/README تحديث 6.8 (قاعدة phase68 + مسار تجربة الطباعة/التصدير + حدود موثقة) + قاعدة phase68-local-test.db مبنية من migrations وبذرت بالسيرفيسات + نسخة backup + ZIP في public/
+
+Stage Summary:
+- طبقة تقارير قابلة للطباعة مهنيًا فوق 6.1–6.7 دون تغيير أي منطق محاسبي أو API أو schema (صفر migrations في 6.8)
+- الحزمة: public/ifrs-phase-6.8-windows-local-test.zip — 1,439,211 بايت — SHA256=853023886465ecedd2ac5489d7c215b2e87b129f46c95f363cdb83a281177f9f — 448 ملفًا — integrity OK — فحص وظيفي لعميل Prisma على نسخة مستخرجة PASS وقاعدة مبدئية متحقق منها read-only (admin/Preview-68-Admin! + ميزان معتمد + موازنة + مجموعة + 16 قاعدة)
+- lint 0؛ typecheck 93 = خط الأساس المقاس (صفر أخطاء في ملفات 6.8)؛ production DB untouched
+- فجوات موثقة: PDF/Excel/Word أصلي لاحقًا (نقطة توسع report-export جاهزة)؛ snapshots معتمدة لاحقًا؛ التوحيد بلا NCI/شهرة (كما هو مصمم)
