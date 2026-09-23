@@ -147,19 +147,23 @@ async function main() {
   });
 
   await check("T4/T5 أطول بادئة + أولوية التجاوز (حل مركزي)", () => {
-    const systemRoots = [{ prefix: "1", scope: "SYSTEM", companyId: null, isActive: true, classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: null }];
+    const mk = (prefix: string, companyId: string | null, classification: string, behavior: string) => ({
+      id: `r-${prefix}-${companyId ?? "sys"}`, companyId, prefix, mainCategory: null,
+      classification, aggregationBehavior: behavior, statementLineCode: null, source: "MANUAL", isActive: true,
+    });
+    const systemRoots = [mk("1", null, "ASSET", "BALANCE")];
     const r1 = resolveAccountMapping({ accountCode: "110101", rules: systemRoots, overrides: [] });
     expect(r1.matchedPrefix === "1", "بدون بادئات شركة ⇒ الجذر 1");
     const withCompany = [
       ...systemRoots,
-      { prefix: "11", scope: "COMPANY", companyId: "c1", isActive: true, classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: null },
-      { prefix: "1101", scope: "COMPANY", companyId: "c1", isActive: true, classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: null },
+      mk("11", "c1", "ASSET", "BALANCE"),
+      mk("1101", "c1", "ASSET", "BALANCE"),
     ];
     const r2 = resolveAccountMapping({ accountCode: "110101", companyId: "c1", rules: withCompany, overrides: [] });
     expect(r2.matchedPrefix === "1101", `الأطول يفوز: 110101 ⇒ 1101 (الناتج ${r2.matchedPrefix})`);
     const r3 = resolveAccountMapping({
       accountCode: "110101", companyId: "c1", rules: withCompany,
-      overrides: [{ accountCode: "110101", scope: "COMPANY", companyId: "c1", isActive: true, classification: "REVENUE", aggregationBehavior: "FLOW", statementLineCode: null }],
+      overrides: [{ id: "o1", companyId: "c1", accountCode: "110101", classification: "REVENUE", aggregationBehavior: "FLOW", statementLineCode: null, isActive: true }],
     });
     expect(r3.source === "ACCOUNT_OVERRIDE" && r3.classification === "REVENUE", `التجاوز يفوز على كل البادئات (ناتج ${r3.source}/${r3.classification})`);
   });
@@ -304,7 +308,7 @@ async function main() {
     const p1B = await db.fiscalPeriod.findFirstOrThrow({ where: { fiscalYearId: fyB.id, ordinal: 1 } });
     const preview = await import("../src/lib/trial-balance-server").then((m) =>
       m.previewTrialBalance({
-        user: admin, ip: "gate",
+        user: admin,
         input: {
           companyId: coB,
           fiscalYearId: fyB.id,
