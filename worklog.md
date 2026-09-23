@@ -753,3 +753,39 @@ Work Log:
 
 Stage Summary:
 - Consolidation-ready working model + قوائم موحدة مبدئية PRELIMINARY؛ NC/شهرة/استحواذ/عملة/ملكية المعقدة موثقة كمراحل لاحقة؛ أساس التوحيد داخل Git
+
+---
+Task ID: AW
+Agent: main (Z.ai Code)
+Task: Fast-track session closure — final verification and unified report
+
+Work Log:
+- تحقق نهائي: HEAD=0a88b3f؛ سلسلة 9faa978→d454eed→013130a→b93fae2→45c4822→0a88b3f
+- custom.db لم يُرحَّل ولا يُلمس (تعديل runtime من خادم التطوير فقط — خارج كل الالتزامات)
+- AM/AN (navigation/print) لم تُنفذ — فجوات موثقة غير مانعة
+- كل البوابات: 62A=30/30، 62B=16/16، 62C=9/9، 62D=6/6، 63=13/13، 64=9/9، 65=8/8، 66=8/8
+
+Stage Summary:
+- الجلسة أغلقت: Recovery + 6.3 + 6.4 + 6.5 + 6.6 ملتزمة، 5 ترحيلات add-only، صفر لمس production
+
+---
+Task ID: 6.7
+Agent: main (Z.ai Code)
+Task: Phase 6.7 — Unified Financial Reporting UI & Governance Integration
+
+Work Log:
+- PRE-FLIGHT: HEAD=0a88b3f confirmed; schema/services/APIs surveyed (backend 6.1–6.6 complete; 4 admin tabs orphaned; no UI for SOCIE/CF/budget/consolidation)
+- 6.7A (1f42b37): lib/money.ts BigInt-safe formatting (ES2017-safe, no literals) + CompanyPeriodProvider (per-user persisted company/FY context) + DashboardView (latest committed TB + unclassified counts + budget statuses + groups + permission-aware shortcuts) + legacy compare tool extracted to components/compare (chrome deduped, retitle أداة مقارنة القوائم) + admin page: foundation & account-nature tabs mounted + ?tab= deep links + 6.x permission keys + company-scope multi-select in user editor + proxy opens /admin for financial-foundation holders + login branding
+- 6.7B (4062d8d): TB tab — corrected-Excel upload inside draft revisions (6.3 gap closed), governance metadata visible (revision#, supersedes, created by/at, committed, reason, hash), preview errors/warnings counters; nature tab — mainCategory + statement-type columns, mandatory reasons on all CRUD dialogs, «حسابات تحتاج إلى تصنيف» prominent panel
+- 6.7C (f74c56a): StatementsView (P&L+OCI/SFP/SOCIE/IAS7-CF) over reporting services with account drill-down + honest INCOMPLETE_DATA banners + equation box + reconciliation difference visible; BudgetView (workflow DRAFT→SUBMITTED→APPROVED→LOCKED بلا Unlock + minor-safe line editor + توزيع متساوٍ + revision v+1) + Actual-vs-Budget panel (5 granularities, F/U منفصل عن الفارق الرقمي)
+- 6.7D (65f5b43): additive consolidation master-data (list/create groups + auto-seeded reporting lines/identity mappings + add/remove member + detail + adjustments GET) fail-closed + audited; ConsolidationView (groups admin + balanced adjustments editor + preliminary consolidated report with per-company working paper)
+- 6.7E (417daff): new home shell — dashboard-first + RTL tab navigation + ?view= deep links + sticky header/footer + real admin link
+- Gate (212efb9+): scripts/phase67-ui-governance.ts على dev-67-gate.db معزولة — 19/19 PASS
+- إصلاح خلل حقيقي كشفه البوابة: equity-server كان يطرح TypeError عند غياب الرصيد الافتتاحي (طرح على null) — الآن فجوة INCOMPLETE_DATA معلنة
+- انحدار كامل: 62A=30/30، 62B=16/16، 62C=9/9، 62D=6/6، 63=13/13، 64=9/9، 65=8/8، 66=8/8
+- lint 0؛ typecheck 92 (تحت خط الأساس 95؛ صفر أخطاء في ملفات 6.7)
+- تحقق متصفح فعلي (agent-browser): login→dashboard، تبويبات، P&L مكتمل، SFP معادلة متوازنة، SOCIE، CF، موازنة معتمدة، ف/غ مؤاتٍ، تقرير موحد أولي مع INCOMPLETE_DATA صريح، admin 5 تبويبات مع ?tab=، footer/RTL موبايل
+- قاعدة اختبار واجهة معزولة db/dev-ui-test.db (من migrations + بذر) — لم يُلمس db/custom.db إطلاقًا (لا push ولا migrate)
+
+Stage Summary:
+- 6.7 ملتزمة في 6 التزامات منطقية (1f42b37→…)؛ كل المسارات تعمل فعليًا؛ بلا migrations جديدة (UI/integration فقط)؛ بداية الحزمة windows-local-test
