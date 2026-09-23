@@ -14,7 +14,7 @@
 import * as React from "react";
 import { useSession } from "next-auth/react";
 import {
-  CheckCircle2, ClipboardCheck, Eye, FileSpreadsheet, GitBranch, Loader2, RefreshCw, ShieldCheck, Trash2, TriangleAlert,
+  CheckCircle2, ClipboardCheck, Eye, FileSpreadsheet, GitBranch, Loader2, RefreshCw, ShieldCheck, Trash2, TriangleAlert, Upload,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -57,6 +57,9 @@ interface ImportRow {
   company?: { code: string; nameAr: string; functionalCurrency: string } | null;
   fiscalYear?: { code: string; displayNameAr: string; startDate: string; endDate: string; status: string } | null;
   committedAt: string | null; createdAt: string; updatedAt: string;
+  // 6.7 — بيانات الحوكمة الظاهرة للمستخدم
+  createdByName?: string | null;
+  committedByName?: string | null;
 }
 interface PreviewResult {
   company: { code: string; nameAr: string };
@@ -134,6 +137,10 @@ export function TrialBalanceTab() {
   const [revisionReason, setRevisionReason] = React.useState("");
   const [revisionOpen, setRevisionOpen] = React.useState(false);
   const [note, setNote] = React.useState("");
+  // 6.7 — رفع ملف مصحح داخل مسودة مراجعة (سد فجوة 6.3 من الواجهة)
+  const revisionFileRef = React.useRef<HTMLInputElement>(null);
+  const [revisionUploadTarget, setRevisionUploadTarget] = React.useState<ImportRow | null>(null);
+  const [uploadingRevision, setUploadingRevision] = React.useState(false);
 
   const fy = fiscalYears.find((f) => f.id === fiscalYearId) ?? null;
   const fromPeriod = fy?.periods.find((p) => String(p.ordinal) === fromPeriodOrdinal) ?? null;
@@ -370,6 +377,55 @@ export function TrialBalanceTab() {
     }
   };
 
+  // 6.7 — رفع ملف مصحح داخل مسودة مراجعة: يستبدل سطور المسودة عبر مسار revisionTargetId
+  // (المدى والنوع والسنة ثابتة من المصدر المعتمد — الخادم يفرض ذلك حرفيًا).
+  const handleRevisionCorrectedFile = async (file: File | null) => {
+    const target = revisionUploadTarget;
+    if (!file || !target) return;
+    setUploadingRevision(true);
+    try {
+      const [data, hash] = await Promise.all([readExcelFile(file), sha256Hex(await file.arrayBuffer())]);
+      const lines: RawLine[] = [];
+      let skipped = 0;
+      for (const row of data.A) {
+        if (!row.num || row.num.length === 0) { skipped += 1; continue; }
+        lines.push({ accountCode: row.num, accountName: row.nm, debit: row.m, credit: row.d });
+      }
+      if (lines.length === 0) throw new Error("الملف لا يحتوي سطورًا صالحة (كود الحساب مطلوب).");
+      const res = await fetch("/api/trial-balances", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          revisionTargetId: target.id,
+          version: target.version,
+          companyId: target.companyId,
+          fiscalYearId: target.fiscalYearId,
+          fromDate: target.fromDate,
+          toDate: target.toDate,
+          dataType: target.dataType,
+          lines,
+          originalFileName: file.name,
+          fileHash: hash,
+          reason: `رفع ملف مصحح داخل مسودة المراجعة #${target.revisionNumber}`,
+        }),
+      });
+      const resp = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(resp?.error || `HTTP ${res.status}`);
+      toast({
+        title: `استُبدلت سطور مسودة المراجعة #${target.revisionNumber}`,
+        description: `${lines.length} سطرًا${skipped > 0 ? ` (تخطي ${skipped} بلا كود)` : ""} — راجع المعاينة عبر «عرض التفاصيل» ثم اعتمد.`,
+      });
+      await loadImports();
+    } catch (e) {
+      toast({ title: "فشل رفع الملف المصحح", description: e instanceof Error ? e.message : "", variant: "destructive" });
+      await loadImports();
+    } finally {
+      setUploadingRevision(false);
+      setRevisionUploadTarget(null);
+      if (revisionFileRef.current) revisionFileRef.current.value = "";
+    }
+  };
+
   const canPreview = !!(companyId && fy && fromPeriod && toPeriod && dataType && rawLines.length > 0);
   const companyFilter = imports.filter((r) => !companyId || r.companyId === companyId);
 
@@ -522,7 +578,19 @@ export function TrialBalanceTab() {
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <Badge className={STATUS_BADGE[r.status] ?? ""}>{TB_STATUS_LABELS[r.status as keyof typeof TB_STATUS_LABELS] ?? r.status}</Badge>
-                        <Badge variant="outline" className="font-mono text-[10px]" title={r.revisionReason || "الاستيراد الأول"}>مراجعة #{r.revisionNumber}</Badge>
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px]"
+                          title={[
+                            r.revisionReason || "الاستيراد الأول",
+                            r.supersedesImportId ? `يحل محل: ${r.supersedesImportId.slice(0, 8)}…` : null,
+                            r.createdByName ? `أنشئ بواسطة: ${r.createdByName}` : null,
+                            r.createdAt ? `بتاريخ: ${new Date(r.createdAt).toLocaleString("ar")}` : null,
+                            r.committedAt ? `اعتُمد: ${new Date(r.committedAt).toLocaleString("ar")}` : null,
+                          ].filter(Boolean).join(" — ")}
+                        >
+                          مراجعة #{r.revisionNumber}
+                        </Badge>
                       </div>
                     </TableCell>
                     <TableCell className="text-left">
@@ -540,6 +608,17 @@ export function TrialBalanceTab() {
                             <Button variant="ghost" size="sm" aria-label="إعادة تحقق الخريطة" onClick={() => revalidateImport(r)} disabled={busyId === r.id}>
                               <RefreshCw className="size-3.5" />
                             </Button>
+                            {r.supersedesImportId && (
+                              <Button
+                                variant="ghost" size="sm"
+                                aria-label="رفع ملف مصحح داخل المراجعة"
+                                title="رفع ملف Excel مصحح ليستبدل سطور مسودة المراجعة (المدى والنوع ثابتان من المصدر المعتمد)"
+                                onClick={() => { setRevisionUploadTarget(r); if (revisionFileRef.current) revisionFileRef.current.click(); }}
+                                disabled={busyId === r.id || uploadingRevision}
+                              >
+                                {uploadingRevision && revisionUploadTarget?.id === r.id ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5 text-sky-600" />}
+                              </Button>
+                            )}
                             <Button variant="ghost" size="sm" aria-label="اعتماد" onClick={() => commitImport(r)} disabled={busyId === r.id}>
                               <ShieldCheck className="size-3.5 text-emerald-600" />
                             </Button>
@@ -585,6 +664,20 @@ export function TrialBalanceTab() {
                 <div>
                   <p className="text-xs text-muted-foreground">الفرق</p>
                   <p className={"font-mono font-semibold " + (preview.balanced ? "text-emerald-600" : "text-rose-600")}>{fmtMinor(preview.differenceMinor)}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className={"rounded-md border p-2 " + (preview.balanced ? "border-emerald-200 bg-emerald-50/40 dark:border-emerald-900 dark:bg-emerald-950/20" : "border-rose-300 bg-rose-50/60 dark:border-rose-900 dark:bg-rose-950/30")}>
+                  <p className="text-xs text-muted-foreground">الأخطاء</p>
+                  <p className={"font-semibold " + (preview.balanced ? "text-emerald-700" : "text-rose-700")}>
+                    {preview.balanced ? 0 : 1} — {preview.balanced ? "لا أخطاء (متوازن)" : "اختلال التوازن: مدين ≠ دائن"}
+                  </p>
+                </div>
+                <div className={"rounded-md border p-2 " + ((preview.mapping.needsClassification + preview.mapping.needsDetailedClassification) === 0 ? "border-emerald-200 bg-emerald-50/40 dark:border-emerald-900 dark:bg-emerald-950/20" : "border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30")}>
+                  <p className="text-xs text-muted-foreground">التحذيرات (حسابات بلا تصنيف كافٍ)</p>
+                  <p className={"font-semibold " + ((preview.mapping.needsClassification + preview.mapping.needsDetailedClassification) === 0 ? "text-emerald-700" : "text-amber-700")}>
+                    {preview.mapping.needsClassification + preview.mapping.needsDetailedClassification}
+                  </p>
                 </div>
               </div>
               {!preview.balanced && (
@@ -649,12 +742,34 @@ export function TrialBalanceTab() {
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="max-w-3xl" dir="rtl">
           <DialogHeader>
-            <DialogTitle>تفاصيل ميزان المراجعة</DialogTitle>
+            <DialogTitle className="flex flex-wrap items-center gap-2">
+              تفاصيل ميزان المراجعة
+              {detail && <Badge variant="outline" className="font-mono text-[10px]">مراجعة #{detail.revisionNumber}</Badge>}
+              {detail?.status && <Badge className={STATUS_BADGE[detail.status] ?? ""}>{TB_STATUS_LABELS[detail.status as keyof typeof TB_STATUS_LABELS] ?? detail.status}</Badge>}
+            </DialogTitle>
             <DialogDescription>
               {detail?.company?.code} — <span className="font-mono" dir="ltr">{detail?.fromDate} → {detail?.toDate}</span> ({detail?.dataType})
               {detail?.originalFileName ? ` — ${detail.originalFileName}` : ""}
             </DialogDescription>
           </DialogHeader>
+          {detail && (
+            <div className="grid gap-1.5 rounded-md border bg-muted/40 p-3 text-xs leading-5 sm:grid-cols-2">
+              <p><span className="text-muted-foreground">السنة المالية:</span> {detail.fiscalYear?.code} ({detail.fiscalYear?.startDate} → {detail.fiscalYear?.endDate})</p>
+              <p><span className="text-muted-foreground">أنشئ بواسطة:</span> {detail.createdByName || "—"} — <span className="tnum">{new Date(detail.createdAt).toLocaleString("ar")}</span></p>
+              <p>
+                <span className="text-muted-foreground">يحل محل:</span>{" "}
+                {detail.supersedesImportId ? <span className="font-mono" dir="ltr">{detail.supersedesImportId.slice(0, 10)}…</span> : "— (الاستيراد الأول)"}
+              </p>
+              <p>
+                <span className="text-muted-foreground">سبب المراجعة:</span> {detail.revisionReason || "—"}
+              </p>
+              <p>
+                <span className="text-muted-foreground">الاعتماد:</span>{" "}
+                {detail.committedAt ? <span className="tnum">اعتُمد {new Date(detail.committedAt).toLocaleString("ar")}{detail.committedByName ? ` بواسطة ${detail.committedByName}` : ""}</span> : "غير معتمد بعد"}
+              </p>
+              <p><span className="text-muted-foreground">بصمة المحتوى:</span> <span className="font-mono" dir="ltr">{detail.payloadHash?.slice(0, 16) || "—"}…</span></p>
+            </div>
+          )}
           <div className="max-h-[60vh] overflow-y-auto rounded-md border">
             <Table>
               <TableHeader>
@@ -727,6 +842,17 @@ export function TrialBalanceTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 6.7 — إدخال مخفي لرفع ملف مصحح داخل مسودة مراجعة */}
+      <input
+        ref={revisionFileRef}
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={(e) => handleRevisionCorrectedFile(e.target.files?.[0] ?? null)}
+      />
     </div>
   );
 }

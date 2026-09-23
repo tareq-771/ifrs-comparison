@@ -15,7 +15,7 @@
 import * as React from "react";
 import { useSession } from "next-auth/react";
 import {
-  Copy, FlaskConical, ListTree, Loader2, Lock, Pencil, Plus, Power, RefreshCw, ScrollText, Tag, Trash2,
+  Copy, FlaskConical, ListTree, Loader2, Lock, Pencil, Plus, Power, RefreshCw, ScrollText, Tag, Trash2, TriangleAlert,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -403,6 +403,7 @@ export function AccountNatureTab() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-right">البادئة</TableHead>
+                  <TableHead className="text-right">اسم التصنيف</TableHead>
                   <TableHead className="text-right">التصنيف</TableHead>
                   <TableHead className="text-right">سلوك التجميع</TableHead>
                   <TableHead className="text-right">بند القائمة المالية</TableHead>
@@ -421,12 +422,22 @@ export function AccountNatureTab() {
                       {r.prefix.length >= 3 ? <span className="text-muted-foreground">└ </span> : null}
                       {r.prefix}
                     </TableCell>
+                    <TableCell className="text-sm">{r.mainCategory ? MAIN_CATEGORY_LABELS[r.mainCategory as keyof typeof MAIN_CATEGORY_LABELS] ?? r.mainCategory : "—"}</TableCell>
                     <TableCell><ClassificationBadge value={r.classification} /></TableCell>
-                    <TableCell className="text-sm">{AGGREGATION_BEHAVIOR_LABELS[r.aggregationBehavior as AggregationBehavior] ?? r.aggregationBehavior}</TableCell>
                     <TableCell className="text-sm">
-                      {r.statementLine
-                        ? <span><span className="font-mono text-xs">{r.statementLine.code}</span> — {r.statementLine.nameAr}</span>
-                        : <span className="text-xs text-muted-foreground">— بلا بند (ROOT_ONLY)</span>}
+                      <span className="whitespace-nowrap">{AGGREGATION_BEHAVIOR_LABELS[r.aggregationBehavior as AggregationBehavior] ?? r.aggregationBehavior}</span>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {r.statementLine ? (
+                        <span>
+                          <Badge variant="outline" className="me-1 px-1 py-0 text-[9px]" title={STATEMENT_TYPE_LABELS[r.statementLine.statementType as keyof typeof STATEMENT_TYPE_LABELS] ?? r.statementLine.statementType}>
+                            {r.statementLine.statementType === "PROFIT_OR_LOSS" ? "الدخل" : "المركز المالي"}
+                          </Badge>
+                          <span className="font-mono text-xs">{r.statementLine.code}</span> — {r.statementLine.nameAr}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">— بلا بند (ROOT_ONLY)</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       {r.isActive
@@ -457,14 +468,14 @@ export function AccountNatureTab() {
                 ))}
                 {selectedCompanyId && companyPrefixes.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={canManage ? 7 : 6} className="h-20 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={canManage ? 8 : 7} className="h-20 text-center text-sm text-muted-foreground">
                       لا بادئات تفصيلية لهذه الشركة بعد — أضف دليلها التفصيلي (أرقام الأقسام توضيحية فقط لكل شركة).
                     </TableCell>
                   </TableRow>
                 )}
                 {!selectedCompanyId && (
                   <TableRow>
-                    <TableCell colSpan={canManage ? 7 : 6} className="h-20 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={canManage ? 8 : 7} className="h-20 text-center text-sm text-muted-foreground">
                       اختر شركة لعرض بادئاتها التفصيلية.
                     </TableCell>
                   </TableRow>
@@ -613,6 +624,20 @@ export function AccountNatureTab() {
                   <span className="font-semibold text-amber-600 dark:text-amber-400">تحتاج اهتمامًا: {testerSummary.needsAttention}</span> —{" "}
                   <span className="font-semibold text-rose-600 dark:text-rose-400">غير مصنفة: {testerSummary.unclassified}</span>
                 </p>
+              )}
+              {/* 6.7 — عرض صريح: حسابات تحتاج إلى تصنيف (لا تُصنّف بصمت كـ OTHER) */}
+              {testerSummary && testerSummary.needsAttention > 0 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                  <p className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-300">
+                    <TriangleAlert className="size-4" />
+                    حسابات تحتاج إلى تصنيف: {testerSummary.needsAttention}
+                    {testerSummary.unclassified > 0 && <> — منها غير مصنفة إطلاقًا: {testerSummary.unclassified}</>}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                    هذه الحسابات لن تظهر في القوائم النهائية حتى تُصنّف — أضف بادئة تفصيلية أو استثناء حساب، ثم أعد التحقق من ميزان المراجعة.
+                    النظام لا يصنف الحسابات غير المعروفة بصمت كـ OTHER.
+                  </p>
+                </div>
               )}
               <div className="max-h-96 overflow-y-auto rounded-md border">
                 <Table>
@@ -772,6 +797,7 @@ interface PrefixFormState {
   aggregationBehavior: AggregationBehavior;
   statementLineCode: string; // "__none__" = بلا بند
   note: string;
+  reason: string; // 6.7 — سبب إدخالي إلزامي (سجل التدقيق)
 }
 
 function PrefixFormFields({
@@ -848,6 +874,16 @@ function PrefixFormFields({
         <Label htmlFor="pf-note">ملاحظة (اختياري)</Label>
         <Input id="pf-note" value={form.note} onChange={(e) => setForm({ note: e.target.value })} maxLength={300} />
       </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="pf-reason">سبب الحفظ/التعديل (إلزامي — يُدوّن في سجل التدقيق)</Label>
+        <Input
+          id="pf-reason"
+          value={form.reason}
+          onChange={(e) => setForm({ reason: e.target.value })}
+          maxLength={300}
+          placeholder="مثال: إضافة بادئة للمخزون بعد مراجعة دليل الحسابات"
+        />
+      </div>
     </div>
   );
 }
@@ -864,7 +900,7 @@ function AddPrefixDialog({
   const { toast } = useToast();
   const [saving, setSaving] = React.useState(false);
   const [form, setFormState] = React.useState<PrefixFormState>({
-    prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "",
+    prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "", reason: "",
   });
   const setForm = (patch: Partial<PrefixFormState>) => setFormState((f) => ({ ...f, ...patch }));
 
@@ -881,13 +917,13 @@ function AddPrefixDialog({
           aggregationBehavior: form.aggregationBehavior,
           statementLineCode: form.statementLineCode === "__none__" ? "" : form.statementLineCode,
           note: form.note,
-          reason: "إنشاء بادئة تفصيلية من الواجهة",
+          reason: form.reason.trim(),
         }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       toast({ title: "أُنشئت البادئة التفصيلية" });
-      setFormState({ prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "" });
+      setFormState({ prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "", reason: "" });
       onSaved();
       onOpenChange(false);
     } catch (e) {
@@ -907,7 +943,7 @@ function AddPrefixDialog({
         <PrefixFormFields form={form} setForm={setForm} lines={lines} />
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>إلغاء</Button>
-          <Button onClick={submit} disabled={saving || !form.prefix.trim()}>
+          <Button onClick={submit} disabled={saving || !form.prefix.trim() || !form.reason.trim()}>
             {saving ? <Loader2 className="size-4 animate-spin" /> : null}
             حفظ
           </Button>
@@ -929,7 +965,7 @@ function EditPrefixDialog({
   const [saving, setSaving] = React.useState(false);
   const [isActive, setIsActive] = React.useState(true);
   const [form, setFormState] = React.useState<PrefixFormState>({
-    prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "",
+    prefix: "", classification: "ASSET", aggregationBehavior: "BALANCE", statementLineCode: "__none__", note: "", reason: "",
   });
   const setForm = (patch: Partial<PrefixFormState>) => setFormState((f) => ({ ...f, ...patch }));
 
@@ -942,6 +978,7 @@ function EditPrefixDialog({
         aggregationBehavior: target.aggregationBehavior as AggregationBehavior,
         statementLineCode: target.statementLine?.code ?? "__none__",
         note: target.note ?? "",
+        reason: "",
       });
     }
   }, [target]);
@@ -960,7 +997,7 @@ function EditPrefixDialog({
           note: form.note,
           isActive,
           version: target.version,
-          reason: "تعديل بادئة من الواجهة",
+          reason: form.reason.trim(),
         }),
       });
       const data = await res.json().catch(() => null);
@@ -988,7 +1025,7 @@ function EditPrefixDialog({
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={onClose} disabled={saving}>إلغاء</Button>
-          <Button onClick={submit} disabled={saving}>
+          <Button onClick={submit} disabled={saving || !form.reason.trim()}>
             {saving ? <Loader2 className="size-4 animate-spin" /> : null}
             حفظ
           </Button>
@@ -1057,6 +1094,7 @@ interface OverrideFormState {
   aggregationBehavior: AggregationBehavior;
   statementLineCode: string;
   note: string;
+  reason: string; // 6.7 — سبب إدخالي إلزامي (سجل التدقيق)
 }
 
 function OverrideFormFields({
@@ -1129,6 +1167,16 @@ function OverrideFormFields({
         <Label htmlFor="of-note">ملاحظة (اختياري)</Label>
         <Input id="of-note" value={form.note} onChange={(e) => setForm({ note: e.target.value })} maxLength={300} />
       </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="of-reason">سبب الحفظ/التعديل (إلزامي — يُدوّن في سجل التدقيق)</Label>
+        <Input
+          id="of-reason"
+          value={form.reason}
+          onChange={(e) => setForm({ reason: e.target.value })}
+          maxLength={300}
+          placeholder="مثال: استثناء حساب تمويل مُصنّف خاطئًا سابقًا"
+        />
+      </div>
     </div>
   );
 }
@@ -1145,7 +1193,7 @@ function AddOverrideDialog({
   const { toast } = useToast();
   const [saving, setSaving] = React.useState(false);
   const [form, setFormState] = React.useState<OverrideFormState>({
-    accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "",
+    accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "", reason: "",
   });
   const setForm = (patch: Partial<OverrideFormState>) => setFormState((f) => ({ ...f, ...patch }));
 
@@ -1162,13 +1210,13 @@ function AddOverrideDialog({
           aggregationBehavior: form.aggregationBehavior,
           statementLineCode: form.statementLineCode === "__none__" ? "" : form.statementLineCode,
           note: form.note,
-          reason: "إنشاء استثناء من الواجهة",
+          reason: form.reason.trim(),
         }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
       toast({ title: "أُنشئ الاستثناء", description: "أولويته الآن فوق كل البادئات لهذا الحساب." });
-      setFormState({ accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "" });
+      setFormState({ accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "", reason: "" });
       onSaved();
       onOpenChange(false);
     } catch (e) {
@@ -1188,7 +1236,7 @@ function AddOverrideDialog({
         <OverrideFormFields form={form} setForm={setForm} lines={lines} />
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>إلغاء</Button>
-          <Button onClick={submit} disabled={saving || !form.accountCode.trim()}>
+          <Button onClick={submit} disabled={saving || !form.accountCode.trim() || !form.reason.trim()}>
             {saving ? <Loader2 className="size-4 animate-spin" /> : null}
             حفظ
           </Button>
@@ -1210,7 +1258,7 @@ function EditOverrideDialog({
   const [saving, setSaving] = React.useState(false);
   const [isActive, setIsActive] = React.useState(true);
   const [form, setFormState] = React.useState<OverrideFormState>({
-    accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "",
+    accountCode: "", classification: "EXPENSE", aggregationBehavior: "FLOW", statementLineCode: "__none__", note: "", reason: "",
   });
   const setForm = (patch: Partial<OverrideFormState>) => setFormState((f) => ({ ...f, ...patch }));
 
@@ -1223,6 +1271,7 @@ function EditOverrideDialog({
         aggregationBehavior: target.aggregationBehavior as AggregationBehavior,
         statementLineCode: target.statementLine?.code ?? "__none__",
         note: target.note ?? "",
+        reason: "",
       });
     }
   }, [target]);
@@ -1241,7 +1290,7 @@ function EditOverrideDialog({
           note: form.note,
           isActive,
           version: target.version,
-          reason: "تعديل استثناء من الواجهة",
+          reason: form.reason.trim(),
         }),
       });
       const data = await res.json().catch(() => null);
@@ -1269,7 +1318,7 @@ function EditOverrideDialog({
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={onClose} disabled={saving}>إلغاء</Button>
-          <Button onClick={submit} disabled={saving}>
+          <Button onClick={submit} disabled={saving || !form.reason.trim()}>
             {saving ? <Loader2 className="size-4 animate-spin" /> : null}
             حفظ
           </Button>
