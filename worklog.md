@@ -699,3 +699,23 @@ Work Log:
 
 Stage Summary:
 - المعتمد غير قابل للتعديل/الحذف؛ المراجعة: CREATE→DRAFT→REPLACE LINES→VALIDATE→COMMIT؛ التقارير من أحدث معتمد مع إثبات مصدر كامل؛ التاريخ قابل للتتبع عبر السلسلة والتدقيق؛ custom.db لم يُلمس
+
+---
+Task ID: 6.4
+Agent: main (Z.ai Code)
+Task: Phase 6.4 — Equity statement + IAS 7 Cash Flow foundation
+
+Work Log:
+- Migration 20260923120000_phase64 (ADD-ONLY نقي): EquityComponentMapping (بادئات لكل شركة — أطول بادئة تفوز) + CashFlowStatementLine (33 بند بذور نظامية مرنة للطريقة غير المباشرة) + CashFlowMapping (بادئات شركة+نظامية) + CashFlowAccountOverride (تجاوز حساب)
+- lib/equity.ts (كتالوج 9 مفاهيم حقوق ملكية) + lib/cashflow.ts (6 أنشطة + resolver ACCOUNT_OVERRIDE→LONGEST PREFIX→UNCLASSIFIED + قاعدة الإشارة المركزية الوحيدة)
+- lib/equity-server.ts: SOCIE بالمدى [start..end] — opening/movement/closing لكل مفهوم + صافي الربح عبر مساعد مركزي + فجوات معلنة
+- lib/cashflow-server.ts: IAS7 غير مباشرة — بادئ قياس من القائمة + تسويات + رأس مال عامل + أقسام ثلاثة + إفصاح NON_CASH + مطابقة النقد (الفرق يعرض ولا يُخفى)
+- reporting-server: flowRangeMovementFromPoints (جسر المدى بلا جمع مزدوج) + netProfitOrLossRangeFromAccounts (اصطلاح: إيراد −net موجب)
+- تصحيح جوهري أثناء التطوير: الحقول الصحيحة = classification (ASSET/LIABILITY/EQUITY/...) وليس mainCategory (ASSETS/LIABILITIES_EQUITY/...) — البوابات والخدمات متسقة الآن
+- API: POST /api/reports/actual/equity + /cashflow (نمط statements حرفياً)
+- بوابة phase64 على dev-64-gate.db: 9/9 — فيكسشر متوازن محاسبياً كل شهر بلا حساب تسوية (هوية ΣAssets=ΣLia+Eq+Profit مثبتة عددياً قبل وبعد مراجعة 6.3)
+- انحدار: 62A-D = 30/16/9/6، 63 = 13/13، lint 0، typecheck 95 = خط الأساس
+- PIN محدث: csha256:441f465c... من قاعدة معزولة حصراً
+
+Stage Summary:
+- SOCIE + IAS7 foundation مكتملان بمحاسبة صحيحة: أحدث مراجعة معتمدة حصراً، فجوات INCOMPLETE_DATA معلنة لا مختلقة، الفروق تُعرض، العزل fail-closed، بلا أي hard-code لأكواد الحسابات

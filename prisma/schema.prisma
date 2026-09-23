@@ -195,6 +195,11 @@ model Company {
   accountMappingOverrides AccountMappingOverride[]
   trialBalanceImports  TrialBalanceImport[]
 
+  // ── Phase 6.4 back-relations ──
+  equityComponentMappings  EquityComponentMapping[]
+  cashFlowMappings         CashFlowMapping[]
+  cashFlowAccountOverrides CashFlowAccountOverride[]
+
   @@index([status])
   @@index([legacyGroupId])
 }
@@ -502,4 +507,106 @@ model TrialBalanceLine {
 
   @@index([importId])
   @@index([accountCode])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.4A — قائمة التغيرات في حقوق الملكية (Foundation)
+// المفاهيم التسعة reporting concepts (ليست أكواد حسابات) قابلة للربط لكل شركة
+// عبر بادئات — أطول بادئة تفوز — مستقلة تمامًا عن خريطة القوائم المالية 6.2A.
+// ══════════════════════════════════════════════════════════════════════════════
+
+model EquityComponentMapping {
+  id            String   @id @default(cuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  componentCode String                 // من EQUITY_COMPONENTS (lib/equity.ts) — ليس كود حساب
+  prefix        String                 // أطول بادئة تفوز
+  note          String   @default("")
+  isActive      Boolean  @default(true)
+  version       Int      @default(1)
+  createdById   String?
+  createdByName String   @default("")
+  updatedById   String?
+  updatedByName String   @default("")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, prefix])
+  @@index([companyId, isActive])
+  @@index([componentCode])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 6.4B — IAS 7 قائمة التدفقات النقدية (Foundation)
+// خريطة مستقلة كلية عن Financial Statement Mapping: بند بذرة نظامي مرن +
+// ربط بادئات لكل شركة + تجاوز على مستوى الحساب.
+// resolver: ACCOUNT_OVERRIDE → LONGEST PREFIX → UNCLASSIFIED (فشل مغلق).
+// ══════════════════════════════════════════════════════════════════════════════
+
+model CashFlowStatementLine {
+  id           String  @id @default(cuid())
+  code         String  @unique
+  nameAr       String
+  nameEn       String?
+  activity     String              // OPERATING | INVESTING | FINANCING | CASH_AND_CASH_EQUIVALENTS
+  isAdjustment Boolean @default(false) // تسوية غير نقدية ضمن الطريقة غير المباشرة (إشارة +net)
+  displayOrder Int     @default(0)
+  isActive     Boolean @default(true)
+  version      Int     @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  mappings         CashFlowMapping[]
+  accountOverrides CashFlowAccountOverride[]
+
+  @@index([activity, displayOrder])
+}
+
+model CashFlowMapping {
+  id            String   @id @default(cuid())
+  companyId     String?                // null = ربط نظامي مقترح (للقراءة — لا يفرض نفسه)
+  company       Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  prefix        String
+  activity      String                 // OPERATING | INVESTING | FINANCING | CASH_AND_CASH_EQUIVALENTS | NON_CASH | UNCLASSIFIED
+  lineId        String?
+  line          CashFlowStatementLine? @relation(fields: [lineId], references: [id], onDelete: SetNull)
+  source        String   @default("MANUAL")
+  note          String   @default("")
+  isActive      Boolean  @default(true)
+  version       Int      @default(1)
+  createdById   String?
+  createdByName String   @default("")
+  updatedById   String?
+  updatedByName String   @default("")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, prefix])
+  @@index([companyId, isActive])
+  @@index([prefix])
+  @@index([lineId])
+}
+
+model CashFlowAccountOverride {
+  id            String   @id @default(cuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountCode   String                 // كود الحساب الكامل — يفوز على كل البادئات
+  activity      String
+  lineId        String?
+  line          CashFlowStatementLine? @relation(fields: [lineId], references: [id], onDelete: SetNull)
+  note          String   @default("")
+  isActive      Boolean  @default(true)
+  version       Int      @default(1)
+  createdById   String?
+  createdByName String   @default("")
+  updatedById   String?
+  updatedByName String   @default("")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, accountCode])
+  @@index([companyId, isActive])
+  @@index([accountCode])
+  @@index([lineId])
 }

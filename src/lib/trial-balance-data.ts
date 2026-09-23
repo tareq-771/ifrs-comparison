@@ -132,3 +132,14 @@ export function safeValue(
     throw e;
   }
 }
+
+/** حركة حساب FLOW عبر مدى [startOrdinal..endOrdinal] — تراكمي⇄حركات عبر الجسور الموحدة بلا جمع مزدوج. */
+export function flowRangeMovementFromPoints(
+  points: readonly TBDataPoint[],
+  startOrdinal: number,
+  endOrdinal: number
+): bigint {
+  const endYTD = flowYTDFromPoints(points, endOrdinal);
+  if (startOrdinal <= 1) return endYTD;
+  return endYTD - flowYTDFromPoints(points, startOrdinal - 1);
+}

@@ -14,6 +14,7 @@ import { companyVisible } from "@/lib/company-access";
 import {
   balanceAsOfFromPoints,
   flowMonthMovementFromPoints,
+  flowRangeMovementFromPoints,
   flowYTDFromPoints,
   safeValue,
   type TBDataPoint,
@@ -423,5 +424,54 @@ export async function getSavedMonthVsCumulative(
     rows,
     summary: { total: rows.length, complete, incomplete, unclassifiedAccounts },
     provenance,
+  };
+}
+
+/* ── Phase 6.4 — مساعد مركزي وحيد: صافي الربح/الخسارة عبر مدى (أساس SOCIE و IAS7) ── */
+
+export interface RangeNetResult {
+  status: "OK" | "INCOMPLETE_DATA";
+  valueMinor: bigint | null;
+  revenueMinor: bigint | null;
+  expenseMinor: bigint | null;
+  incompleteAccounts: string[];
+}
+
+/**
+ * صافي الربح/الخسارة للمدى من أحدث المراجعات المعتمدة حصرًا:
+ * الإيرادات − المصروفات بحركة المدى (FLOW عبر الجسور الموحدة — لا جمع تراكمي مزدوج).
+ * مصنّف رئيسي REVENUE/EXPENSE فقط — الحسابات غير القابلة للحساب تُبلّغ لا تُختلق.
+ */
+export function netProfitOrLossRangeFromAccounts(
+  accounts: Map<string, AccountPoints>,
+  startOrdinal: number,
+  endOrdinal: number
+): RangeNetResult {
+  let revenue = BigInt(0);
+  let expense = BigInt(0);
+  const incompleteAccounts: string[] = [];
+  for (const acc of accounts.values()) {
+    if (acc.classification !== "REVENUE" && acc.classification !== "EXPENSE") continue;
+    const behavior = acc.aggregationBehavior === "BALANCE" ? "BALANCE" : "FLOW";
+    try {
+      const v =
+        behavior === "BALANCE"
+          ? balanceAsOfFromPoints(acc.points, endOrdinal) - (startOrdinal <= 1 ? BigInt(0) : balanceAsOfFromPoints(acc.points, startOrdinal - 1))
+          : flowRangeMovementFromPoints(acc.points, startOrdinal, endOrdinal);
+      if (acc.classification === "REVENUE") revenue += v;
+      else expense += v;
+    } catch {
+      incompleteAccounts.push(acc.accountCode);
+    }
+  }
+  // اصطلاح القائمة: الإيراد دائن ⇒ −net موجب؛ المصروف مدين ⇒ +net موجب؛ الصافي = إيراد − مصروف
+  const revenueMinor = -revenue;
+  const expenseMinor = expense;
+  return {
+    status: incompleteAccounts.length === 0 ? "OK" : "INCOMPLETE_DATA",
+    valueMinor: incompleteAccounts.length === 0 ? revenueMinor - expenseMinor : null,
+    revenueMinor: incompleteAccounts.length === 0 ? revenueMinor : null,
+    expenseMinor: incompleteAccounts.length === 0 ? expenseMinor : null,
+    incompleteAccounts,
   };
 }
