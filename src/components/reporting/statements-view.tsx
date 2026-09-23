@@ -22,6 +22,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { formatMinor } from "@/lib/money";
+import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
+import { buildReportHeaderMeta } from "@/lib/report-header";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
 import { useSession } from "next-auth/react";
@@ -232,6 +234,12 @@ export function StatementsView() {
 
   const periods = selectedFiscalYear?.periods ?? [];
 
+  // 6.8 — بيانات الترويسة الموحدة: تواريخ الفترات من السنة المالية الفعلية (بلا افتراض تقويمي)
+  const periodByOrdinal = React.useCallback(
+    (o: string) => periods.find((p) => String(p.ordinal) === o) ?? null,
+    [periods],
+  );
+
   // تهيئة الفترات عند تغير السنة
   React.useEffect(() => {
     if (periods.length === 0) {
@@ -441,8 +449,23 @@ export function StatementsView() {
             ) : !statements ? (
               <EmptyState companyPicked={!!selectedCompanyId && !!selectedFiscalYearId && !!ordinal} />
             ) : (
-              <>
-                <StatementHeader title="قائمة الربح أو الخسارة والدخل الشامل الآخر" subtitle={`${statements.company.code} — ${statements.company.nameAr} · ${statements.fiscalYear.code} · ${statements.period.displayLabel ?? statements.period.code ?? ""} · ${basis === "YTD" ? "تراكمي" : "حركة الفترة"}`} currency={currencyLabel} />
+              <PrintableReport
+                orientation="portrait"
+                toolbar={<PrintButton orientation="portrait" />}
+                meta={buildReportHeaderMeta({
+                  companyCode: statements.company.code,
+                  companyName: statements.company.nameAr,
+                  reportTitle: "قائمة الربح أو الخسارة والدخل الشامل الآخر",
+                  fiscalYearCode: statements.fiscalYear.code,
+                  fiscalYearLabel: statements.fiscalYear.displayNameAr,
+                  periodLabel: `حتى نهاية فترة ${statements.period.ordinal ?? ordinal} — ${statements.period.displayLabel ?? statements.period.code ?? ""}`,
+                  fromDate: periodByOrdinal(ordinal)?.startDate ?? null,
+                  toDate: periodByOrdinal(ordinal)?.endDate ?? null,
+                  currency: currencyLabel,
+                  dataType: statements.basis ?? null,
+                  status: statements.profitOrLoss.completeness.ready ? "APPROVED" : "INCOMPLETE_DATA",
+                })}
+              >
                 <CompletenessBanner completeness={statements.profitOrLoss.completeness} />
                 <Card>
                   <CardContent className="pt-4">
@@ -492,7 +515,7 @@ export function StatementsView() {
                     </Table>
                   </CardContent>
                 </Card>
-              </>
+              </PrintableReport>
             )}
           </TabsContent>
 
@@ -503,8 +526,25 @@ export function StatementsView() {
             ) : !statements ? (
               <EmptyState companyPicked={!!selectedCompanyId && !!selectedFiscalYearId && !!ordinal} />
             ) : (
-              <>
-                <StatementHeader title="قائمة المركز المالي" subtitle={`${statements.company.code} — ${statements.company.nameAr} · ${statements.fiscalYear.code} · حتى نهاية ${statements.period.displayLabel ?? statements.period.code ?? ""}`} currency={currencyLabel} />
+              <PrintableReport
+                orientation="portrait"
+                toolbar={<PrintButton orientation="portrait" />}
+                meta={buildReportHeaderMeta({
+                  companyCode: statements.company.code,
+                  companyName: statements.company.nameAr,
+                  reportTitle: "قائمة المركز المالي",
+                  fiscalYearCode: statements.fiscalYear.code,
+                  fiscalYearLabel: statements.fiscalYear.displayNameAr,
+                  periodLabel: `حتى نهاية ${statements.period.displayLabel ?? statements.period.code ?? ""}`,
+                  fromDate: periodByOrdinal(ordinal)?.startDate ?? null,
+                  toDate: periodByOrdinal(ordinal)?.endDate ?? null,
+                  currency: currencyLabel,
+                  status: statements.financialPosition.completeness.ready ? "APPROVED" : "INCOMPLETE_DATA",
+                  statusNotice: !statements.financialPosition.equation.balanced
+                    ? `المعادلة المحاسبية غير متوازنة — الفرق ${statements.financialPosition.equation.differenceMinor} minor معروض ولا يُصحح ولا يُخفى.`
+                    : null,
+                })}
+              >
                 <CompletenessBanner completeness={statements.financialPosition.completeness} />
                 <Card>
                   <CardContent className="pt-4">
@@ -571,7 +611,7 @@ export function StatementsView() {
                     </ul>
                   </div>
                 )}
-              </>
+              </PrintableReport>
             )}
           </TabsContent>
 
@@ -582,8 +622,25 @@ export function StatementsView() {
             ) : !equity ? (
               <EmptyState companyPicked={!!selectedCompanyId && !!selectedFiscalYearId && !!socieStart && !!socieEnd} />
             ) : (
-              <>
-                <StatementHeader title="قائمة التغيرات في حقوق الملكية" subtitle={`${selectedCompany?.code ?? ""} — ${selectedCompany?.nameAr ?? ""} · ${selectedFiscalYear?.code ?? ""} · الفترات ${socieStart} إلى ${socieEnd}`} currency={currencyLabel} />
+              <PrintableReport
+                orientation="portrait"
+                toolbar={<PrintButton orientation="portrait" />}
+                meta={buildReportHeaderMeta({
+                  companyCode: selectedCompany?.code,
+                  companyName: selectedCompany?.nameAr,
+                  reportTitle: "قائمة التغيرات في حقوق الملكية",
+                  fiscalYearCode: selectedFiscalYear?.code,
+                  fiscalYearLabel: selectedFiscalYear?.displayNameAr,
+                  periodLabel: `الفترات ${socieStart} إلى ${socieEnd}`,
+                  fromDate: periodByOrdinal(socieStart)?.startDate ?? null,
+                  toDate: periodByOrdinal(socieEnd)?.endDate ?? null,
+                  currency: currencyLabel,
+                  status: equity.status === "INCOMPLETE_DATA" ? "INCOMPLETE_DATA" : "APPROVED",
+                  statusNotice: !equity.totals.reconciled
+                    ? "فشل مطابقة الإجماليات (الافتتاحي + الحركات ≠ الختامي) — الفرق معروض ولا يُجبر التوازن."
+                    : null,
+                })}
+              >
                 {equity.status === "INCOMPLETE_DATA" && (
                   <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
                     <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" />INCOMPLETE_DATA — مكونات أو فترات ناقصة معلنة أدناه (لا plug لفرض التوازن).</p>
@@ -642,7 +699,7 @@ export function StatementsView() {
                 <p className={cn("rounded-md p-3 text-sm", equity.totals.reconciled ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300" : "bg-rose-50 text-rose-800 dark:bg-rose-950/30 dark:text-rose-300")}>
                   {equity.totals.reconciled ? "✓ المطابقة ناجحة: الافتتاحي + الحركات = الختامي" : "⚠ فشل مطابقة الإجماليات (الافتتاحي + الحركات ≠ الختامي) — الفرق معروض ولا يُجبر التوازن."}
                 </p>
-              </>
+              </PrintableReport>
             )}
           </TabsContent>
 
@@ -653,8 +710,26 @@ export function StatementsView() {
             ) : !cashflow ? (
               <EmptyState companyPicked={!!selectedCompanyId && !!selectedFiscalYearId && !!cfStart && !!cfEnd} />
             ) : (
-              <>
-                <StatementHeader title="قائمة التدفقات النقدية (IAS 7 — طريقة غير مباشرة)" subtitle={`${selectedCompany?.code ?? ""} — ${selectedCompany?.nameAr ?? ""} · ${selectedFiscalYear?.code ?? ""} · الفترات ${cfStart} إلى ${cfEnd}`} currency={currencyLabel} />
+              <PrintableReport
+                orientation="portrait"
+                toolbar={<PrintButton orientation="portrait" />}
+                meta={buildReportHeaderMeta({
+                  companyCode: selectedCompany?.code,
+                  companyName: selectedCompany?.nameAr,
+                  reportTitle: "قائمة التدفقات النقدية (IAS 7 — طريقة غير مباشرة)",
+                  fiscalYearCode: selectedFiscalYear?.code,
+                  fiscalYearLabel: selectedFiscalYear?.displayNameAr,
+                  periodLabel: `الفترات ${cfStart} إلى ${cfEnd}`,
+                  fromDate: periodByOrdinal(cfStart)?.startDate ?? null,
+                  toDate: periodByOrdinal(cfEnd)?.endDate ?? null,
+                  currency: currencyLabel,
+                  status: cashflow.status === "INCOMPLETE_DATA" ? "INCOMPLETE_DATA" : "APPROVED",
+                  statusNotice:
+                    cashflow.reconciliationDifferenceMinor !== null && cashflow.reconciliationDifferenceMinor !== "0"
+                      ? `فرق مطابقة النقد ${cashflow.reconciliationDifferenceMinor} minor معروض ولا يُخفى ولا يُسدّ بـ plug.`
+                      : null,
+                })}
+              >
                 <p className="flex items-start gap-2 rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
                   <Info className="mt-0.5 size-3.5 shrink-0" />
                   دقة التدفقات تعتمد على اكتمال Cash Flow Mapping (خريطة الأنشطة على مستوى الشركة) واكتمال بيانات ميزان المراجعة المعتمد.
@@ -730,7 +805,7 @@ export function StatementsView() {
                     <AlertTriangle className="me-1 inline size-4" /> INCOMPLETE_DATA — عناصر ناقصة معلنة أعلاه.
                   </p>
                 )}
-              </>
+              </PrintableReport>
             )}
           </TabsContent>
         </Tabs>
@@ -772,16 +847,6 @@ function CfLineRow({ line, minorUnits }: { line: CfLine; minorUnits: number }) {
         </TableRow>
       )}
     </>
-  );
-}
-
-function StatementHeader({ title, subtitle, currency }: { title: string; subtitle: string; currency: string }) {
-  return (
-    <div className="rounded-xl border bg-white/70 p-4 text-center dark:border-slate-800 dark:bg-slate-900/40">
-      <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">نظام التقارير المالية الموحدة</p>
-      <h3 className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100">{title}</h3>
-      <p className="mt-1 text-xs text-muted-foreground">{subtitle}{currency ? ` · العملة الوظيفية: ${currency}` : ""}</p>
-    </div>
   );
 }
 

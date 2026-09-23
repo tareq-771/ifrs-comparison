@@ -144,3 +144,92 @@
 .scroll-thin::-webkit-scrollbar-thumb:hover {
   background-color: hsl(215 25% 65%);
 }
+
+/* ============================================================
+   6.8 — Unified Print Foundation (منفذ الطباعة الموحد)
+   الآلية: منفذ #print-root يُملأ بنسخة منطقة التقرير قبل الطباعة،
+   ويُخفى كل ما عدا المنفذ — تعمل الطباعة من التبويبات والحوارات.
+   ============================================================ */
+@media print {
+  /* 1) إخفاء كل شيء ما عدا منفذ الطباعة (navigation/buttons/filters داخلها لا تُرسل أصلًا) */
+  body > *:not(#print-root) {
+    display: none !important;
+  }
+  #print-root {
+    display: block !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  /* 2) أدوات التحكم لا تُطبع أبدًا */
+  .no-print {
+    display: none !important;
+  }
+
+  /* 3) الجداول: تكرار رؤوس الأعمدة + منع قص الصفوف + منع قص الأعمدة */
+  #print-root table {
+    width: 100%;
+    table-layout: auto;
+    border-collapse: collapse;
+  }
+  #print-root thead {
+    display: table-header-group;
+  }
+  #print-root tfoot {
+    display: table-footer-group;
+  }
+  #print-root tr,
+  #print-root td,
+  #print-root th {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  #print-root h1,
+  #print-root h2,
+  #print-root h3,
+  #print-root h4 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* 4) فك حاويات التمرير والحدود القصوى حتى لا تُقص الأعمدة أو الصفوف */
+  #print-root [class*="overflow-"] {
+    overflow: visible !important;
+  }
+  #print-root [class*="max-h-"] {
+    max-height: none !important;
+  }
+  #print-root [class*="sticky"] {
+    position: static !important;
+  }
+
+  /* 5) حدود جداول خفيفة مهنية + تباعد مضغوط */
+  #print-root table td,
+  #print-root table th {
+    border-bottom: 1px solid #e2e8f0;
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+  #print-root table thead th {
+    border-bottom: 2px solid #94a3b8;
+  }
+
+  /* 6) RTL والعربية والأرقام كما هي — مع الحفاظ على ألوان الشارات والتنبيهات */
+  #print-root * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #print-root .tnum {
+    font-variant-numeric: tabular-nums;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+
+  /* 7) خلفية الصفحة بيضاء دائمًا (الوضع الداكن يُزال برمجيًا قبل الطباعة أيضًا) */
+  html,
+  body {
+    background: #ffffff !important;
+  }
+}

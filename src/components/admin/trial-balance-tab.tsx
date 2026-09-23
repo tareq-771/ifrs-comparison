@@ -40,6 +40,8 @@ import {
 } from "@/lib/trial-balance";
 import { MAPPING_STATUS_LABELS, type MappingStatus } from "@/lib/account-nature";
 import { canManageTrialBalances, parsePermissions } from "@/lib/permissions";
+import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
+import { buildReportHeaderMeta } from "@/lib/report-header";
 
 interface CompanyOption { id: string; code: string; nameAr: string; status: string; }
 interface FiscalYearOption {
@@ -753,6 +755,29 @@ export function TrialBalanceTab() {
             </DialogDescription>
           </DialogHeader>
           {detail && (
+            <PrintableReport
+              orientation="landscape"
+              toolbar={
+                <PrintButton
+                  orientation="landscape"
+                  documentTitle={`ميزان مراجعة - ${detail.company?.code ?? ""} - ${detail.fromDate} إلى ${detail.toDate}`}
+                />
+              }
+              meta={buildReportHeaderMeta({
+                companyCode: detail.company?.code,
+                companyName: detail.company?.nameAr,
+                reportTitle: `ميزان المراجعة — مراجعة #${detail.revisionNumber}`,
+                fiscalYearCode: detail.fiscalYear?.code,
+                fiscalYearLabel: detail.fiscalYear?.displayNameAr,
+                periodLabel: `${detail.fromDate} → ${detail.toDate}`,
+                fromDate: detail.fromDate,
+                toDate: detail.toDate,
+                currency: detail.company?.functionalCurrency,
+                dataType: detail.dataType,
+                status: detail.status === "COMMITTED" ? "APPROVED" : "DRAFT",
+                statusNotice: detail.revisionReason ? `سبب المراجعة: ${detail.revisionReason}` : null,
+              })}
+            >
             <div className="grid gap-1.5 rounded-md border bg-muted/40 p-3 text-xs leading-5 sm:grid-cols-2">
               <p><span className="text-muted-foreground">السنة المالية:</span> {detail.fiscalYear?.code} ({detail.fiscalYear?.startDate} → {detail.fiscalYear?.endDate})</p>
               <p><span className="text-muted-foreground">أنشئ بواسطة:</span> {detail.createdByName || "—"} — <span className="tnum">{new Date(detail.createdAt).toLocaleString("ar")}</span></p>
@@ -769,8 +794,7 @@ export function TrialBalanceTab() {
               </p>
               <p><span className="text-muted-foreground">بصمة المحتوى:</span> <span className="font-mono" dir="ltr">{detail.payloadHash?.slice(0, 16) || "—"}…</span></p>
             </div>
-          )}
-          <div className="max-h-[60vh] overflow-y-auto rounded-md border">
+            <div className="max-h-[60vh] overflow-y-auto rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -801,6 +825,8 @@ export function TrialBalanceTab() {
               </TableBody>
             </Table>
           </div>
+            </PrintableReport>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailOpen(false)}>إغلاق</Button>
           </DialogFooter>

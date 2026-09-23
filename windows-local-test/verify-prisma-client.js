@@ -14,6 +14,8 @@
  * الاستخدام: node scripts\verify-prisma-client.js "<absolute path to test db>"
  */
 "use strict";
+/* eslint-disable @typescript-eslint/no-require-imports */
+// (سكربت Node خام لحزمة اختبار Windows — require مقصود هنا قبل تحميل العميل)
 
 const REQUIRED_MODELS = [
   "user",
