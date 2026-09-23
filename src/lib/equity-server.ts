@@ -15,6 +15,7 @@ import {
   flowRangeMovementFromPoints,
   safeValue,
 } from "@/lib/trial-balance-data";
+import { AggregationError } from "@/lib/temporal-aggregation";
 import {
   loadCommittedAccountPoints,
   loadReportingProvenance,
@@ -122,7 +123,18 @@ export async function getEquityStatement(
       "الإقفالي"
     );
     const movement = safeValue(
-      () => (behavior === "BALANCE" ? closing.valueMinor! - opening.valueMinor! : flowRangeMovementFromPoints(acc.points, startOrdinal, endOrdinal)),
+      () => {
+        if (behavior !== "BALANCE") return flowRangeMovementFromPoints(acc.points, startOrdinal, endOrdinal);
+        // 6.7-fix: الافتتاحي أو الختامي غير متاح ⇒ فجوة معلنة (لا طرح على null ولا اختراع حركة)
+        if (closing.valueMinor === null || opening.valueMinor === null) {
+          throw new AggregationError(
+            "INCOMPLETE_DATA",
+            "لا يمكن حساب الحركة: الرصيد الافتتاحي أو الختامي غير متاح من البيانات المعتمدة.",
+            { accountCode: acc.accountCode }
+          );
+        }
+        return closing.valueMinor - opening.valueMinor;
+      },
       "الحركة"
     );
 
