@@ -225,6 +225,23 @@ export function StatementsView() {
   const [cfStart, setCfStart] = React.useState("");
   const [cfEnd, setCfEnd] = React.useState("");
 
+  // 6.8 — روابط عميقة من مركز التقارير: ?stmt=socie&ordinal=3&startOrdinal=1&endOrdinal=5 (بعد الترطيب لتفادي hydration mismatch)
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    const stmt = q.get("stmt");
+    if (stmt === "pnl" || stmt === "sfp" || stmt === "socie" || stmt === "cf") setStmtTab(stmt);
+    const o = q.get("ordinal");
+    if (o && /^\d+$/.test(o)) setOrdinal(o);
+    const endO = q.get("endOrdinal");
+    if (endO && /^\d+$/.test(endO)) {
+      const startO = q.get("startOrdinal");
+      const s = startO && /^\d+$/.test(startO) ? startO : "1";
+      setSocieStart(s); setSocieEnd(endO);
+      setCfStart(s); setCfEnd(endO);
+    }
+  }, []);
+
   const [statements, setStatements] = React.useState<StatementsResponse | null>(null);
   const [stmtLoading, setStmtLoading] = React.useState(false);
   const [equity, setEquity] = React.useState<EquityResponse | null>(null);

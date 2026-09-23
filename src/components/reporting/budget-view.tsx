@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import {
-  AlertTriangle, CheckCircle2, Copy, FileSpreadsheet, Loader2, Lock, Plus, Send, Target, Trash2, Undo2,
+  AlertTriangle, CheckCircle2, Copy, FileDown, FileSpreadsheet, Loader2, Lock, Plus, Send, Target, Trash2, Undo2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,9 @@ import {
   BUDGET_STATUS_LABELS, BUDGET_TYPE_LABELS, BUDGET_SCENARIO_LABELS, FAVORABILITY_LABELS,
 } from "@/lib/budget";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
+import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
+import { buildReportHeaderMeta } from "@/lib/report-header";
+import { exportReportCsv, safeExportFilename, type ExportColumn } from "@/lib/report-export";
 import { useSession } from "next-auth/react";
 
 interface StatementLineRef { id: string; code: string; nameAr: string; statementType: string; isActive: boolean; isSubtotal: boolean; }
@@ -87,6 +90,15 @@ export function BudgetView() {
   const canManage = canManageTrialBalances(perms, role);
 
   const [tab, setTab] = React.useState("budgets");
+
+  // 6.8 — رابط عميق من مركز التقارير: ?view=budget&tab=variance&ordinal=2 (بعد الترطيب)
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    const t = q.get("tab");
+    if (t === "budgets" || t === "variance") setTab(t);
+    // ordinal تقرأه لوحة المقارنة مباشرة (مكوّن مستقل)
+  }, []);
   const [budgets, setBudgets] = React.useState<BudgetRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -648,15 +660,55 @@ export function BudgetView() {
 }
 
 /* ── فعلي مقابل موازنة ── */
+/** تسميات التفصيل الزمني (6.8 — ترويسة التقرير، بلا تغيير منطق 6.5). */
+const GRANULARITY_LABELS: Record<string, string> = {
+  MONTH: "شهري",
+  QUARTER: "ربع سنوي",
+  SEMI_ANNUAL: "نصف سنوي",
+  ANNUAL: "سنوي كامل",
+  YTD: "تراكمي (YTD)",
+};
+
 function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: number }) {
   const { toast } = useToast();
-  const { selectedCompanyId, selectedFiscalYearId } = useCompanyPeriod();
+  const { selectedCompanyId, selectedFiscalYearId, selectedCompany, selectedFiscalYear } = useCompanyPeriod();
   const [granularity, setGranularity] = React.useState("MONTH");
   const [ordinal, setOrdinal] = React.useState("");
+
+  // 6.8 — رابط عميق: ?view=budget&tab=variance&granularity=QUARTER&ordinal=2 (بعد الترطيب)
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    const g = q.get("granularity");
+    if (g === "MONTH" || g === "QUARTER" || g === "SEMI_ANNUAL" || g === "ANNUAL" || g === "YTD") setGranularity(g);
+    const o = q.get("ordinal");
+    if (o && /^\d+$/.test(o)) setOrdinal(o);
+  }, []);
   const [data, setData] = React.useState<VarianceResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
 
   const periodsCount = 12;
+
+  // 6.8 — تصدير CSV (طبقة report-export) — القيم minor تبقى سلاسل نصية بلا تحويل رقمي
+  const exportVarianceCsv = React.useCallback(() => {
+    if (!data) return;
+    const columns: ExportColumn<VarianceRow>[] = [
+      { key: "line", label: "البند", value: (r) => `${r.statementLineCode} (${r.lineNature})` },
+      { key: "budget", label: "الموازنة (minor)", numeric: true, value: (r) => r.budgetMinor ?? "" },
+      { key: "actual", label: "الفعلي (minor)", numeric: true, value: (r) => r.actualMinor ?? "" },
+      { key: "variance", label: "الفارق (minor)", numeric: true, value: (r) => r.varianceMinor ?? "" },
+      { key: "pct", label: "الفارق %", value: (r) => r.variancePct ?? "" },
+      {
+        key: "fav", label: "التفسير الإداري (ف/غ)",
+        value: (r) => FAVORABILITY_LABELS[r.favorability as keyof typeof FAVORABILITY_LABELS] ?? r.favorability,
+      },
+    ];
+    exportReportCsv(
+      columns,
+      data.rows,
+      safeExportFilename("actual-vs-budget", selectedCompany?.code, selectedFiscalYear?.code, data.granularity),
+    );
+  }, [data, selectedCompany, selectedFiscalYear]);
 
   const load = React.useCallback(async () => {
     if (!selectedCompanyId || !selectedFiscalYearId) { setData(null); return; }
@@ -733,7 +785,37 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
             ) : data.rows.length === 0 ? (
               <p className="p-6 text-center text-sm text-muted-foreground">لا بنود قابلة للمقارنة — تأكد من وجود موازنة معتمدة وبيانات فعلية معتمدة.</p>
             ) : (
-              <>
+              <PrintableReport
+                orientation="landscape"
+                toolbar={
+                  <>
+                    <Button variant="outline" onClick={exportVarianceCsv} className="no-print gap-1.5" aria-label="تصدير CSV">
+                      <FileDown className="size-3.5" /> تصدير CSV
+                    </Button>
+                    <PrintButton orientation="landscape" />
+                  </>
+                }
+                meta={(() => {
+                  const vp = selectedFiscalYear?.periods.find((p) => p.ordinal === data.range.startOrdinal) ?? null;
+                  const vpEnd = selectedFiscalYear?.periods.find((p) => p.ordinal === data.range.endOrdinal) ?? null;
+                  return buildReportHeaderMeta({
+                    companyCode: selectedCompany?.code,
+                    companyName: selectedCompany?.nameAr,
+                    reportTitle: "تقرير فعلي مقابل موازنة (Actual vs Budget)",
+                    fiscalYearCode: selectedFiscalYear?.code,
+                    fiscalYearLabel: selectedFiscalYear?.displayNameAr,
+                    periodLabel: `الفترات ${data.range.startOrdinal} إلى ${data.range.endOrdinal} — ${GRANULARITY_LABELS[data.granularity] ?? data.granularity}`,
+                    fromDate: vp?.startDate ?? null,
+                    toDate: vpEnd?.endDate ?? null,
+                    currency: selectedCompany?.functionalCurrency,
+                    dataType: data.granularity === "YTD" ? "CUMULATIVE_YTD" : "PERIOD_MOVEMENT",
+                    status: data.status === "INCOMPLETE_DATA" ? "INCOMPLETE_DATA" : "APPROVED",
+                    statusNotice: data.budget
+                      ? `الموازنة المعتمدة للمقارنة: نسخة #${data.budget.versionNumber} (${BUDGET_SCENARIO_LABELS[data.budget.scenario as keyof typeof BUDGET_SCENARIO_LABELS] ?? data.budget.scenario})`
+                      : "لا موازنة معتمدة للمقارنة — العمود الموازن فارغ ولا يُخترع رقم.",
+                  });
+                })()}
+              >
                 {data.status === "INCOMPLETE_DATA" && (
                   <p className="flex items-center gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
                     <AlertTriangle className="size-4" /> INCOMPLETE_DATA — بعض القيم ناقصة وتُعرض كما هي.
@@ -782,7 +864,7 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
                     </TableBody>
                   </Table>
                 </div>
-              </>
+              </PrintableReport>
             )}
           </>
         )}

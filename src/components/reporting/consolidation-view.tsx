@@ -6,7 +6,7 @@
 
 import * as React from "react";
 import {
-  AlertTriangle, Building2, ChevronDown, FileStack, Layers, Loader2, Lock, Plus, RefreshCw, Trash2,
+  AlertTriangle, Building2, ChevronDown, FileDown, FileStack, Layers, Loader2, Lock, Plus, RefreshCw, Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,9 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { formatMinor } from "@/lib/money";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
+import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
+import { buildReportHeaderMeta } from "@/lib/report-header";
+import { exportReportCsv, safeExportFilename } from "@/lib/report-export";
 import { useSession } from "next-auth/react";
 
 interface MemberRow {
@@ -81,6 +84,30 @@ const ELIMINATION_TYPES = [
 function fmt(minor: string | null | undefined, minorUnits = 2): string {
   if (minor === null || minor === undefined) return "—";
   return formatMinor(minor, minorUnits);
+}
+
+/** 6.8 — تصدير ورقة العمل الموحدة CSV — كل قيمة سلسلة حرفيًا (INCOMPLETE تبقى نصًا ظاهرًا لا صفرًا). */
+function exportWorkingPaperCsv(data: ConsolidatedResponse): void {
+  const companyColumns = data.members.map((m) => ({
+    key: m.companyId,
+    label: `${m.companyCode}${m.ownershipPercentage !== null ? ` (${m.ownershipPercentage}%)` : ""}`,
+    value: (row: ConsolidatedResponse["workingPaper"][number]) => {
+      const cv = row.companyValues.find((x) => x.companyId === m.companyId);
+      return cv?.valueMinor ?? (cv ? "INCOMPLETE_DATA" : "");
+    },
+  }));
+  const columns = [
+    { key: "line", label: "البند الجماعي", value: (row: ConsolidatedResponse["workingPaper"][number]) => `${row.groupLineCode} — ${row.groupLineNameAr}` },
+    ...companyColumns,
+    { key: "before", label: "قبل الاستبعادات (minor)", value: (row: ConsolidatedResponse["workingPaper"][number]) => row.totalBeforeEliminationsMinor ?? "" },
+    { key: "elim", label: "الاستبعادات (minor)", value: (row: ConsolidatedResponse["workingPaper"][number]) => row.adjustmentsMinor ?? "" },
+    { key: "consol", label: "الموحد (minor)", value: (row: ConsolidatedResponse["workingPaper"][number]) => row.consolidatedTotalMinor ?? "" },
+  ];
+  exportReportCsv(
+    columns,
+    data.workingPaper,
+    safeExportFilename("preliminary-consolidation", data.group.code, data.range.startDate, data.range.endDate),
+  );
 }
 
 export function ConsolidationView() {
@@ -820,7 +847,30 @@ function ConsolidatedReportPanel({ canManage, groups }: { canManage: boolean; gr
             </div>
 
             {data && (
-              <>
+              <PrintableReport
+                orientation="landscape"
+                toolbar={
+                  <>
+                    <Button variant="outline" onClick={() => exportWorkingPaperCsv(data)} className="no-print gap-1.5" aria-label="تصدير ورقة العمل CSV">
+                      <FileDown className="size-3.5" /> تصدير ورقة العمل CSV
+                    </Button>
+                    <PrintButton orientation="landscape" />
+                  </>
+                }
+                meta={buildReportHeaderMeta({
+                  reportTitle: `القوائم المالية الموحدة — مجموعة ${data.group.code} (${data.group.nameAr})`,
+                  companyCode: data.group.code,
+                  companyName: data.group.nameAr,
+                  fiscalYearCode: data.members.map((m) => m.fiscalYearCode).filter(Boolean)[0] ?? "—",
+                  periodLabel: `من ${data.range.startDate} إلى ${data.range.endDate}`,
+                  fromDate: data.range.startDate,
+                  toDate: data.range.endDate,
+                  status: data.status === "INCOMPLETE_DATA" ? "INCOMPLETE_DATA" : "PRELIMINARY",
+                  statusNotice: !data.financialPosition.reconciled
+                    ? `فرق معادلة المركز المالي الموحد ${data.financialPosition.differenceMinor} minor معروض ولا يُصحح تلقائيًا.`
+                    : null,
+                })}
+              >
                 {data.status === "INCOMPLETE_DATA" && (
                   <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
                     <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" />INCOMPLETE_DATA — ملاحظات الاكتمال:</p>
@@ -915,7 +965,7 @@ function ConsolidatedReportPanel({ canManage, groups }: { canManage: boolean; gr
                     )}
                   </div>
                 </div>
-              </>
+              </PrintableReport>
             )}
           </>
         )}
