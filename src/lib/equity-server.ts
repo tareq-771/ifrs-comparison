@@ -61,8 +61,18 @@ export interface EquityStatementResult {
     reconciled: boolean | null; // null = لا يمكن الحسم (افتتاحي/إقفالي غير مكتمل)
   };
   status: "OK" | "INCOMPLETE_DATA";
+  /** 6.9R (عهدة F): تفسير صريح للفجوات — لا استنتاج صامت ولا إخفاء. */
+  notes: string[];
   unmappedAccounts: EquityUnmappedAccount[];
   provenance: ReportingProvenance;
+}
+
+/**
+ * قاعدة عرض SOCIE الموحدة (6.9R عهدة F): الطبيعة الدائنة تُعرض موجبة —
+ * الأرصدة المخزنة (مدين − دائن) تُقلب إشاريًا للعرض حصرًا، الرصيد المخزن لم يُلمس إطلاقًا.
+ */
+function presentEquity<T extends bigint | null>(value: T): T {
+  return (value === null ? null : -value) as T;
 }
 
 async function loadContext(companyId: string, fiscalYearId: string, startOrdinal: number, endOrdinal: number) {
@@ -144,7 +154,7 @@ export async function getEquityStatement(
       unmapped.push({
         accountCode: acc.accountCode,
         accountName: acc.accountName,
-        movementMinor: movement.valueMinor?.toString() ?? null,
+        movementMinor: presentEquity(movement.valueMinor)?.toString() ?? null,
         movementStatus: movement.status,
       });
       continue;
@@ -158,11 +168,11 @@ export async function getEquityStatement(
       accounts: [],
     };
     row.accounts.push({ accountCode: acc.accountCode, accountName: acc.accountName });
-    if (opening.valueMinor !== null) row.openingMinor = (BigInt(row.openingMinor ?? "0") + opening.valueMinor).toString();
+    if (opening.valueMinor !== null) row.openingMinor = (BigInt(row.openingMinor ?? "0") + presentEquity(opening.valueMinor)).toString();
     else row.openingStatus = opening.status;
-    if (closing.valueMinor !== null) row.closingMinor = (BigInt(row.closingMinor ?? "0") + closing.valueMinor).toString();
+    if (closing.valueMinor !== null) row.closingMinor = (BigInt(row.closingMinor ?? "0") + presentEquity(closing.valueMinor)).toString();
     else row.closingStatus = closing.status;
-    if (movement.valueMinor !== null) row.movementMinor = (BigInt(row.movementMinor ?? "0") + movement.valueMinor).toString();
+    if (movement.valueMinor !== null) row.movementMinor = (BigInt(row.movementMinor ?? "0") + presentEquity(movement.valueMinor)).toString();
     else row.movementStatus = movement.status;
     componentRows.set(mapping.componentCode, row);
   }
@@ -188,6 +198,26 @@ export async function getEquityStatement(
     ? openingTotal + movementsTotal === closingTotal
     : null;
 
+  // 6.9R (عهدة F): ملاحظات تشرح الفجوات صراحة — fail-closed كما هو
+  const notes: string[] = [];
+  const rowsList = Array.from(componentRows.values());
+  if (rowsList.some((r) => r.openingMinor === null || r.openingStatus !== "OK")) {
+    notes.push(
+      "الرصيد الافتتاحي غير متاح من البيانات المعتمدة لبعض المكونات — لا يُستنتج أن الرصيد الختامي كله رصيد افتتاحي أو حركة."
+    );
+  }
+  if (rowsList.some((r) => r.movementMinor === null || r.movementStatus !== "OK")) {
+    notes.push(
+      "حركة بعض المكونات غير قابلة للاشتقاق (افتتاحي أو ختامي غير متاح) — لا حركات مُختلقة ولا استنتاج."
+    );
+  }
+  const unmappedWithMovement = unmapped.filter((u) => u.movementMinor !== "0" && (u.movementMinor !== null || u.movementStatus !== "OK"));
+  if (unmappedWithMovement.length > 0) {
+    notes.push(
+      `حسابات حقوق ملكية غير مربوطة بمفاهيم ولها حركة: ${unmappedWithMovement.map((u) => u.accountCode).join(", ")} — فجوة معلنة لا تُخفى.`
+    );
+  }
+
   const status: "OK" | "INCOMPLETE_DATA" =
     unmapped.some((u) => u.movementMinor !== "0" || u.movementStatus !== "OK") ||
     !totalsComplete ||
@@ -212,6 +242,7 @@ export async function getEquityStatement(
       reconciled,
     },
     status,
+    notes,
     unmappedAccounts: unmapped,
     provenance,
   };

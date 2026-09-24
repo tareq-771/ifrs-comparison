@@ -32,6 +32,7 @@ import {
   type CashFlowActivity,
 } from "@/lib/cashflow";
 import type { SessionUser } from "@/lib/session";
+import { formatMinor, minorUnitsFor } from "@/lib/money";
 
 export interface CashFlowLineRow {
   lineCode: string | null;
@@ -110,7 +111,7 @@ export async function getCashFlowStatement(
     throw new TrialBalanceError("NOT_FOUND", "لا تملك الوصول لهذه الشركة.");
   }
   const { fy } = await loadContext(companyId, fiscalYearId, startOrdinal, endOrdinal);
-  const company = await db.company.findUnique({ where: { id: companyId }, select: { code: true, nameAr: true } });
+  const company = await db.company.findUnique({ where: { id: companyId }, select: { code: true, nameAr: true, functionalCurrency: true } });
   if (!company) throw new TrialBalanceError("NOT_FOUND", "الشركة غير موجودة.");
 
   const [accounts, rules, overrides, lines, provenance] = await Promise.all([
@@ -179,7 +180,10 @@ export async function getCashFlowStatement(
         const mv = behavior === "BALANCE"
           ? balanceAsOfFromPoints(acc.points, endOrdinal) - (openOrd >= 1 ? balanceAsOfFromPoints(acc.points, openOrd) : BigInt(0))
           : flowRangeMovementFromPoints(acc.points, startOrdinal, endOrdinal);
-        hint = mv === BigInt(0) ? "بلا حركة في المدى" : `حركة في المدى = ${mv.toString()}`;
+        // 6.9R (عهدة G): الملاحظات بعملة الشركة الموثقة — لا أرقام minor خام في نصوص المستخدم
+        hint = mv === BigInt(0)
+          ? "بلا حركة في المدى"
+          : `حركة في المدى = ${formatMinor(mv.toString(), minorUnitsFor(company.functionalCurrency))}${company.functionalCurrency ? ` ${company.functionalCurrency}` : ""}`;
       } catch {
         hint = "تعذر حساب الحركة (بيانات غير مكتملة)";
       }
@@ -191,7 +195,8 @@ export async function getCashFlowStatement(
     const bucketKey = sectionKey(resolved.activity, resolved.lineCode);
     const bucket = buckets.get(bucketKey) ?? {
       lineCode: resolved.lineCode,
-      label: meta?.nameAr ?? (resolved.lineCode ? resolved.lineCode : CF_ACTIVITY_LABELS[resolved.activity]),
+      // 6.9R (عهدة D): بند تدفق غير معروف يتسمى وصفًا مقروءًا — لا كود خام كنص أساسي
+      label: meta?.nameAr ?? (resolved.lineCode ? `بند تدفق غير معروف بالمرجع (${resolved.lineCode})` : CF_ACTIVITY_LABELS[resolved.activity]),
       activity: resolved.activity,
       isAdjustment: meta?.isAdjustment ?? false,
       effect: BigInt(0),

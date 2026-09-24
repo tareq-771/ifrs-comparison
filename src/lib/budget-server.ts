@@ -390,6 +390,9 @@ export async function listBudgets(user: SessionUser, companyId?: string | null) 
 
 export interface BudgetVarianceRow {
   statementLineCode: string;
+  /** 6.9R (عهدة D): الاسم المعروض أساسي والكود ثانوي — من مرجع بنود القوائم (DB ثم null). */
+  lineNameAr: string | null;
+  lineNameEn: string | null;
   lineNature: "REVENUE" | "EXPENSE" | "OTHER";
   budgetMinor: string | null;
   actualMinor: string | null;
@@ -477,6 +480,11 @@ export async function getBudgetVariance(
   }
 
   const lineCodes = new Set<string>([...budgetByLine.keys(), ...actualByLine.keys()]);
+  // 6.9R (عهدة D): أسماء البنود المعروضة من المرجع (الاسم أساسي والكود ثانوي)
+  const lineNameRows = lineCodes.size > 0
+    ? await db.financialStatementLine.findMany({ where: { code: { in: Array.from(lineCodes) } }, select: { code: true, nameAr: true, nameEn: true } })
+    : [];
+  const lineNameByCode = new Map(lineNameRows.map((l) => [l.code, l]));
   const rows: BudgetVarianceRow[] = [];
   let status: "OK" | "INCOMPLETE_DATA" = "OK";
   for (const code of Array.from(lineCodes).sort()) {
@@ -489,6 +497,8 @@ export async function getBudgetVariance(
     if (a.status !== "OK") status = "INCOMPLETE_DATA";
     rows.push({
       statementLineCode: code,
+      lineNameAr: lineNameByCode.get(code)?.nameAr ?? null,
+      lineNameEn: lineNameByCode.get(code)?.nameEn ?? null,
       lineNature: nature,
       budgetMinor: b?.toString() ?? null,
       actualMinor: a.v?.toString() ?? null,

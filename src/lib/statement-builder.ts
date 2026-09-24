@@ -98,6 +98,14 @@ function present(net: bigint | null, classification: string | null): bigint | nu
   return net;
 }
 
+/**
+ * قاعدة الإشارة الواحدة (6.9): نفس قاعدة عرض القوائم مُصدَّرة لإعادة الاستخدام
+ * (خدمة المقارنة المركزية) — بلا نسخ للمنطق إطلاقًا.
+ */
+export function presentSignedValue(net: bigint | null, classification: string | null): bigint | null {
+  return present(net, classification);
+}
+
 function completenessOf(rows: readonly StatementInputRow[]): MappingCompleteness {
   const incomplete = rows
     .filter((r) => r.mappingStatus !== "FULLY_MAPPED" && (r.valueMinor === null || r.valueMinor !== BigInt(0)))
@@ -181,12 +189,14 @@ export function buildProfitOrLoss(
       if (!agg) continue;
       const total = totalOf(agg.values);
       lineTotals.push(total);
+      // 6.9R (R7): صف بلا أي قيمة مشتقّة ⇒ null مع الحالة الناقصة — لا صفر يوحي بحركة صفرية.
+      const noDerivedValue = agg.values.length === 0 && agg.incomplete;
       rws.push({
         kind: "LINE",
         key: code,
         label: meta.nameAr,
         statementLineCode: code,
-        valueMinor: total.toString(),
+        valueMinor: noDerivedValue ? null : total.toString(),
         valueStatus: agg.incomplete ? "INCOMPLETE_DATA" : "OK",
         depth: meta.parentId ? 1 : 0,
         accounts: agg.accounts,
@@ -345,6 +355,7 @@ export function buildFinancialPosition(
         (accountsByLine.get(code) ?? accountsByLine.set(code, []).get(code)!).push(acc);
       }
     }
+    const renderedCodes = new Set<string>(); // 6.9R: حاجز «لا قيمة تضيع» — كل حساب معروض يُسجل هنا
     for (const g of roots) {
       const children = byParent.get(g.code) ?? [];
       const leafRows: StatementRowDTO[] = [];
@@ -354,6 +365,7 @@ export function buildFinancialPosition(
         if (accs.length === 0) return;
         const total = totalOf(accs.map((a) => a.value));
         groupTotal += total;
+        for (const a of accs) renderedCodes.add(a.accountCode);
         leafRows.push({
           kind: "LINE",
           key: leaf.code,
@@ -367,6 +379,24 @@ export function buildFinancialPosition(
       };
       if (children.length > 0) {
         for (const leaf of children.sort((a, b) => a.displayOrder - b.displayOrder)) renderLeaf(leaf);
+        // 6.9R (عهدة A — جذر خلل المركز المالي): الحسابات المربوطة بالبند الرئيسي نفسه
+        // (ذو الأبناء) لا تُسقط صمتًا — صف LINE شفاف تحت المجموعة يدخل groupTotal.
+        const direct = accountsByLine.get(g.code) ?? [];
+        if (direct.length > 0) {
+          const total = totalOf(direct.map((a) => a.value));
+          groupTotal += total;
+          for (const a of direct) renderedCodes.add(a.accountCode);
+          leafRows.push({
+            kind: "LINE",
+            key: `${g.code}::direct`,
+            label: "حسابات معروضة على البند الرئيسي مباشرة",
+            statementLineCode: g.code,
+            valueMinor: total.toString(),
+            valueStatus: "OK",
+            depth: 1,
+            accounts: direct.map((a) => ({ accountCode: a.accountCode, accountName: a.accountName, valueMinor: a.value === null ? null : a.value.toString() })),
+          });
+        }
       } else {
         renderLeaf(g);
       }
@@ -383,25 +413,25 @@ export function buildFinancialPosition(
         rws.push(...leafRows);
       }
     }
-    // حسابات القسم بلا بند SFP — شفافة ضمن قسمها (تُحسب في الإجمالي بالتصنيف)
-    const unattached = buckets[key].filter((a) => {
+    // 6.9R (عهدة A): حاجز renderedAccountCodes — أي حساب قسم لم تعرضه شجرة البنود
+    // (بند عميق لا يزوره المسح، أو بلا بند) يظهر صفًا شفافًا ويدخل الإجمالي — لا قيمة تضيع إطلاقًا.
+    const fallthrough = buckets[key].filter((a) => !renderedCodes.has(a.accountCode));
+    for (const a of fallthrough) {
       const code = rows.find((r) => r.accountCode === a.accountCode)?.statementLineCode ?? null;
-      return !code || !sfpLines.some((m) => m.code === code);
-    });
-    for (const a of unattached) {
+      const hasLine = !!code && sfpLines.some((m) => m.code === code);
       rws.push({
         kind: "ACCOUNT_GROUP",
         key: `unattached-${a.accountCode}`,
-        label: `${a.accountName} (بلا بند قائمة)`,
-        statementLineCode: null,
+        label: hasLine ? `${a.accountName} (بند قائمة لم تُعرض تفاصيله)` : `${a.accountName} (بلا بند قائمة)`,
+        statementLineCode: hasLine ? code : null,
         valueMinor: a.value === null ? null : a.value.toString(),
         valueStatus: a.value === null ? "INCOMPLETE_DATA" : "OK",
         depth: 1,
       });
     }
-    // إجمالي القسم = بنود مرتبطة + غير مرتبطة (بالتصنيف حصرًا)
+    // إجمالي القسم = بنود مرتبطة + الصفوف الشفافة (بالتصنيف حصرًا — لا plug)
     const attachedTotal = totalOf(rws.filter((r) => r.kind === "LINE" && r.statementLineCode !== null && r.depth === 0).map((r) => (r.valueMinor === null ? null : BigInt(r.valueMinor))));
-    const grand = attachedTotal + totalOf(unattached.map((a) => a.value));
+    const grand = attachedTotal + totalOf(fallthrough.map((a) => a.value));
     rws.push({
       kind: "GRAND_TOTAL",
       key: `total-${key}`,

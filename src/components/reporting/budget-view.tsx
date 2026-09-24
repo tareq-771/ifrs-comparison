@@ -28,8 +28,9 @@ import { cn } from "@/lib/utils";
 import { decimalStringToMinorString, formatMinor } from "@/lib/money";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import {
-  BUDGET_STATUS_LABELS, BUDGET_TYPE_LABELS, BUDGET_SCENARIO_LABELS, FAVORABILITY_LABELS,
+  BUDGET_STATUS_LABELS, BUDGET_TYPE_LABELS, BUDGET_SCENARIO_LABELS,
 } from "@/lib/budget";
+import { budgetVarianceBadge, classificationLabel, comparisonStatusLabel } from "@/lib/display-labels";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
 import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
 import { buildReportHeaderMeta } from "@/lib/report-header";
@@ -46,7 +47,10 @@ interface BudgetRow {
   fiscalYear?: { code: string; displayNameAr: string; periodCount: number };
 }
 interface VarianceRow {
-  statementLineCode: string; lineNature: string;
+  statementLineCode: string;
+  lineNameAr?: string | null;
+  lineNameEn?: string | null;
+  lineNature: string;
   budgetMinor: string | null; actualMinor: string | null; actualStatus: string;
   varianceMinor: string | null; variancePct: string | null; favorability: string;
 }
@@ -693,14 +697,22 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
   const exportVarianceCsv = React.useCallback(() => {
     if (!data) return;
     const columns: ExportColumn<VarianceRow>[] = [
-      { key: "line", label: "البند", value: (r) => `${r.statementLineCode} (${r.lineNature})` },
+      { key: "line", label: "البند", value: (r) => `${r.lineNameAr ?? r.statementLineCode} — ${r.statementLineCode} (${classificationLabel(r.lineNature, "ar")})` },
       { key: "budget", label: "الموازنة (minor)", numeric: true, value: (r) => r.budgetMinor ?? "" },
       { key: "actual", label: "الفعلي (minor)", numeric: true, value: (r) => r.actualMinor ?? "" },
       { key: "variance", label: "الفارق (minor)", numeric: true, value: (r) => r.varianceMinor ?? "" },
       { key: "pct", label: "الفارق %", value: (r) => r.variancePct ?? "" },
       {
-        key: "fav", label: "التفسير الإداري (ف/غ)",
-        value: (r) => FAVORABILITY_LABELS[r.favorability as keyof typeof FAVORABILITY_LABELS] ?? r.favorability,
+        key: "fav", label: "تفسير الموازنة",
+        value: (r) =>
+          budgetVarianceBadge(
+            {
+              lineNature: (r.lineNature === "REVENUE" || r.lineNature === "EXPENSE" ? r.lineNature : "OTHER"),
+              favorability: r.favorability,
+              hasData: r.actualMinor !== null && r.budgetMinor !== null,
+            },
+            "ar"
+          ),
       },
     ];
     exportReportCsv(
@@ -743,7 +755,7 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
         <CardTitle className="text-sm">فعلي مقابل موازنة</CardTitle>
         <CardDescription>
           الفعلي: أحدث مراجعة معتمدة. الموازنة: أحدث نسخة APPROVED/LOCKED.
-          الفارق رقمي منفصل عن التفسير الإداري (مواتٍ/غير مواتٍ) — الأصول والالتزامات بلا ف/غ افتراضيًا.
+          الفارق رقمي منفصل عن التفسير السياقي للموازنة — الأصول والالتزامات بلا تقييم زيادة/وفر افتراضيًا.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -818,7 +830,7 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
               >
                 {data.status === "INCOMPLETE_DATA" && (
                   <p className="flex items-center gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                    <AlertTriangle className="size-4" /> INCOMPLETE_DATA — بعض القيم ناقصة وتُعرض كما هي.
+                    <AlertTriangle className="size-4" /> بيانات غير مكتملة — بعض القيم ناقصة وتُعرض كما هي.
                   </p>
                 )}
                 {data.budget && (
@@ -841,10 +853,17 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
                     <TableBody>
                       {data.rows.map((r) => (
                         <TableRow key={r.statementLineCode}>
-                          <TableCell className="text-xs"><span className="font-mono">{r.statementLineCode}</span> <span className="text-muted-foreground">({r.lineNature})</span></TableCell>
+                          <TableCell className="text-xs">
+                            <div className="font-medium">{r.lineNameAr ?? r.statementLineCode}</div>
+                            <div className="text-[10px] text-muted-foreground"><span className="font-mono">{r.statementLineCode}</span> · {classificationLabel(r.lineNature, "ar")}</div>
+                          </TableCell>
                           <TableCell className="text-left tnum">{fmt(r.budgetMinor, minorUnits)}</TableCell>
                           <TableCell className="text-left tnum">
-                            {r.actualMinor === null ? <span className="text-xs text-muted-foreground">غير متاح</span> : fmt(r.actualMinor, minorUnits)}
+                            {r.actualMinor === null ? (
+                              <span className="text-xs text-muted-foreground" title={r.actualStatus}>
+                                {r.actualStatus === "INCOMPLETE_DATA" ? comparisonStatusLabel("INCOMPLETE_DATA", "ar") : "غير متاح"}
+                              </span>
+                            ) : fmt(r.actualMinor, minorUnits)}
                           </TableCell>
                           <TableCell className="text-left tnum">{fmt(r.varianceMinor, minorUnits)}</TableCell>
                           <TableCell className="text-left tnum" dir="ltr">
@@ -852,11 +871,17 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
                           </TableCell>
                           <TableCell>
                             {r.favorability === "FAVORABLE" ? (
-                              <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">{FAVORABILITY_LABELS.FAVORABLE}</Badge>
+                              <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                {budgetVarianceBadge({ lineNature: r.lineNature === "REVENUE" || r.lineNature === "EXPENSE" ? r.lineNature : "OTHER", favorability: r.favorability, hasData: r.actualMinor !== null && r.budgetMinor !== null }, "ar")}
+                              </Badge>
                             ) : r.favorability === "UNFAVORABLE" ? (
-                              <Badge className="bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">{FAVORABILITY_LABELS.UNFAVORABLE}</Badge>
+                              <Badge className="bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
+                                {budgetVarianceBadge({ lineNature: r.lineNature === "REVENUE" || r.lineNature === "EXPENSE" ? r.lineNature : "OTHER", favorability: r.favorability, hasData: r.actualMinor !== null && r.budgetMinor !== null }, "ar")}
+                              </Badge>
                             ) : (
-                              <Badge variant="secondary">{FAVORABILITY_LABELS.NO_FAVORABLE_UNFAVORABLE}</Badge>
+                              <Badge variant="secondary">
+                                {budgetVarianceBadge({ lineNature: r.lineNature === "REVENUE" || r.lineNature === "EXPENSE" ? r.lineNature : "OTHER", favorability: r.favorability, hasData: r.actualMinor !== null && r.budgetMinor !== null }, "ar")}
+                              </Badge>
                             )}
                           </TableCell>
                         </TableRow>

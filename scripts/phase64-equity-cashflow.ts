@@ -160,7 +160,7 @@ async function main() {
       }
       expect(eq.totals.reconciled === true, "الإجمالي: افتتاحي+حركات=إقفالي");
       const cap = eq.rows.find((r) => r.componentCode === "SHARE_CAPITAL")!;
-      expect(cap.openingMinor === "-3000" && cap.closingMinor === "-3000" && cap.movementMinor === "0", "رأسمال: رصيد دائن 30 بلا حركة في المدى");
+      expect(cap.openingMinor === "3000" && cap.closingMinor === "3000" && cap.movementMinor === "0", "رأسمال: رصيد دائن 30 معروضًا موجبًا (6.9R إشارة العرض) بلا حركة في المدى");
     });
 
     await check("C1+C2 الحل والإشارات: تجاوز 1109 يفوز على بادئة 11 + إشارات مركزية صحيحة", async () => {
@@ -217,12 +217,12 @@ async function main() {
       // E3: سنة غير تقويمية تعمل
       const eqB = await getEquityStatement(admin, { companyId: coB, fiscalYearId: fyB, startOrdinal: 2, endOrdinal: 2 });
       expect(eqB.fiscalYear.code === "FY27/28" && eqB.range.startOrdinal === 2 && eqB.range.endOrdinal === 2, "مدى أغسطس في سنة يوليو");
-      // E2: 3999 حقوق ملكية غير مربوطة بحركة 15 ⇒ INCOMPLETE_DATA مع قائمة صريحة
-      expect(eqB.status === "INCOMPLETE_DATA" && eqB.unmappedAccounts.some((u) => u.accountCode === "3999" && u.movementMinor === "-1000"), `3999 فجوة معلنة (unmapped: ${JSON.stringify(eqB.unmappedAccounts)})`);
+      // E2: 3999 حقوق ملكية غير مربوطة بحركة 10 ⇒ INCOMPLETE_DATA مع قائمة صريحة (معروضة موجبة — 6.9R)
+      expect(eqB.status === "INCOMPLETE_DATA" && eqB.unmappedAccounts.some((u) => u.accountCode === "3999" && u.movementMinor === "1000"), `3999 فجوة معلنة معروضة موجبة (unmapped: ${JSON.stringify(eqB.unmappedAccounts)})`);
       expect(eqB.rows.find((r) => r.componentCode === "SHARE_CAPITAL")!.movementMinor === "0", "المربوط (رأسمال) بلا حركة");
-      // C5: مدينون غير مربوط بحركة 20 ⇒ قائمة صريحة + الفرق يعرض ولا يُخفى
+      // C5: مدينون غير مربوط بحركة 15 ⇒ قائمة صريحة منسّقة بعملة (لا أرقام خام — 6.9R) + الفرق يعرض ولا يُخفى
       const cfB = await getCashFlowStatement(admin, { companyId: coB, fiscalYearId: fyB, startOrdinal: 2, endOrdinal: 2 });
-      expect(cfB.status === "INCOMPLETE_DATA" && cfB.unclassifiedAccounts.some((u) => u.accountCode === "1102" && u.note.includes("1500")), "1102 غير مربوط بحركة 15 ⇒ INCOMPLETE_DATA + قائمة صريحة");
+      expect(cfB.status === "INCOMPLETE_DATA" && cfB.unclassifiedAccounts.some((u) => u.accountCode === "1102" && u.note.includes("15.00") && !/-?\d{7,}/.test(u.note)), `1102 غير مربوط بحركة 15 ⇒ INCOMPLETE_DATA + قائمة منسّقة (${cfB.unclassifiedAccounts.map((u) => u.note).join(" | ")})`);
       expect(cfB.reconciled === false && cfB.reconciliationDifferenceMinor !== "0" && cfB.reconciliationDifferenceMinor !== null, `الفرق يُعرض ولا يُخفى (diff ${cfB.reconciliationDifferenceMinor})`);
       expect(cfB.startingMeasure.valueMinor === "3500", `بادئ القياس ب = إيراد 55 − إهلاك 20 = 35 (minor ${cfB.startingMeasure.valueMinor})`);
       // C7: عزل fail-closed

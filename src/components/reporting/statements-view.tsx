@@ -21,8 +21,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { formatMinor } from "@/lib/money";
+import { formatMinor, formatMinorSigned } from "@/lib/money";
 import { PrintableReport, PrintButton } from "@/components/reporting/report-print";
+import { StatementComparisonPanel } from "@/components/reporting/statement-comparison-panel";
+import { STATEMENT_SCOPES } from "@/lib/comparison-engine";
 import { buildReportHeaderMeta } from "@/lib/report-header";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import { canManageTrialBalances, parsePermissions, type Permissions } from "@/lib/permissions";
@@ -71,6 +73,8 @@ interface EquityResponse {
   profitOrLossForPeriod: { valueMinor: string | null; status: string; label?: string } | null;
   totals: { openingMinor: string | null; movementsMinor: string | null; closingMinor: string | null; reconciled: boolean };
   status: string;
+  /** 6.9R (عهدة F): تفسير صريح للفجوات من الخدمة المركزية. */
+  notes?: string[];
   unmappedAccounts: Array<{ accountCode: string; accountName: string }>;
 }
 interface CfLine { lineCode: string; label: string; effectMinor: string | null; effectStatus: string; accounts?: AccountEntry[]; }
@@ -539,6 +543,20 @@ export function StatementsView() {
                 </Card>
               </PrintableReport>
             )}
+            {/* 6.9 — لوحة العرض والمقارنة الموحدة (الافتراضي: تصنيف القوائم بلا مقارنة — لا يكرر القائمة القياسية) */}
+            <StatementComparisonPanel
+              statementScope={STATEMENT_SCOPES.PROFIT_OR_LOSS}
+              companyId={selectedCompanyId}
+              fiscalYearId={selectedFiscalYearId}
+              ordinal={ordinal}
+              basis={basis}
+              minorUnits={minorUnits}
+              companyCode={selectedCompany?.code}
+              companyName={selectedCompany?.nameAr}
+              currencyLabel={currencyLabel}
+              fiscalYearCode={selectedFiscalYear?.code}
+              fiscalYearLabel={selectedFiscalYear?.displayNameAr}
+            />
           </TabsContent>
 
           {/* ── SFP ── */}
@@ -563,7 +581,7 @@ export function StatementsView() {
                   currency: currencyLabel,
                   status: statements.financialPosition.completeness.ready ? "APPROVED" : "INCOMPLETE_DATA",
                   statusNotice: !statements.financialPosition.equation.balanced
-                    ? `المعادلة المحاسبية غير متوازنة — الفرق ${statements.financialPosition.equation.differenceMinor} minor معروض ولا يُصحح ولا يُخفى.`
+                    ? `المعادلة المحاسبية غير متوازنة — الفرق ${formatMinorSigned(statements.financialPosition.equation.differenceMinor, minorUnits)} معروض ولا يُصحح ولا يُخفى.`
                     : null,
                 })}
               >
@@ -635,6 +653,20 @@ export function StatementsView() {
                 )}
               </PrintableReport>
             )}
+            {/* 6.9 — لوحة العرض والمقارنة الموحدة للمركز المالي */}
+            <StatementComparisonPanel
+              statementScope={STATEMENT_SCOPES.STATEMENT_OF_FINANCIAL_POSITION}
+              companyId={selectedCompanyId}
+              fiscalYearId={selectedFiscalYearId}
+              ordinal={ordinal}
+              basis={basis}
+              minorUnits={minorUnits}
+              companyCode={selectedCompany?.code}
+              companyName={selectedCompany?.nameAr}
+              currencyLabel={currencyLabel}
+              fiscalYearCode={selectedFiscalYear?.code}
+              fiscalYearLabel={selectedFiscalYear?.displayNameAr}
+            />
           </TabsContent>
 
           {/* ── SOCIE ── */}
@@ -665,7 +697,14 @@ export function StatementsView() {
               >
                 {equity.status === "INCOMPLETE_DATA" && (
                   <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-                    <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" />INCOMPLETE_DATA — مكونات أو فترات ناقصة معلنة أدناه (لا plug لفرض التوازن).</p>
+                    <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" />بيانات غير مكتملة — مكونات أو فترات ناقصة معلنة أدناه.</p>
+                    {(equity.notes?.length ?? 0) > 0 && (
+                      <ul className="mt-2 list-disc space-y-1 ps-5 text-xs font-normal">
+                        {(equity.notes ?? []).map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
                 {equity.unmappedAccounts.length > 0 && (
@@ -748,7 +787,7 @@ export function StatementsView() {
                   status: cashflow.status === "INCOMPLETE_DATA" ? "INCOMPLETE_DATA" : "APPROVED",
                   statusNotice:
                     cashflow.reconciliationDifferenceMinor !== null && cashflow.reconciliationDifferenceMinor !== "0"
-                      ? `فرق مطابقة النقد ${cashflow.reconciliationDifferenceMinor} minor معروض ولا يُخفى ولا يُسدّ بـ plug.`
+                      ? `فرق مطابقة النقد ${formatMinorSigned(cashflow.reconciliationDifferenceMinor, minorUnits)} معروض ولا يُخفى.`
                       : null,
                 })}
               >

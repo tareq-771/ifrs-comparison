@@ -299,7 +299,9 @@ async function main() {
     expect(favorabilityFor("EXPENSE", BigInt(80), BigInt(100)) === "FAVORABLE", "مصروف أقل ⇒ مواتٍ");
     expect(favorabilityFor("EXPENSE", BigInt(120), BigInt(100)) === "UNFAVORABLE", "مصروف أعلى ⇒ غير مواتٍ");
     expect(favorabilityFor("OTHER", BigInt(10), BigInt(5)) === "NO_FAVORABLE_UNFAVORABLE", "أرصدة ⇒ بلا ف/غ");
-    expect(fileExports("src/components/reporting/budget-view.tsx", "FAVORABILITY_LABELS"), "العرض يستخدم نفس التسميات المركزية");
+    // 6.9R: الواجهة تستخدم الأساس الموحد (display-labels) بدل FAVORABILITY_LABELS — الأكواد الداخلية كما هي
+    expect(!fileExports("src/components/reporting/budget-view.tsx", "FAVORABILITY_LABELS"), "لا تسميات ف/غ المباشرة في الواجهة (جولة المراجعة C/H)");
+    expect(fileExports("src/components/reporting/budget-view.tsx", "budgetVarianceBadge"), "العرض يستخدم الأساس الموحد للمصطلح السياقي");
   });
 
   // ── H13: عزل الصلاحيات ──
