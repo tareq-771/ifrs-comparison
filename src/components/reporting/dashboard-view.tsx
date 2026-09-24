@@ -22,7 +22,7 @@ import { TB_STATUS_LABELS, TB_STATUSES } from "@/lib/trial-balance";
 import type { Permissions } from "@/lib/permissions";
 import { canManageTrialBalances } from "@/lib/permissions";
 
-export type HomeView = "dashboard" | "trial-balance" | "statements" | "budget" | "consolidation" | "compare" | "reports";
+export type HomeView = "dashboard" | "trial-balance" | "statements" | "budget" | "aging" | "consolidation" | "compare" | "reports";
 
 interface TrialBalanceSummary {
   id: string;

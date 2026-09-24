@@ -207,6 +207,13 @@ model Company {
   groupMemberships         GroupCompanyMembership[]
   groupLineMappings        GroupReportingMapping[]
 
+  // ── Phase 6.10 back-relations ──
+  agingBucketConfigs         AgingBucketConfig[]
+  agingInsightRules          AgingInsightRule[]
+  receivablesAccountMappings ReceivablesAccountMapping[]
+  agingImports               AgingImport[]
+  agingSnapshots             AgingSnapshot[]
+
   @@index([status])
   @@index([legacyGroupId])
 }
@@ -792,4 +799,152 @@ model AdjustmentLine {
 
   @@index([adjustmentId])
   @@index([groupLineId])
+}
+
+// ── Phase 6.10 — أعمار الديون والتحصيل (Receivables Aging & Collections) ─────
+// إضافي حصرًا: 7 جداول جديدة + فهارسها. المال = BigInt وحدات صغرى، والتواريخ نص
+// بتاريخ فقط "YYYY-MM-DD" (اصطلاح TrialBalance). لا تعديل على أي جدول قائم.
+
+model AgingBucketConfig {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  code      String
+  labelAr   String
+  labelEn   String
+  fromDays  Int?
+  toDays    Int?
+  isNotDue  Boolean @default(false)
+  order     Int
+
+  @@unique([companyId, code])
+  @@index([companyId])
+}
+
+model AgingInsightRule {
+  id            String  @id @default(cuid())
+  companyId     String
+  company       Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  code          String
+  enabled       Boolean @default(true)
+  thresholdBp   Int?
+  thresholdDays Int?
+  thresholdCount Int?
+  severity      String  @default("ATTENTION")
+
+  @@unique([companyId, code])
+  @@index([companyId])
+}
+
+model ReceivablesAccountMapping {
+  id          String  @id @default(cuid())
+  companyId   String
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountCode String
+  label       String  @default("")
+
+  @@unique([companyId, accountCode])
+  @@index([companyId])
+}
+
+model AgingImport {
+  id            String   @id @default(cuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  fileName      String
+  fileType      String
+  fileSize      Int
+  fileSha256    String
+  asOfDate      String
+  periodLabel   String   @default("")
+  status        String   @default("READY")
+  mappingSource String
+  mappingJson   String
+  rowCount      Int
+  validRowCount Int
+  warningCount  Int
+  errorsJson    String   @default("[]")
+  createdById   String
+  createdByName String
+  createdAt     DateTime @default(now())
+
+  rows      AgingRow[]
+  snapshots AgingSnapshot[]
+
+  @@index([companyId, createdAt])
+}
+
+model AgingRow {
+  id                       String  @id @default(cuid())
+  importId                 String
+  import                   AgingImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  rowIndex                 Int
+  customerCode             String?
+  customerName             String?
+  customerKey              String
+  outstandingBalanceMinor  BigInt?
+  invoiceNumber            String?
+  invoiceDate              String?
+  invoiceAmountMinor       BigInt?
+  dueDate                  String?
+  ageDays                  Int?
+  lastSaleDate             String?
+  lastSaleAmountMinor      BigInt?
+  lastCollectionDate       String?
+  lastCollectionAmountMinor BigInt?
+  creditLimitMinor         BigInt?
+  guaranteeOrInsurance     String?
+  salesperson              String?
+  responsiblePerson        String?
+  notes                    String?
+  flagsJson                String  @default("[]")
+  warningsJson             String  @default("[]")
+
+  @@index([importId])
+  @@index([customerKey])
+}
+
+model AgingSnapshot {
+  id                   String   @id @default(cuid())
+  companyId            String
+  company              Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  importId             String
+  import               AgingImport @relation(fields: [importId], references: [id], onDelete: Restrict)
+  asOfDate             String
+  periodLabel          String   @default("")
+  status               String   @default("DRAFT")
+  currency             String   @default("")
+  totalsJson           String
+  bucketTotalsJson     String
+  reconciliationStatus String
+  reconciliationJson   String   @default("{}")
+  insightsJson         String   @default("[]")
+  riskJson             String   @default("[]")
+  createdById          String
+  createdByName        String
+  approvedById         String?
+  approvedByName       String?
+  approvedAt           DateTime?
+  createdAt            DateTime @default(now())
+
+  rows AgingSnapshotRow[]
+
+  @@index([companyId, asOfDate])
+  @@index([companyId, status])
+}
+
+model AgingSnapshotRow {
+  id           String  @id @default(cuid())
+  snapshotId   String
+  snapshot     AgingSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  customerKey  String
+  customerCode String?
+  customerName String?
+  balanceMinor BigInt
+  bucketCode   String
+  ageDays      Int?
+  basis        String?
+
+  @@index([snapshotId])
+  @@index([snapshotId, bucketCode])
 }

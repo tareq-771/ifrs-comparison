@@ -11,7 +11,7 @@ import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import {
   BarChart3, FileBarChart, FileSpreadsheet, Layers, LayoutDashboard, LogOut, Scale, Settings2,
-  Target, UserCog, User as UserIcon, ArrowLeftRight, Map,
+  Target, UserCog, User as UserIcon, ArrowLeftRight, Map, Wallet,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import { ConsolidationView } from "@/components/reporting/consolidation-view";
 import { ReportsCenter } from "@/components/reporting/reports-center";
 import { TrialBalanceTab } from "@/components/admin/trial-balance-tab";
 import { CompareWorkspace } from "@/components/compare/compare-workspace";
+import { AgingView } from "@/components/reporting/aging-view";
 import {
   parsePermissions, DEFAULT_USER_PERMISSIONS, type Permissions,
 } from "@/lib/permissions";
@@ -39,6 +40,7 @@ const NAV_ITEMS: Array<{
   { key: "trial-balance", label: "ميزان المراجعة", icon: <Scale className="size-4" />, hint: "استيراد واعتماد المصدر الفعلي" },
   { key: "statements", label: "القوائم المالية", icon: <FileBarChart className="size-4" />, hint: "ربح شامل · مركز مالي · حقوق ملكية · تدفقات" },
   { key: "budget", label: "الموازنة والمقارنات", icon: <Target className="size-4" />, hint: "الموازنة وفعلي مقابل موازنة" },
+  { key: "aging", label: "أعمار الديون والتحصيل", icon: <Wallet className="size-4" />, hint: "أعمار الديون والمخاطر والرؤى (6.10)" },
   { key: "reports", label: "مركز التقارير", icon: <FileSpreadsheet className="size-4" />, hint: "الشركة ← السنة ← الفترة ← نوع التقرير + طباعة A4" },
   { key: "consolidation", label: "التقارير الموحدة", icon: <Layers className="size-4" />, hint: "المجموعات والتوحيد الأولي" },
   { key: "compare", label: "أدوات المقارنة", icon: <ArrowLeftRight className="size-4" />, hint: "أداة مقارنة Excel (الوظيفة السابقة)" },
@@ -205,6 +207,9 @@ export default function Home() {
           )}
           {view === "budget" && (
             <BudgetView />
+          )}
+          {view === "aging" && (
+            <AgingView />
           )}
           {view === "consolidation" && (
             <ConsolidationView />

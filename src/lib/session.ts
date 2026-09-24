@@ -8,6 +8,14 @@ import {
   canManageFiscalYears,
   canManagePeriods,
   canRestoreDatabase,
+  canViewAging,
+  canUploadAging,
+  canEditAgingMapping,
+  canConfigureAging,
+  canApproveAgingSnapshot,
+  canDeleteDraftAging,
+  canViewInsights,
+  canConfigureInsightRules,
   parsePermissions,
   type Permissions,
 } from "@/lib/permissions";
@@ -117,6 +125,56 @@ export async function requireManagePeriods(): Promise<SessionUser> {
   if (!canManagePeriods(user.permissions, user.role)) {
     throw new Error("Forbidden");
   }
+  return user;
+}
+
+// ── Phase 6.10 — بوابات صلاحيات أعمار الديون والتحصيل (fail-closed) ─────────
+
+export async function requireViewAging(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canViewAging(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireUploadAging(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canUploadAging(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireEditAgingMapping(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canEditAgingMapping(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireConfigureAging(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canConfigureAging(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireApproveAgingSnapshot(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canApproveAgingSnapshot(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireDeleteDraftAging(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canDeleteDraftAging(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireViewInsights(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canViewInsights(user.permissions, user.role)) throw new Error("Forbidden");
+  return user;
+}
+
+export async function requireConfigureInsightRules(): Promise<SessionUser> {
+  const user = await requireAuth();
+  if (!canConfigureInsightRules(user.permissions, user.role)) throw new Error("Forbidden");
   return user;
 }
 

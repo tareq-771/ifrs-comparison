@@ -81,6 +81,20 @@ export interface Permissions {
    */
   viewAllCompanies?: boolean;
   /**
+   * Phase 6.10 — أعمار الديون والتحصيل (V1 fast track): مفاتيح لكل ميزة
+   * (سجل الصلاحيات الكامل ليس عائقًا — نمط §F). المدير يمتلكها ضمنيًا بالدور
+   * ما عدا ما يُستثنى صراحةً. فصل المهام (SoD) بين الرفع والاعتماد يُفرض
+   * في الخدمة (منشئ الاستيراد لا يعتمد لقطته) لا بالمفاتيح.
+   */
+  viewAging?: boolean;
+  uploadAging?: boolean;
+  editAgingMapping?: boolean;
+  configureAging?: boolean;
+  approveAgingSnapshot?: boolean;
+  deleteDraftAging?: boolean;
+  viewInsights?: boolean;
+  configureInsightRules?: boolean;
+  /**
    * Optional list of group IDs the user is allowed to see in the main page.
    *
    * Semantics:
@@ -118,6 +132,15 @@ export const DEFAULT_USER_PERMISSIONS: Permissions = {
   managePeriods: false,
   companyIds: [],
   viewAllCompanies: false,
+  // Phase 6.10 — الرؤية الافتراضية للمستخدم العادي: عرض الأعمار والرؤى فقط
+  viewAging: true,
+  viewInsights: true,
+  uploadAging: false,
+  editAgingMapping: false,
+  configureAging: false,
+  approveAgingSnapshot: false,
+  deleteDraftAging: false,
+  configureInsightRules: false,
   groupIds: [],
 };
 
@@ -271,4 +294,39 @@ export function canLockFiscalYears(perms: Permissions, role: string): boolean {
  */
 export function canManagePeriods(perms: Permissions, role: string): boolean {
   return role === "admin" || perms.managePeriods === true;
+}
+
+// ── Phase 6.10 — أعمار الديون والتحصيل (V1 fast track) ──────────────────────
+// نمط موحّد: المدير ضمنيًا بالدور، وغيره بمفتاح صريح حصرًا (fail-closed).
+
+export function canViewAging(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.viewAging === true;
+}
+
+export function canUploadAging(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.uploadAging === true;
+}
+
+export function canEditAgingMapping(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.editAgingMapping === true;
+}
+
+export function canConfigureAging(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.configureAging === true;
+}
+
+export function canApproveAgingSnapshot(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.approveAgingSnapshot === true;
+}
+
+export function canDeleteDraftAging(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.deleteDraftAging === true;
+}
+
+export function canViewInsights(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.viewInsights === true;
+}
+
+export function canConfigureInsightRules(perms: Permissions, role: string): boolean {
+  return role === "admin" || perms.configureInsightRules === true;
 }

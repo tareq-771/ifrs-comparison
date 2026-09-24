@@ -77,6 +77,12 @@ export const AUDIT_ACTIONS = {
   BUDGET_RETURNED_TO_DRAFT: "BUDGET_RETURNED_TO_DRAFT",
   BUDGET_REVISION_CREATED: "BUDGET_REVISION_CREATED",
   BUDGET_DELETED: "BUDGET_DELETED",
+  // Phase 6.10 — أعمار الديون والتحصيل
+  AGING_UPLOADED: "AGING_UPLOADED",
+  AGING_IMPORT_DELETED: "AGING_IMPORT_DELETED",
+  AGING_SNAPSHOT_CREATED: "AGING_SNAPSHOT_CREATED",
+  AGING_SNAPSHOT_APPROVED: "AGING_SNAPSHOT_APPROVED",
+  AGING_CONFIG_CHANGED: "AGING_CONFIG_CHANGED",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -134,6 +140,12 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   BUDGET_RETURNED_TO_DRAFT: "إرجاع موازنة إلى مسودة",
   BUDGET_REVISION_CREATED: "إنشاء نسخة موازنة جديدة",
   BUDGET_DELETED: "حذف مسودة موازنة",
+  // Phase 6.10
+  AGING_UPLOADED: "رفع ملف أعمار ديون",
+  AGING_IMPORT_DELETED: "حذف استيراد أعمار (مسودة بلا لقطات)",
+  AGING_SNAPSHOT_CREATED: "إنشاء لقطة أعمار (مسودة)",
+  AGING_SNAPSHOT_APPROVED: "اعتماد لقطة أعمار",
+  AGING_CONFIG_CHANGED: "تغيير إعدادات أعمار الديون",
 };
 
 export const AUDIT_ENTITY_TYPES = {
@@ -149,6 +161,8 @@ export const AUDIT_ENTITY_TYPES = {
   FiscalPeriod: "FiscalPeriod",
   Backfill: "Backfill",
   Budget: "Budget",
+  // Phase 6.10 — أعمار الديون والتحصيل
+  Aging: "Aging",
 } as const;
 
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[keyof typeof AUDIT_ENTITY_TYPES];

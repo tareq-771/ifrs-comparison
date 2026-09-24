@@ -862,3 +862,128 @@ Stage Summary:
 - جذر خلل المركز المالي: إسقاط صامت لحسابات البنود الرئيسية ذات الأبناء في statement-builder — أُصلح جذريًا بلا plug وحاجز «لا قيمة تضيع»
 - أساس التسميات الموحد display-labels.ts جاهز لوحدات 6.10+ (PDF/Excel/الرسوم/التنبيهات) بنفس المصطلحات
 - بلا commit (بانتظار المراجعة)؛ بلا حزمة Windows؛ بلا migrations جديدة (صفر تغيير schema)؛ بلا 6.10
+
+---
+Task ID: recovery-6.9
+Agent: main (Z.ai Code)
+Task: Forensic recovery of the lost Phase 6.9 + 6.9R state (historical commit 32c0861 lost with its session workspace)
+
+Work Log:
+- الأدلة: /tmp/my-project لقطة مساحة العمل المفقودة (ملفات 6.9 الجديدة محفوظة كـ untracked نجا من rollback الذي أعاد الملفات المتتبعة إلى 6.8C) + tool-results/read_1790210020952 (سجل العمل الكامل 864 سطرًا) + بوابتا 6.9/6.9R ناجيتان (23/23 و20/20 على قواعد معزولة طازجة)
+- EXACT_RECOVERY (8 ملفات، SHA256 موثقة): display-labels.ts، comparison-engine.ts، comparison-server.ts، account-hierarchy.ts، statement-comparison/route.ts، statement-comparison-panel.tsx، phase69-presentation-comparison.ts، phase69-review-correction.ts
+- BEHAVIORAL_REDERIVATION (8 ملفات، بقوة بوابتين ناجيتين + وصف سجل العمل): statement-builder.ts (::direct + renderedAccountCodes + presentSignedValue + P&L null-NOT-zero)، statements-view.tsx (توصيل اللوحة + إشعارات formatMinorSigned + عرض notes)، budget-server.ts (lineNameAr/En)، equity-server.ts (presentEquity + notes)، cashflow-server.ts (ملاحظات منسّقة بعملة + وصف مقروء)، budget-view.tsx (المصطلح السياقي الموحد)، بوابتا 64/68 (توقعات 6.9R)
+- WORKLOG_RECOVERY: سطرا 812-864 من السجل المستعاد (تحقق byte-identical للبادئة 1-811)
+- ROADMAP_RECOVERY: docs/MASTER-DEVELOPMENT-ROADMAP.md (V2.0 حقيقية، SHA256=1245e1b0...) — مستعادة في شجرة العمل عمدًا بلا commit حفاظًا على بنية commit التوثيقي المخطط له لاحقًا
+- النتائج: بوابة 6.9 = 23/23، بوابة 6.9R = 20/20، انحدار كامل 175/175 (62A=30، 62B=16، 62C=9، 62D=6، 63=13، 64=9، 65=8، 66=8، 67=19، 68=14، 69=23، 69R=20)، lint 0، typecheck 93 = خط الأساس (صفر أخطاء في ملفات الاستعادة)، تحقق متصفحي كامل (ربح 300/100/200، مركز 700/150/550 فرق 0، صفوف ::direct، أعلى من الموازنة 10,000.00 SAR 3.4%، SOCIE 350,000 موجبة مع الملاحظات، تدفقات بلا minor خام، AvB بالأسماء، الإنجليزية أعلى الموازنة، موبايل 390، بلا أخطاء console)
+
+Stage Summary:
+- commit الاستعادة: add770df129021a79ba1b3dbb69eaa0e9a764b42 (17 ملفًا) — يعوض 32c0861 المفقود كخط أساس عملي متحقق منه؛ لا push ولا حزم
+- 32c0861 = الالتاريخ المفقود؛ add770d = خلفه المستعاد المتحقق منه بعد نجاح كل البوابات والتحقق
+- المتبقي غير ملتزم عمدًا: docs/MASTER-DEVELOPMENT-ROADMAP.md (commit التوثيقي المخصص)، scripts/seed-ui-test.ts (أداة 6.7 غير متتبعة)، سجل الاستعادة هذا
+- لا Phase 6.10، لا migrations جديدة، صفر تغيير schema، production DB لم يُلمس
+
+---
+Task ID: recovery-6.9-finalize
+Agent: main (Z.ai Code)
+Task: Finalization — إعادة تشغيل خادم التطوير + تسليم تقرير الاستعادة الجنائية الكامل للمرحلتين 6.9/6.9R (الأقسام A–O) ثم التوقف بإذن صريح
+
+Work Log:
+- تحقق قراءة-فقط: HEAD=add770df129021a79ba1b3dbb69eaa0e9a764b42 بالعنوان المصرح به حرفيًا، الأب 22e0fe1 (6.8C)، فرع master بلا أي عملية شبكة (لا يوجد أصلًا ref محلي لـ origin/master في مساحة العمل هذه)
+- إعادة تشغيل الخادم: لم يكن يعمل (المنفذ 3000 خامل) — شُغّل بـ NODE_OPTIONS=--max-old-space-size=3072 مع node مباشرة (next dev -p 3000) بإلحاق dev.log بدل تثبيت (tee) سكربت package.json حفاظًا على سجل الأدلة؛ أقلع بنجاح «✓ Ready in 840ms» وقدِم: ‎/login 200، ‎/ 307 (تحويل متوقع غير مصدق)، ‎/api/system/status 200 — بلا أي محاولة دخول (GET فقط) فصفر إضافات لسجل تدقيق custom.db
+- قيد بيئي موثق سابقًا: الصندوق يقتل العمليات الخلفية بين أوامر Bash (جُرب nohup ثم setsid) — استمرارية الخادم عبر الأوامر غير ممكنة من داخل الجلسة؛ الخدمة طويلة الأمد من مسؤولية مشرف لوحة المعاينة
+- custom.db سليم: الملف الرئيسي mtime 05:53:04 يسبق كل نشاط الاستعادة (البوابات 08:08+) وبحجمه 1,003,520 بايت دون تغير؛ ‎-wal = 0 بايت؛ ‎-shm تُلمس فقط بواسطة اتصالات قراءة (فحص إقلاع الخادم) — كل اختبارات البوابات/الواجهة على قواعد معزولة
+- تأكيد المحظورات: لا fetch/pull/push، لا staging/commit إضافي، لا clean/reset/checkout، لا db push، لا migrations، لا لمس للـ roadmap، لا Phase 6.10
+- سُلّم التقرير الجنائي الكامل A–O في المحادثة ثم توقف
+
+Stage Summary:
+- الاستعادة نهائية على add770d؛ تغييرات شجرة العمل من هذه الجولة: إلحاق هذا القسم فقط (+أسطر تشغيلية في dev.log المتجاهل من git)؛ كل الـ debris الأخرى كما قبلت في نقطة التفتيش حرفيًا
+
+---
+Task ID: recovery-6.9-milestone-package
+Agent: main (Z.ai Code)
+Task: إنشاء حزمة نسخة احتياطية معلم قابلة للتنزيل لحالة 6.9/6.9R المستعادة (add770d) — packaging only, بلا أي عمل تطويري
+
+Work Log:
+- Git bundle: download/Phase-6.9R-Recovered-Milestone/Git/ifrs-phase-6.9R-recovered.bundle من master+HEAD — يحوي add770d وسجل الوصول الكامل (36 commit)؛ git bundle verify = «complete history / okay»؛ تحقق مستقل باستنساخ مؤقت في /tmp حل HEAD إلى add770d ثم حُذف
+- Source ZIP: Source/ifrs-phase-6.9R-recovered-source.zip عبر git archive من شجرة commit مباشرة (لا من شجرة العمل) — 1448 ملفًا = 1473 متتبعًا − 25 مستثنى (custom.db + shm/wal، dev.pid، قاعدة backups/pre-3.5A القديمة، 20 ملف tool-results عابر متتبع من مرحلة سابقة)؛ membership diff فارغ؛ فحوص المنع كلها صفر؛ upload/route.ts داخل الـ ZIP مطابق بايت-بايت لبيانات الـ commit (لم يُستنسخ حذف شجرة العمل)
+- Verification/: GIT-HEAD.txt + RECOVERY-REPORT.md (تقرير A–O الكامل) + TEST-RESULTS.txt (بوابة 6.9 = 23/23، بوابة 6.9R = 20/20، انحدار 175/175، lint 0/0، typecheck 93 خط أساس وصفر في ملفات الاستعادة، ملخص التحقق المتصفحي) + PACKAGE-CONTENTS.txt + SHA256.txt (6 مجاميع) — sha256sum -c: كلها OK
+- لا لمس لـ custom.db/-wal/-shm (الملف الرئيسي mtime 05:53:04 بقى)، لا staging/commit، لا fetch/pull/push، لا db push، لا migrations، لا تعديل مصدر، لا roadmap، لا 6.10
+
+Stage Summary:
+- الحزمة جاهزة للتنزيل في download/Phase-6.9R-Recovered-Milestone/ وتجسد commit add770df129021a79ba1b3dbb69eaa0e9a764b42 حصريًا
+
+---
+Task ID: recovery-6.9-milestone-outer-zip
+Agent: main (Z.ai Code)
+Task: تغليف حزمة المعلم المستعادة في ملف ZIP واحد قابل للتنزيل — packaging only
+
+Work Log:
+- أُنشئ download/Phase-6.9R-Recovered-Milestone.zip من مجلد download/Phase-6.9R-Recovered-Milestone/ كاملًا ببنيته (7 ملفات) دون أي تعديل على المجلد الأصلي
+- unzip -t: «No errors detected»؛ العضوان المطلوبان Source/ifrs-phase-6.9R-recovered-source.zip وGit/ifrs-phase-6.9R-recovered.bundle موجودان؛ استُخرجا من الـ ZIP الخارجي وتطابق SHA256 مع الموثق (71aa88a6…، 9946fb71…) — مطابقة بايت-بايت
+- إعادة تشغيل ملف SHA256 الداخلي داخل مجلد المعلم: كلها OK (المجلد لم يُلمس)
+- الخارجي: SHA256=1e7f4b2d004236cc3b4a68716f5422a24a3d79ecbfa9e9bcbe64c1ea9ba544cd، الحجم 87,876,935 بايت
+- لا commit/stage، لا لمس لأي قاعدة بيانات، لا fetch/pull/push، لا 6.10
+
+Stage Summary:
+- ملف ZIP الخارجي جاهز للتنزيل ويمثل حالة add770df129021a79ba1b3dbb69eaa0e9a764b42 عبر محتوياته المتحقق منها
+
+---
+Task ID: recovery-6.9-milestone-download-link
+Agent: main (Z.ai Code)
+Task: تعريض ملف ZIP المعلم القائم مباشرة كتنزيل عبر التطبيق — بلا إعادة تغليف
+
+Work Log:
+- تحقق مجدد قبل التعريض: SHA256=1e7f4b2d004236cc3b4a68716f5422a24a3d79ecbfa9e9bcbe64c1ea9ba544cd والحجم 87,876,935 بايت — مطابقة تامة
+- إنشاء hard link (نفس inode 177910، صفر نسخ، لا إعادة تغليف) من download/Phase-6.9R-Recovered-Milestone.zip إلى public/Phase-6.9R-Recovered-Milestone.zip — لا تعديل لأي ملف مصدر ولا لقواعد البيانات ولا لحالة git (ملف غير متتبع فقط)
+- اختبار نهاية-إلى-نهاية عبر HTTP على المنفذ 3000: HEAD 200 OK بترويسة application/zip وطول 87876935؛ وتنزيل كامل عبر HTTP مطابق SHA256 للموثق حرفيًا
+- لا commit/stage، لا fetch/pull/push، لا 6.10، لا تعديل مصدر
+
+Stage Summary:
+- الملف متاح للتنزيل المباشر على المسار /Phase-6.9R-Recovered-Milestone.zip عبر خادم التطبيق (رابط hard link دائم يعمل مع أي إقلاع لاحق للخادم)
+
+---
+Task ID: phase-6.10-aging
+Agent: main (Z.ai Code)
+Task: المرحلة 6.10 — أعمار الديون والتحصيل (Receivables Aging & Collections) + تحديث خارطة الطريق V2.1
+
+Work Log:
+- STEP 1: docs/MASTER-DEVELOPMENT-ROADMAP.md — أُضيف قسم §N (N.1–N.8: مخطط الموازنات المتقدم، السنوات الأساس، الفترة الحالية/المقارنة، محرك المواسم، مراكز التكلفة، إضافات دليل الأنشطة، المساعدة الذكية، ضبط نطاق V1) + سجل V2.1 في DOCUMENT CONTROL — كل المحتوى السابق محفوظ حرفيًا
+- حادثة بيئية قبل البدء: ملفات untracked (الخارطة، seed-ui-test.ts، 3 أدلة قراءة، قواعد البوابات) حُذفت بين الجلسات — استُرجعت الخارطة والبذر والأدلة بايت-بايت من /tmp/my-project (SHA256 الخارطة مطابق للمرجع 1245e1b0…)؛ قواعد البوابات قابلة لإعادة التوليد
+- Schema إضافي حصرًا: 7 جداول جديدة (AgingBucketConfig، AgingInsightRule، ReceivablesAccountMapping، AgingImport، AgingRow، AgingSnapshot، AgingSnapshotRow) + migration يدوي prisma/migrations/20260924120000_phase610_receivables_aging — تحقق: prisma validate ✓، migrate diff «No difference detected» ✓، deploy على قاعدة قابلة للإبعاد ✓ — صفر تعديل على الجداول القائمة
+- Backend: src/lib/aging.ts (نواة نقية: حقول قيانية + مرادفات ثنائية اللغة + شرائط + تحليل تواريخ حتمي + نسب bp بـ BigInt)، aging-csv.ts (محلل RFC4180)، aging-server.ts (خدمة: تحقق مدخل غير موثوق، حدود 10MB/20000 صف/64 عمود/500 حرف، تعيين تلقائي/يدوي، لقطات مجمّدة، مطابقة TB بحالات خمس، رؤى حتمية FACT/ANALYSIS/RECOMMENDATION، مخاطر مرتبة بأسباب — بلا أي ECL)، aging-http.ts (خريطة أخطاء HTTP)
+- صلاحيات: 8 مفاتيح جديدة (viewAging…configureInsightRules) بنمط admin-ضمني + 8 بوابات require* في session.ts + 5 أكواد تدقيق AGING_* — فصل المهام مطبّق خدمتيًا (منشئ الاستيراد لا يعتمد لقطته)
+- API: 6 مسارات /api/aging/* (imports، imports/[id]، snapshots، snapshots/[id]، approve، config) بنمط guardRead/guardWrite
+- Frontend: aging-view.tsx (5 تبويبات: تحليل/استيراد/رؤى/مخاطر/إعدادات + حوار تعيين + رفع CSV/XLSX قيم-فقط + طباعة + CSV export)، charts/amount-charts.tsx (أساس رسوم قابل لإعادة الاستخدام: أعمدة/دونات/اتجاه بقيم دقيقة ومحاور صادقة)، تسجيل الوحدة في page.tsx + HomeView
+- بوابة 6.10: scripts/phase610-aging-analytics.ts — 38/38 PASS على dev-610-gate.db من migrations حصرًا (79 تأكيدًا حتميًا: تعيين، BigInt خارج 2^53، أرقام عربية-هندية، حدود شرائط، تقسيم كامل، دلالة الناقص، اشتقاق العمر، SoD، عزل الشركات، حالات المطابقة الخمس، الرؤى/إيقاف القواعد/الاتجاه، المخاطر، الرسوم، الصلاحيات، مدخلات غير صالحة، أداء 5000 صف = 977ms)
+- انحدار كامل على قواعد معزولة طازجة: 62A=30، 62B=16، 62C=9، 62D=6، 63=13، 64=9، 65=8، 66=8، 67=19، 68=14، 69=23، 69R=20 = 175/175 ✓ (ملاحظة: فشل ظاهري في 62A/62B كان تلوث إعادة تشغيل على نفس القاعدة — التشغيل النظيف الواحد أخضر)
+- lint 0/0؛ typecheck 93 = خط الأساس (صفر أخطاء في ملفات 6.10)
+- تحقق متصفحي على dev-ui-610.db معزولة (خادم مؤقت منفذ 3001 بتجاوزات صريحة): دخول admin → وحدة أعمار بتبويباتها → مؤشرات (إجمالي 1,200,000.00، متأخر 900,000.00 = 75.0%) → شارة «مطابق لميزان المراجعة» → جدول شرائط + رسمان (دونات/أعمدة) → رؤى بدرجات وأنواع → مخاطر بأسباب حتمية (مجموعة الهدى: مرتفع 95) → رفع CSV عبر الواجهة بتعيين تلقائي (2/2) → اعتماد بواسطة approver (فصل مهام فعلي) → موبايل 390 بلا تجاوز أفقي → صفر أخطاء console
+- حادثة موثقة: محاولة الدخول أثناء التحقق أصابت خادم منصة على 3000 (قاعدة custom.db) فكتبت صفوف LOGIN_FAILED تشغيلية في سجل تدقيق custom.db فقط (سلوك fail-closed الصحيح، صفر تغيير بنيوي) — وُجه الاختبار لخادم معزول على 3001 ثم قُتل خادمي القديم الذي كان يحتجز قفل .next/dev/lock
+- لم يُلتزم شيء (بانتظار مراجعة المالك)؛ لا db push؛ لا لمس بنائي لـ custom.db؛ لا 6.11؛ لا حزمة إنتاج
+
+Stage Summary:
+- المرحلة 6.10 مكتملة التنفيذ والتحقق: بوابات 38/38 + انحدار 175/175 + lint/typecheck عند الأساس + تحقق متصفحي شامل — جاهزة لقرار الالتزام الصريح بمسارات محددة
+- المعمارية مهيأة لـ N.1–N.8: أساس الرؤى والرسوم عام لا خاص بالأعمار؛ اللقطات جاهزة للاتجاهات؛ المفاتيح لكل ميزة
+
+---
+Task ID: recovery-6.10
+Agent: main (Z.ai Code)
+Task: استعادة طوارئ للمرحلة 6.10 بعد تراجع المنصة لفضاء العمل (platform rollback) — RECOVERY ONLY بإذن المالك الصريح
+
+Work Log:
+- الحادثة: إقلاع الحاوية 2026-09-24 16:20 أعاد فضاء العمل إلى لقطة 6.8C — HEAD عاد إلى 22e0fe1 وفُقد الكائنان add770df و02720d6a من مخزن الكائنات تمامًا (cat-file يفشل)، ومُحيت ملفات 6.10 وحزمة download/ كاملة (6.9R + 6.10) ورابط public/ — و404 التنزيل الذي أبلغ عنه المالك كان ناتجًا مزدوجًا: مسار download/ غير مخدوم أصلًا + فقده الفعلي بعد التراجع
+- أصل النجاة: لقطة المنصة 11:49 (.initial_snapshot.json) المنعكسة في /tmp/my-project — لكن مزامنة المنصة انقلبت أثناء الجلسة ودَفعت حالة التراجع إلى المرآة (worklog انعكس من 988 إلى 811 سطرًا أثناء العمل!) — فجُمدت الأصول فورًا: tar للملفات الستة عشر الحصرية + ZIP 6.9R (1e7f4b2d… مطابق) + قواعد البوابات الشاهدة (610/69/69R) في /tmp
+- تصنيف ما نجا: 16 ملف 6.10 حصري (لا نظير له في 6.8C أصلًا) = بايت-بايت مؤكد بالحجم والمحتوى؛ الملفات المشتركة السبعة = انعكست في المرآة قبل النسخ (تحقق SHA256 آني قال OK لكن المرآة كانت قد انقلبت)
+- 6.9R أولًا كما تقتضي الأدلة: استخراج ifrs-phase-6.9R-recovered.bundle من ZIP 6.9R المتحقق (SHA256 9946fb71… مطابق للمرجع) → bundle verify «complete history» → fetch + merge --ff-only → master = add770df الأصلي حرفيًا بنفس التجزئة (تاريخ كامل 37 commit) +17 ملفًا (+3832/−39) دون أي لمس للحطام
+- 6.10 فوقها: 16 ملفًا جديدًا بايت-بايت من المرآة المجمدة (تحقق SHA256 للطرفين قبل انقلابها)؛ الملفات المشتركة أُعيد بناؤها: خمسة أكواد من diff الجلسة الحرفي (page.tsx +7، dashboard-view +2، audit-actions +14، permissions +58، session +58 — إحصاءات مطابقة للالتزام الأصلي حرفيًا)؛ schema.prisma من DDL الـ migration المستعاد (7 نماذج + علاقات Company) — إثبات التكافؤ: prisma validate ✓ وmigrate diff مقابل قاعدة البوابة المجمدة الأصلية (المبنية أصلًا من نفس الـ migrations عبر migrate deploy) = «No difference detected»؛ worklog من نسخة add770d + أقسام ما بعد الاستعادة من محفوظات الجلسة + هذا القسم
+- عميل prisma أُعيد توليده على المخطط المستعاد (كان تمهيد الحاوية قد ولّده على 6.8C)
+- بوابات الاستعادة أولًا: 69 = 23/23 PASS، 69R = 20/20 PASS (قواعد معزولة طازجة من migrations حصرًا بتجاوز صريح لـ DATABASE_URL)
+- بوابة 6.10: 38/38 PASS (أداء 5000 صف ضمن الحد السخي) — ثم الانحدار الكامل: 62A=30، 62B=16، 62C=9، 62D=6، 63=13، 64=9، 65=8، 66=8، 67=19، 68=14 → الإجمالي مع 69/69R: 175/175 ✓
+- lint 0/0؛ typecheck 92 (تحت خط الأساس 93؛ صفر أخطاء في ملفات 6.10)
+- الالتزام الأصلي 02720d6a مدمّر ولا يُعاد إنشاء تجزئته — التزام استعادة جديد بمسارات صريحة حصرًا (23 مسارًا) بلا git add . / -A / commit -a
+- custom.db لم يُلمس: كل البوابات على قواعد معزولة؛ الحطام الموروث (dev.pid، custom.db+shm بحجم 1,003,520 وmtime 05:53:04، حذف upload/route.ts) بقي كما هو
+- قواعد البوابات الثلاث عشرة أُعيد توليدها هذه الجولة وتركت غير متتبعة (حطام قابل لإعادة التوليد)
+
+Stage Summary:
+- 6.9R + 6.10 مستعادتان بالكامل وتتحققان: بوابات 38/38 + 175/175 + lint/typecheck عند الأساس — الشفافية الكاملة: نص schema.prisma المعاد مكافئ بنيويًا (DDL) لا بايت-بايت مع المدمّر (+155 سطرًا مقابل +169 بفروق تنسيق)، وworklog أُعيد من محفوظات الجلسة، وكل ما عدا ذلك بايت-بايت
+- الدرس الموثق: حزم download/ (المتجاهلة من git) لا تدخل لقطات المنصة — الحزم المعلمية المستقبلية تُعرَّض عبر public/ فور إنشائها
