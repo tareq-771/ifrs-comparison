@@ -44,6 +44,7 @@ import {
 } from "@/lib/aging";
 import { parsePermissions, canUploadAging, canConfigureAging, canApproveAgingSnapshot, canDeleteDraftAging } from "@/lib/permissions";
 import { AmountBarChartH, AmountDonutChart, AmountTrendChart } from "@/components/charts/amount-charts";
+import { useAppearance } from "@/components/appearance/appearance-provider";
 import { UploadCloud, Trash2, FileSpreadsheet, ShieldCheck, Lightbulb, TriangleAlert } from "lucide-react";
 
 interface ImportRow {
@@ -165,6 +166,7 @@ async function readAgingFile(file: File): Promise<{ fileType: "CSV" | "XLSX"; gr
 export function AgingView() {
   const { data: session } = useSession();
   const { companies, selectedCompanyId, minorUnits } = useCompanyPeriod();
+  const { prefs } = useAppearance(); // 6.11 — إظهار/إخفاء الرسوم تفضيل عرض لا صلاحية
   const role = ((session?.user as { role?: string } | undefined)?.role) ?? "user";
   const perms = parsePermissions(((session?.user as { permissions?: string | null } | undefined)?.permissions) ?? "{}");
   const canView = role === "admin" || perms.viewAging === true;
@@ -447,11 +449,13 @@ export function AgingView() {
                       </Alert>
                     ) : null}
 
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <AmountDonutChart title="توزيع الشرائط" minorUnits={minorUnits} data={chartBuckets.map((b) => ({ label: b.labelAr, valueMinor: b.amountMinor, count: b.count }))} />
-                      <AmountBarChartH title="أكبر المدينين (أعلى 20)" minorUnits={minorUnits} countLabel="—" data={(detail?.topRows ?? []).map((r) => ({ label: r.customerName ?? r.customerCode ?? r.customerKey, valueMinor: r.balanceMinor }))} />
-                    </div>
-                    {trend.length > 1 ? (
+                    {prefs.chartsVisible ? (
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        <AmountDonutChart title="توزيع الشرائط" minorUnits={minorUnits} data={chartBuckets.map((b) => ({ label: b.labelAr, valueMinor: b.amountMinor, count: b.count }))} />
+                        <AmountBarChartH title="أكبر المدينين (أعلى 20)" minorUnits={minorUnits} countLabel="—" data={(detail?.topRows ?? []).map((r) => ({ label: r.customerName ?? r.customerCode ?? r.customerKey, valueMinor: r.balanceMinor }))} />
+                      </div>
+                    ) : null}
+                    {prefs.chartsVisible && trend.length > 1 ? (
                       <AmountTrendChart title="اتجاه اللقطات المعتمدة" minorUnits={minorUnits} points={trend.map((t) => ({ label: t.asOfDate, totalMinor: t.totalMinor, overdueMinor: t.overdueMinor }))} />
                     ) : null}
 

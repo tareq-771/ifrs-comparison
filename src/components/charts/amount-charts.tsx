@@ -5,7 +5,7 @@
 // تحويل float للنص المعروض)، محور القيم يبدأ من الصفر (لا مقاييس مضللة)،
 // استجابة، تسميات عربية/إنجليزية، ألوان ثابتة بلا أزرق/بنفسجي.
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
 import { formatMinor } from "@/lib/money";
@@ -170,6 +170,110 @@ export function AmountDonutChart({
               <span className="tnum font-mono" dir="ltr">{d.valueLabel}{typeof d.count === "number" ? ` · ${d.count}` : ""}</span>
             </li>
           ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** بند فعلي مقابل موازنة للرسم — الناقص null يُستبعد من الرسم (لا صفر مختلق). */
+export interface BudgetVsActualDatum {
+  label: string;
+  budgetMinor: string | null;
+  actualMinor: string | null;
+}
+
+/** عرض توضيحي لمقارنة موازنة/فعلي (6.11) — يشتق من نفس بيانات الخدمة بلا حقيقة ثانية. */
+export function budgetVsActualChartSeries(data: readonly BudgetVsActualDatum[]): {
+  rows: Array<{ label: string; budgetChart: number; actualChart: number; budgetLabel: string; actualLabel: string }>;
+  skippedMissing: number;
+  skippedNegative: number;
+} {
+  const rows: Array<{ label: string; budgetChart: number; actualChart: number; budgetLabel: string; actualLabel: string }> = [];
+  let skippedMissing = 0;
+  let skippedNegative = 0;
+  for (const d of data) {
+    if (d.budgetMinor == null || d.actualMinor == null) {
+      skippedMissing += 1; // الناقص يبقى ناقصًا — لا يُرسم كصفر
+      continue;
+    }
+    const b = toChartNumber(d.budgetMinor);
+    const a = toChartNumber(d.actualMinor);
+    if (!Number.isFinite(b) || !Number.isFinite(a)) {
+      skippedMissing += 1;
+      continue;
+    }
+    if (b < 0 || a < 0) {
+      skippedNegative += 1; // قيم سالبة تُستثنى من رسم يبدأ من الصفر — بلا تضليل
+      continue;
+    }
+    rows.push({
+      label: d.label,
+      budgetChart: b,
+      actualChart: a,
+      budgetLabel: formatMinor(d.budgetMinor, 2),
+      actualLabel: formatMinor(d.actualMinor, 2),
+    });
+  }
+  return { rows, skippedMissing, skippedNegative };
+}
+
+/** أعمدة مجمّعة: موازنة مقابل فعلي لكل بند (6.11) — محور من الصفر، تلميح بالنص الدقيق. */
+export function BudgetVsActualChart({
+  title,
+  data,
+  heightClass = "h-[340px]",
+}: {
+  title: string;
+  data: readonly BudgetVsActualDatum[];
+  heightClass?: string;
+}) {
+  const { rows, skippedMissing, skippedNegative } = budgetVsActualChartSeries(data);
+  const config = {
+    budgetChart: { label: "الموازنة", color: "#57534e" },
+    actualChart: { label: "الفعلي", color: "#059669" },
+  } satisfies ChartConfig;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription className="text-xs">
+          يُشتق من نفس بيانات الجدول أعلاه — الجدول هو المرجع الدقيق.
+          {skippedMissing > 0 ? ` استُبعدت ${skippedMissing} بنود ببيانات ناقصة (الناقص لا يُرسم صفرًا).` : ""}
+          {skippedNegative > 0 ? ` استُبعدت ${skippedNegative} بنود بقيم سالبة من هذا الرسم (يبدأ من الصفر).` : ""}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {rows.length === 0 ? (
+          <p className="p-6 text-center text-xs text-slate-400">لا توجد بنود قابلة للرسم — البيانات الناقصة تبقى ناقصة.</p>
+        ) : (
+          <ChartContainer config={config} className={heightClass + " w-full"}>
+            <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={10} interval={0} angle={-20} height={56} />
+              <YAxis tickLine={false} axisLine={false} width={72} fontSize={11} domain={[0, "auto"]} />
+              <ChartTooltip
+                cursor={false}
+                content={({ active, payload }) => {
+                  if (!active || !payload || payload.length === 0) return null;
+                  const d = payload[0].payload as (typeof rows)[number];
+                  return (
+                    <div className="rounded-md border bg-background px-3 py-2 text-xs shadow-md" dir="rtl">
+                      <div className="font-semibold">{d.label}</div>
+                      <div className="tnum font-mono" dir="ltr">الموازنة: {d.budgetLabel}</div>
+                      <div className="tnum font-mono" dir="ltr">الفعلي: {d.actualLabel}</div>
+                    </div>
+                  );
+                }}
+              />
+              <Bar dataKey="budgetChart" fill="#57534e" radius={3} isAnimationActive={false} />
+              <Bar dataKey="actualChart" fill="#059669" radius={3} isAnimationActive={false} />
+            </BarChart>
+          </ChartContainer>
+        )}
+        <ul className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+          <li className="flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-sm" style={{ background: "#57534e" }} />الموازنة</li>
+          <li className="flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-sm" style={{ background: "#059669" }} />الفعلي</li>
         </ul>
       </CardContent>
     </Card>

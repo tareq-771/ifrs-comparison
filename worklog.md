@@ -987,3 +987,45 @@ Work Log:
 Stage Summary:
 - 6.9R + 6.10 مستعادتان بالكامل وتتحققان: بوابات 38/38 + 175/175 + lint/typecheck عند الأساس — الشفافية الكاملة: نص schema.prisma المعاد مكافئ بنيويًا (DDL) لا بايت-بايت مع المدمّر (+155 سطرًا مقابل +169 بفروق تنسيق)، وworklog أُعيد من محفوظات الجلسة، وكل ما عدا ذلك بايت-بايت
 - الدرس الموثق: حزم download/ (المتجاهلة من git) لا تدخل لقطات المنصة — الحزم المعلمية المستقبلية تُعرَّض عبر public/ فور إنشائها
+
+---
+Task ID: recovery-6.10-finalize
+Agent: main (Z.ai Code)
+Task: إتمام استعادة 6.10 — حزمة معلم جديدة متحقق منها + تعريضها للتنزيل المباشر (packaging only)
+
+Work Log:
+- الالتزام: 8e2084af7f6d6966013522e1ecf0576c5fdb8ff8 "Recovered Phase 6.10: receivables aging, analytics, charts and smart insights" فوق add770d الأصلي — 23 ملفًا (+5179/−2) بمسارات صريحة؛ ما بعد الالتزام: الحطام الموروث حرفيًا (dev.pid، custom.db، custom.db-shm، حذف upload/route.ts) + قواعد بوابات غير متتبعة
+- الحزمة download/Phase-6.10-Milestone/: Git/ifrs-phase-6.10-recovered.bundle (master+HEAD، تاريخ كامل) — bundle verify «complete history» + استنساخ مؤقت حلّ HEAD=master=8e2084af؛ Source/ifrs-phase-6.10-recovered-source.zip من شجرة الالتزام مباشرة — 1464 عضوًا = 1489 متتبعًا − 25 مستثنى، membership diff فارغ، فحص المنع 0، upload/route.ts بالنسخة الملتزمة؛ Verification/{GIT-HEAD,TEST-RESULTS,RELEASE-NOTES,SHA256}.txt — sha256sum -c كلها OK
+- الخارجي download/Phase-6.10-Milestone.zip: 88,070,453 بايت، SHA256 2ace70ba7c0d10bb748765bce75fd503b023a10f5ca38ddc617d21485cfc922d — unzip -t بلا أخطاء والأعضاء الداخليون مطابقون بايت-بايت
+- التعريض: public/Phase-6.10-Milestone.zip = hard link نفس الـ inode (310802) بنفس SHA256؛ public/Phase-6.9R-Recovered-Milestone.zip = نسخة بايت-دقيقة من الأصل المجمد بنفس SHA256 1e7f4b2d… (87,876,935 بايت)؛ HTTP 200/application/zip لكليهما وتنزيل كامل عبر HTTP للـ 6.10 مطابق للهاش حرفيًا
+- أصول مجمدة في /tmp للاستعادة المستقبلية: recovered-610-frozen.tar.gz (16 ملفًا + SHA)، recovered-69r-frozen.zip، recovered-610-gate-frozen.db، recovered-69-gate-frozen.db، recovered-69r-gate-frozen.db
+- لا push، لا 6.11، لا شبكة؛ custom.db (1,003,520 بايت) لم يُلمس بالاستعادة أو الاختبار — mtime الحالي 16:20:40 من استعادة المنصة نفسها لا من نشاطنا
+
+Stage Summary:
+- المرحلة 6.10 مستعادة ومعلمها الجديد منشور للتنزيل على /Phase-6.10-Milestone.zip — جاهز للتنزيل والتحقق المحلي على Windows (SHA256 أعلاه)
+
+---
+Task ID: 6.11
+Agent: main (Z.ai Code)
+Task: Phase 6.11 — V1 Experience Fast Track: themes + appearance + responsive/mobile + dashboard customization + visualization integration + smart insights integration (implement → test → verify → document → STOP)
+
+Work Log:
+- Preflight (read-only): HEAD = 8e2084af "Recovered Phase 6.10" فوق add770d الأصلي؛ old 02720d6a مدمّر كما هو متوقع. المرساة المملوكية تحقق حرفيًا: public/Phase-6.10-Milestone.zip = 88,070,453 بايت، SHA256 2ace70ba7c0d10bb748765bce75fd503b023a10f5ca38ddc617d21485cfc922d = قيمة تحقق المالك على Windows حرفيًا. 14 مسارًا حصريًا لـ6.10 موجود، 7 نماذج schema موجودة، migration 610 موجود، gate موجود ⇒ خط أساس مكافئ ⇒ المتابعة مرخصة. (ملاحظة تحقيق: سطر mode-toggle بدو "تلف" في مخرجات shell كان artifact عرض — Read أكد الملف سليم والـtypecheck 92 = الأساس.)
+- المعمارية: طبقة مظهر مركزية (lib/appearance.ts نقي قابل للاختبار: أنواع + حدود + parseAppearancePrefs الحتمي + computeAppliedAppearance) + مزوّد React واحد (components/appearance/appearance-provider.tsx) يطبق على <html> عبر data-appearance/data-density/data-table-font + CSS vars، ومركز CSS واحد في globals.css داخل @media screen حصرًا (الطباعة تبقى بالهوية الافتراضية — إعادة ضبط التكبير 16px!important في @media print). لا تشتيت ثيمات في المكونات.
+- الثيمات: corporate-green (الافتراضي = الهوية الحالية بلا أي سمة DOM)، financial-blue (طلب صريح — remap emerald/teal إلى قيم oklch حرفية لأن Tailwind v4 يصدر المتغيرات المستخدمة فقط)، professional-gray، high-contrast (تعزيز نصوص/حدود)، dark/system عبر next-themes sync. الافتراضات مستقرة: بلا تفضيل ⇒ لا يتغير شيء.
+- مركز المظهر «المظهر والتخصيص / Appearance & Customization»: تبويب رئيسي جديد — 6 ثيمات ببطاقات معاينة، خط عربي/إنجليزي (Tajawal/Geist أو stacks النظام — بلا ملفات خطوط)، حجم خط واجهة 14–18px، حجم خط جداول 11–16px (data-table-font)، كثافة مريح/مضغوط (data-density يقلص paddings البطاقات والجداول)، تكبير 90–125% (font-size للجذر)، مفتاح إظهار الرسوم، تخصيص لوحة المعلومات، استعادة الافتراضيات.
+- التخزين: localStorage فقط (مفتاح ifrs.appearance.prefs.v1) — تفضيلات عرض فقط ليست صلاحيات؛ التالف يسقط للافتراض حقلًا حقلًا؛ الافتراضي الكامل يُحذف من التخزين. لا تغيير schema إطلاقًا (قرار موثق: بلا حاجة).
+- تخصيص لوحة المعلومات: عناصر context/insights/statusCards/shortcuts/companies — إظهار/إخفاء + ترتيب حتمي (normalizeDashboardOrder: إسقاط المجهول، إزالة التكرار، إلحاق الناقص). القاعدة الأمنية: التفضيل لا يمنح وصولًا — insights يتقاطع مع canViewInsights في الواجهة، وبيانات كل عنصر تُجلب من APIs المصرفة بصلاحياتها.
+- الرؤى الذكية «التنبيهات والتحليلات الذكية»: lib/insights.ts نقي — مصطلح موازنة سياقي كامل (أعلى/أقل/تجاوز/وفر/ضمن/ارتفاع/انخفاض/لا تتوفر بيانات) بمطابقة display-labels، بديهية BigInt (varianceBp بتحويل Number صريح بعد قسمة BigInt — أصلح فخ Number.isFinite(BigInt) الذي كان يُسقط النسب كلها)، تصنيف FACT/ANALYSIS/RECOMMENDATION، عتبة ضمن الموازنة 500bp، بنود OTHER بلا حكم زيادة/وفر، الناقص مُعلن لا صفر. APIs: GET /api/insights (guardRead + viewInsights + companyVisible fail-closed + توريث صلاحية كل مصدر: TB/موازنة بـmanageTrialBalances، أعمار بـviewAging — ما لا يملكه المستخدم يُحذف بصمت). واجهة: InsightsPanel في لوحة المعلومات (عدّ خطورة + تصفية + روابط وحدات) تُخفى كليًا بلا صلاحية.
+- الرسوم: BudgetVsActualChart أُضيف لأساس 6.10 (amount-charts.tsx) — أعمدة مجمعة موازنة/فعلي من نفس بيانات الخدمة، الناقص يُستبعد (لا صفر)، السالب يُستثنى من رسم يبدأ من الصفر مع إعلان العدد، تلميح بالنص الدقيق formatMinor، legend نصي. أُدمج في VariancePanel (شاشة فقط no-print) + بوابة prefs.chartsVisible على رسوم الأعمار أيضًا.
+- تجاوب/موبايل: dialog-content بحد أقصى 100dvh−2rem وoverflow-y، تذييل مع safe-area-inset-bottom، الجداول تمرر أفقيًا مركزيًا عبر data-slot="table-container" (موجود)، الشبكات تتكدس. القبول المتصفحي أسفل.
+- بوابة 6.11: scripts/phase611-experience.ts — 58 فحصًا حتميًا صافيًا (بلا قاعدة بيانات إطلاقًا): A1–A3 تحقق التفضيلات/الافتراضيات/التطبيق، D1 تخصيص اللوحة وقاعدة التفضيل لا يمنح صلاحية، C1 سلامة بيانات الرسوم (ناقص≠صفر، سالب مستثنى، BigInt>2^53 دقيق)، I1–I3 قواعد الرؤى والمصطلح والتصنيف والترتيب الحتمي، P1 صلاحيات ونطاق شركات fail-closed، S1 لا NaN/Infinity + بلا ادعاءات احتيال/رأي مراجعة/ECL + بادئة «توصية استشارية». النتيجة: 58/58 PASS.
+- الانحدار الكامل على قواعد معزولة طازجة من migrations حصرًا (rm → migrate deploy → gate): 62A=30، 62B=16، 62C=9، 62D=6، 63=13، 64=9، 65=8، 66=8، 67=19، 68=14، 69=23، 69R=20، 6.10=38 ⇒ **175/175** (المحفوظ التاريخي محفوظ حرفيًا) + 6.11=58.
+- lint 0/0؛ typecheck 92 = خط الأساس (صفر أخطاء جديدة في ملفات 6.11؛ الفحص الأول كشف خطأ واحد في البوابة أصلح فورًا).
+- القبول المتصفحي (agent-browser على قاعدة معزولة db/dev-ui-610-accept.db من migrations + seed-610-ui + scripts/seed-611-budget.ts [موازنة معتمدة عبر دوال الخادم + مراجعة ميزان بالمسار الإلزامي]، سر NEXTAUTH ثابت للجلسة — بلا أي تعديل ملفات بيئة): دخول admin ✓ → لوحة المعلومات بعناصرها ✓ → مركز المظهر: financial-blue ⇒ html[data-appearance] ✓، compact ⇒ data-density ✓، تكبير 110 ⇒ جذر 17.6px ✓، جدول 15px ⇒ var ✓، localStorage محفوظ ✓، إعادة تحميل ⇒ السمات أعيد تطبيقها (ثبات) ✓، إخفاء عنصر الشركات ⇒ مختفٍ من DOM ✓، استعادة الافتراضيات ⇒ سمات تُمسح + التخزين null ✓ → أعمار: لقطة معتمدة عبر مسار الخدمة + رسوم الشرائط/المدينين تظهر ✓ ومفتاح الرسوم يخفيها ✓ → موازنة: رسم 4 أعمدة بمصطلحات «أعلى من الموازنة/تجاوز الموازنة» ✓ (INCOMPLETE_DATA للـANNUAL مُعلنة بأمانة لأن الميزان حتى سبتمبر — الناقص لم يُرسم صفرًا) → لوحة الرؤى: 6 رؤى بعدّ الخطورة الأربع ✓ → موبايل 390: scrollWidth=390 بلا فيض، ملاحة سليمة، شبكة عمود واحد، RTL على <html> ✓ → تابلت 768: بلا فيض ✓ → بلا أخطاء console.
+- إصلاحان أثناء القبول المتصفحي: (1) قاعدة خطوط body كانت تشير لمتغيرات next/font على :root بينما معرفة على body ⇒ الرجوع لسلسلة fallback عند body — أعد Tajawal الافتراضي وثبت مسار override، (2) فخ Number.isFinite(BigInt) في varianceBp أعلاه.
+- custom.db لم يُلمس: كل البوابات على قواعد معزولة، القبول المتصفحي على dev-ui-610-accept.db معزولة، الحجم/mtime قبل وبعد = 1,003,520 بايت / 16:20:40 (لم يتغير). الحطام الموروث بقي حرفيًا (dev.pid، custom.db+shm، حذف upload/route.ts، قواعد البوابات غير المتتبعة).
+- القيد البيئي الموثق: الق respondents بين أوامر القفل تقتل خوادم dev المنطلقة من جلسة الأوامر — كل دفعة قبول متصفحي نفذت [تشغيل خادم + تسخين + خطوات] في أمر واحد؛ جلسة agent-browser نفسها بقيت حية عبر الأوامر.
+
+Stage Summary:
+- المرحلة 6.11 مكتملة: بوابة 58/58 + انحدار 175/175 + lint 0/0 + typecheck 92 = الأساس + قبول متصفحي كامل (سطح مكتب/390/768) — المخطط أُحدث (C.13/C.14/C.16/C.17/C.18 = IMPLEMENTED V1 core) وworklog موثق. عناصر مؤجلة صراحة: مركز إشعارات مؤسسي، تكوين قواعد رؤى من الواجهة (configureInsightRules بلا UI في هذه المرحلة)، PDF/Excel للرسوم (6.12)، تخزين تفضيلات على الخادم لكل مستخدم، عمق رسوم تقارير إضافية.

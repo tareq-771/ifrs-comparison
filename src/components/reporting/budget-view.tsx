@@ -26,6 +26,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { decimalStringToMinorString, formatMinor } from "@/lib/money";
+import { useAppearance } from "@/components/appearance/appearance-provider";
+import { BudgetVsActualChart } from "@/components/charts/amount-charts";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import {
   BUDGET_STATUS_LABELS, BUDGET_TYPE_LABELS, BUDGET_SCENARIO_LABELS,
@@ -676,6 +678,7 @@ const GRANULARITY_LABELS: Record<string, string> = {
 function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: number }) {
   const { toast } = useToast();
   const { selectedCompanyId, selectedFiscalYearId, selectedCompany, selectedFiscalYear } = useCompanyPeriod();
+  const { prefs } = useAppearance();
   const [granularity, setGranularity] = React.useState("MONTH");
   const [ordinal, setOrdinal] = React.useState("");
 
@@ -890,6 +893,20 @@ function VariancePanel({ canView, minorUnits }: { canView: boolean; minorUnits: 
                   </Table>
                 </div>
               </PrintableReport>
+            )}
+            {/* 6.11 — رسم موازنة مقابل فعلي (شاشة فقط، بلا طباعة): يُشتق من نفس بيانات
+                الجدول أعلاه — لا حقيقة ثانية؛ الناقص يُستبعد من الرسم ولا يُرسم صفرًا. */}
+            {prefs.chartsVisible && data && data.rows.length > 0 && (
+              <div className="no-print">
+                <BudgetVsActualChart
+                  title="موازنة مقابل فعلي (أول 20 بندًا حسب ترتيب الجدول)"
+                  data={data.rows.slice(0, 20).map((r) => ({
+                    label: r.lineNameAr ?? r.statementLineCode,
+                    budgetMinor: r.budgetMinor,
+                    actualMinor: r.actualMinor,
+                  }))}
+                />
+              </div>
             )}
           </>
         )}

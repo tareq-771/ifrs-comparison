@@ -20,9 +20,12 @@ import { cn } from "@/lib/utils";
 import { useCompanyPeriod } from "@/components/reporting/company-period-context";
 import { TB_STATUS_LABELS, TB_STATUSES } from "@/lib/trial-balance";
 import type { Permissions } from "@/lib/permissions";
-import { canManageTrialBalances } from "@/lib/permissions";
+import { canManageTrialBalances, canViewInsights } from "@/lib/permissions";
+import { useAppearance } from "@/components/appearance/appearance-provider";
+import { normalizeDashboardOrder, type DashboardWidgetId } from "@/lib/appearance";
+import { InsightsPanel } from "@/components/reporting/insights-panel";
 
-export type HomeView = "dashboard" | "trial-balance" | "statements" | "budget" | "aging" | "consolidation" | "compare" | "reports";
+export type HomeView = "dashboard" | "trial-balance" | "statements" | "budget" | "aging" | "consolidation" | "compare" | "reports" | "appearance";
 
 interface TrialBalanceSummary {
   id: string;
@@ -89,6 +92,18 @@ export function DashboardView({ onNavigate, perms, role }: {
   const [groupsLoading, setGroupsLoading] = React.useState(false);
 
   const canTB = canManageTrialBalances(perms, role);
+  const canInsights = canViewInsights(perms, role);
+  // 6.11 — تخصيص لوحة المعلومات: ترتيب حتمي + إظهار/إخفاء — التفضيل لا يمنح صلاحية:
+  // عنصر بلا صلاحية يبقى مخفيًا حتى لو ظُهّر في التفضيل (canInsights يتقاطع هنا).
+  const { prefs } = useAppearance();
+  const widgetOrder = React.useMemo(() => {
+    const order = normalizeDashboardOrder(prefs.dashboard.order);
+    return order.filter((id) => {
+      if (prefs.dashboard.hidden.includes(id)) return false;
+      if (id === "insights" && !canInsights) return false;
+      return true;
+    });
+  }, [prefs.dashboard.order, prefs.dashboard.hidden, canInsights]);
 
   // ميزان المراجعة — آخر الاستيرادات للشركة المختارة
   React.useEffect(() => {
@@ -185,9 +200,9 @@ export function DashboardView({ onNavigate, perms, role }: {
     };
   }, [budgets, selectedFiscalYearId]);
 
-  return (
-    <div className="space-y-6">
-      {/* اختيار الشركة/السنة */}
+  // 6.11 — عناصر اللوحة حسب التفضيل (ترتيب + إظهار) — الترتيب الافتراضي يطابق 6.7 حرفيًا
+  const widgets: Partial<Record<DashboardWidgetId, React.ReactNode>> = {
+    context: (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -252,8 +267,11 @@ export function DashboardView({ onNavigate, perms, role }: {
           </div>
         </CardContent>
       </Card>
-
-      {/* حالة المختارات */}
+    ),
+    insights: (
+      <InsightsPanel perms={perms} role={role} onNavigate={onNavigate} />
+    ),
+    statusCards: (
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -367,8 +385,8 @@ export function DashboardView({ onNavigate, perms, role }: {
           </CardContent>
         </Card>
       </div>
-
-      {/* اختصارات سريعة */}
+    ),
+    shortcuts: (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">اختصارات مباشرة</CardTitle>
@@ -383,8 +401,8 @@ export function DashboardView({ onNavigate, perms, role }: {
           <ShortcutTile icon={<Landmark className="size-5" />} label="الإدارة" disabled={!perms.manageUsers && !perms.manageBackups && !perms.manageCompanies && !perms.manageFiscalYears} href="/admin" />
         </CardContent>
       </Card>
-
-      {/* حالة الشركات المتاحة */}
+    ),
+    companies: (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base"><Building2 className="size-4 text-emerald-600 dark:text-emerald-400" />الشركات المتاحة لك</CardTitle>
@@ -424,6 +442,14 @@ export function DashboardView({ onNavigate, perms, role }: {
           )}
         </CardContent>
       </Card>
+    ),
+  };
+
+  return (
+    <div className="space-y-6">
+      {widgetOrder.map((id) => (
+        <React.Fragment key={id}>{widgets[id]}</React.Fragment>
+      ))}
     </div>
   );
 }

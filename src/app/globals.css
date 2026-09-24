@@ -233,3 +233,123 @@
     background: #ffffff !important;
   }
 }
+
+/* ============================================================
+   Phase 6.11 — مركز المظهر والتخصيص (Appearance & Customization)
+   نقطة واحدة مركزية للثيمات/الخطوط/الأحجام/الكثافة — بلا تشتيت.
+   كل قواعد 6.11 داخل @media screen: الطباعة تبقى بالهوية الافتراضية
+   المهنية دائمًا (تقرير رسمي لا يتأثر بتخصيصات العرض).
+   الآلية: Tailwind v4 يصدر متغيرات اللوحة المستخدمة كـ CSS vars على
+   :root، والقواعد أدناه غير مضلّلة (unlayered) فتتفوق على utilities —
+   لذلك تُستخدم قيم oklch حرفية (الافتراضي يُصدر المستخدم فقط).
+   ============================================================ */
+@media screen {
+  /* الخطوط — تفعّل فقط عند اختيار مختلف عن الافتراضي (provider يضبط المتغيرات).
+     fallback الافتراضي يُحل عند body (حيث يعرف next/font متغيرات الخطوط) —
+     لا :root لأن متغيرات next/font معرفة على body في layout.tsx. */
+  body {
+    font-family: var(--app-font-ar, var(--font-tajawal, system-ui)),
+      var(--app-font-en, var(--font-geist-sans, system-ui)), ui-sans-serif, system-ui, sans-serif;
+    font-size: var(--app-ui-font-size, 1rem);
+  }
+
+  /* حجم خط الجداول والتقارير — فقط عند data-table-font="custom" */
+  html[data-table-font="custom"] table td,
+  html[data-table-font="custom"] table th {
+    font-size: var(--app-table-font-size, 0.875rem);
+  }
+
+  /* الكثافة المضغوطة */
+  html[data-density="compact"] [data-slot="card-content"] {
+    padding: 0.75rem 1rem;
+  }
+  html[data-density="compact"] [data-slot="card-header"] {
+    padding: 0.875rem 1rem 0.375rem;
+  }
+  html[data-density="compact"] [data-slot="table-cell"],
+  html[data-density="compact"] [data-slot="table-head"] {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+
+  /* الحوارات تتسع على الشاشات الصغيرة بلا قص */
+  [data-slot="dialog-content"] {
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+  }
+
+  /* ── الثيم: الأزرق المالي (طلب صريح في نطاق 6.11) ── */
+  html[data-appearance="financial-blue"] {
+    --color-emerald-50: oklch(0.970 0.014 254.604);
+    --color-emerald-100: oklch(0.932 0.032 255.585);
+    --color-emerald-200: oklch(0.882 0.059 254.128);
+    --color-emerald-300: oklch(0.809 0.105 251.813);
+    --color-emerald-400: oklch(0.707 0.165 254.624);
+    --color-emerald-500: oklch(0.623 0.214 259.815);
+    --color-emerald-600: oklch(0.546 0.245 262.881);
+    --color-emerald-700: oklch(0.488 0.243 264.376);
+    --color-emerald-800: oklch(0.424 0.199 265.638);
+    --color-emerald-900: oklch(0.379 0.146 265.522);
+    --color-emerald-950: oklch(0.282 0.091 267.935);
+    --color-teal-50: oklch(0.968 0.007 247.896);
+    --color-teal-100: oklch(0.930 0.026 247.9);
+    --color-teal-300: oklch(0.855 0.062 248.5);
+    --color-teal-400: oklch(0.789 0.101 250.2);
+    --color-teal-500: oklch(0.704 0.14 253.0);
+    --color-teal-600: oklch(0.600 0.177 258.0);
+    --color-teal-700: oklch(0.520 0.185 261.5);
+    --color-teal-800: oklch(0.443 0.170 264.0);
+    --color-teal-900: oklch(0.393 0.140 265.0);
+    --color-teal-950: oklch(0.293 0.091 267.9);
+    --primary: oklch(0.488 0.243 264.376);
+    --ring: oklch(0.623 0.214 259.815);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+  }
+
+  /* ── الثيم: الرمادي الاحترافي ── */
+  html[data-appearance="professional-gray"] {
+    --color-emerald-50: oklch(0.985 0 0);
+    --color-emerald-100: oklch(0.967 0.001 286.375);
+    --color-emerald-200: oklch(0.920 0.004 286.32);
+    --color-emerald-300: oklch(0.871 0.006 286.286);
+    --color-emerald-400: oklch(0.705 0.015 286.067);
+    --color-emerald-500: oklch(0.552 0.016 285.938);
+    --color-emerald-600: oklch(0.442 0.017 285.786);
+    --color-emerald-700: oklch(0.370 0.013 285.805);
+    --color-emerald-800: oklch(0.274 0.006 286.033);
+    --color-emerald-900: oklch(0.210 0.006 285.885);
+    --color-emerald-950: oklch(0.141 0.005 285.823);
+    --color-teal-50: oklch(0.985 0 0);
+    --color-teal-100: oklch(0.967 0.001 286.375);
+    --color-teal-300: oklch(0.871 0.006 286.286);
+    --color-teal-400: oklch(0.705 0.015 286.067);
+    --color-teal-500: oklch(0.552 0.016 285.938);
+    --color-teal-600: oklch(0.442 0.017 285.786);
+    --color-teal-700: oklch(0.370 0.013 285.805);
+    --color-teal-800: oklch(0.274 0.006 286.033);
+    --color-teal-900: oklch(0.210 0.006 285.885);
+    --color-teal-950: oklch(0.141 0.005 285.823);
+    --primary: oklch(0.370 0.013 285.805);
+    --ring: oklch(0.552 0.016 285.938);
+    --sidebar-primary: oklch(0.370 0.013 285.805);
+  }
+
+  /* ── الثيم: عالي التباين (تباين أقوى للنصوص والحدود — هوية زمردية) ── */
+  html[data-appearance="high-contrast"] {
+    --color-slate-300: oklch(0.704 0.040 256.788);
+    --color-slate-400: oklch(0.446 0.043 257.281);
+    --color-slate-500: oklch(0.372 0.044 257.287);
+    --color-slate-600: oklch(0.300 0.045 260.0);
+    --border: oklch(0.554 0.046 257.417);
+    --input: oklch(0.554 0.046 257.417);
+    --ring: oklch(0.205 0 0);
+    --primary: oklch(0.205 0 0);
+  }
+}
+
+/* الطباعة: إعادة ضبط التكبير دائمًا — مخرجات الطباعة مستقلة عن تخصيص العرض */
+@media print {
+  html {
+    font-size: 16px !important;
+  }
+}

@@ -10,7 +10,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import {
-  BarChart3, FileBarChart, FileSpreadsheet, Layers, LayoutDashboard, LogOut, Scale, Settings2,
+  BarChart3, FileBarChart, FileSpreadsheet, Layers, LayoutDashboard, LogOut, Palette, Scale, Settings2,
   Target, UserCog, User as UserIcon, ArrowLeftRight, Map, Wallet,
 } from "lucide-react";
 
@@ -27,6 +27,7 @@ import { ReportsCenter } from "@/components/reporting/reports-center";
 import { TrialBalanceTab } from "@/components/admin/trial-balance-tab";
 import { CompareWorkspace } from "@/components/compare/compare-workspace";
 import { AgingView } from "@/components/reporting/aging-view";
+import { AppearanceView } from "@/components/appearance/appearance-view";
 import {
   parsePermissions, DEFAULT_USER_PERMISSIONS, type Permissions,
 } from "@/lib/permissions";
@@ -44,6 +45,7 @@ const NAV_ITEMS: Array<{
   { key: "reports", label: "مركز التقارير", icon: <FileSpreadsheet className="size-4" />, hint: "الشركة ← السنة ← الفترة ← نوع التقرير + طباعة A4" },
   { key: "consolidation", label: "التقارير الموحدة", icon: <Layers className="size-4" />, hint: "المجموعات والتوحيد الأولي" },
   { key: "compare", label: "أدوات المقارنة", icon: <ArrowLeftRight className="size-4" />, hint: "أداة مقارنة Excel (الوظيفة السابقة)" },
+  { key: "appearance", label: "المظهر والتخصيص", icon: <Palette className="size-4" />, hint: "الثيمات والخطوط والأحجام والكثافة وتخصيص اللوحة (6.11)" },
 ];
 
 function readViewFromUrl(): HomeView {
@@ -217,17 +219,20 @@ export default function Home() {
           {view === "reports" && (
             <ReportsCenter onNavigate={navigate} />
           )}
+          {view === "appearance" && (
+            <AppearanceView />
+          )}
         </main>
 
-        {/* تذييل ثابت أسفل الشاشة */}
-        <footer className="mt-auto border-t border-slate-200 bg-white/80 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
+        {/* تذييل ثابت أسفل الشاشة — مع مراعاة مناطق الأمان على الجوال */}
+        <footer className="mt-auto border-t border-slate-200 bg-white/80 pb-[env(safe-area-inset-bottom)] backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/80">
           <div className="mx-auto flex w-full max-w-7xl flex-col items-center justify-between gap-1 px-4 py-3 text-center sm:flex-row sm:px-6 sm:text-right">
             <p className="text-xs text-slate-500 dark:text-slate-400">
               نظام التقارير المالية الموحدة — قوائم وموازنات وتقارير موحدة وفق IFRS
             </p>
             <p className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500">
               <Map className="size-3" />
-              <span>المرحلة 6.8 — تقارير قابلة للطباعة والتصدير</span>
+              <span>المرحلة 6.11 — المظهر والتجربة والتنبيهات الذكية</span>
             </p>
           </div>
         </footer>

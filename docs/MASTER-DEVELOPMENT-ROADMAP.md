@@ -372,7 +372,7 @@ Dependencies: insights engine (6.10), comparison engine (exists). Risk: MEDIUM (
 
 ## C.13 — Charts & visualization (Direction §13)
 
-**Status: PARTIALLY_IMPLEMENTED — PROMOTED TO V1: foundation in Phase 6.10, integration into key financial reports in Phase 6.11 (owner urgent list #2).**
+**Status: IMPLEMENTED (V1 core) — foundation in Phase 6.10, integration in Phase 6.11: aging charts (6.10), budget-vs-actual grouped chart with show/hide preference (6.11); remaining report surfaces extend incrementally. (owner urgent list #2)**
 
 Plan (unchanged in content, re-sequenced):
 
@@ -384,7 +384,7 @@ Dependencies: comparison/statement services (exist), display-labels (exist), agi
 
 ## C.14 — Smart alerts / insights (Direction §14)
 
-**Status: PARTIALLY_IMPLEMENTED — PROMOTED TO V1: foundation in Phase 6.10 (explainable aging alerts), integration into key reports in Phase 6.11 (owner urgent list #3).**
+**Status: IMPLEMENTED (V1 core) — foundation in Phase 6.10 (explainable aging alerts), Phase 6.11 integration: /api/insights aggregation + dashboard «التنبيهات والتحليلات الذكية» panel with severity counts/filters + deterministic budget/TB/reconciliation rules with FACT·ANALYSIS·RECOMMENDATION classification. (owner urgent list #3)**
 
 Plan (unchanged in content, re-sequenced):
 
@@ -411,7 +411,7 @@ Risk: MEDIUM for 7.10 (touches every UI string); LOW-MEDIUM for 6.12 delivery sc
 
 ## C.16 — Mobile / responsive experience (Direction §16)
 
-**Status: PARTIALLY_IMPLEMENTED — PROMOTED TO V1: improvements in Phase 6.11, acceptance in Phase 6.13 (owner urgent list #6).**
+**Status: IMPLEMENTED (V1 core) — Phase 6.11: Appearance & Customization center (six themes, Arabic/English font preference, UI/table font sizes, density, safe zoom bounds, restore defaults, browser-local persistence); responsive pass (dialog fit, safe-area footer, verified 390/768/desktop); acceptance testing continues in Phase 6.13. (owner urgent list #6)**
 
 Plan responsive desktop/tablet/mobile — **mobile must not simply be a scaled desktop page**. Priorities: navigation · report controls · tables (→ cards/stacked) · cards · charts · alerts · drill-down · authentication/session UX.
 
@@ -421,7 +421,7 @@ Risk: LOW-MEDIUM (pure UX; no schema).
 
 ## C.17 — Appearance / fonts / themes (Direction §17)
 
-**Status: PARTIALLY_IMPLEMENTED — PROMOTED TO V1, Phase 6.11 (owner urgent list #4).**
+**Status: IMPLEMENTED (V1 core) — Phase 6.11: appearance center shipped (themes/fonts/sizes/density/zoom) with browser-local display-only persistence (not authorization data). (owner urgent list #4)**
 
 Plan a **central Appearance Center** (unchanged): Arabic font · English font · UI font size · table font size · report-detail font size · zoom · density · professional themes (**financial blue · corporate green · professional gray · high contrast · dark**) · restore defaults. Preferences are user-specific (saved user preferences — owner urgent list #5). **Print/report appearance must remain independently controlled from screen theme** (6.8 print CSS is the boundary).
 
@@ -429,7 +429,7 @@ Risk: LOW (pure presentation).
 
 ## C.18 — Dashboard & productivity (Direction §18)
 
-**Status: PARTIALLY_IMPLEMENTED — PROMOTED TO V1 (dashboard customization + saved user preferences, Phase 6.11); global search/favorites/recent reports may follow post-V1.**
+**Status: IMPLEMENTED (V1 core) — Phase 6.11: dashboard widget show/hide + deterministic reorder + insights widget; preferences inherit (never bypass) permissions; global search/favorites/recent reports may follow post-V1.**
 
 V1 scope (owner urgent list #5): customizable dashboards (widget layout) · saved user preferences (appearance + layout + report options persisted per user).
 

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Tajawal } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
+import { AppearanceProvider } from "@/components/appearance/appearance-provider";
 import { SessionProvider } from "@/components/session-provider";
 import { MaintenanceBanner } from "@/components/maintenance-banner";
 
@@ -55,11 +56,13 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <SessionProvider>
-            <MaintenanceBanner />
-            {children}
-            <Toaster />
-          </SessionProvider>
+          <AppearanceProvider>
+            <SessionProvider>
+              <MaintenanceBanner />
+              {children}
+              <Toaster />
+            </SessionProvider>
+          </AppearanceProvider>
         </ThemeProvider>
       </body>
     </html>
