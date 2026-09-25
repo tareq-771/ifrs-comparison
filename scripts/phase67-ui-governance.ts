@@ -163,9 +163,12 @@ async function main() {
     expect(r2.matchedPrefix === "1101", `الأطول يفوز: 110101 ⇒ 1101 (الناتج ${r2.matchedPrefix})`);
     const r3 = resolveAccountMapping({
       accountCode: "110101", companyId: "c1", rules: withCompany,
-      overrides: [{ id: "o1", companyId: "c1", accountCode: "110101", classification: "REVENUE", aggregationBehavior: "FLOW", statementLineCode: null, isActive: true }],
+      // تصحيح 6.11R: الاستثناء يجب أن يتوافق مع جذره — 110101 جذرها 1 (ASSET حصرًا).
+      // REVENUE هنا صارت OVERRIDE_ROOT_CONFLICT (تُهمل عند الحل)؛ فنُبقي التصنيف ASSET
+      // ونُثبت أولوية التجاوز عبر سلوك تجميع مختلف (FLOW مقابل BALANCE للبادئات).
+      overrides: [{ id: "o1", companyId: "c1", accountCode: "110101", classification: "ASSET", aggregationBehavior: "FLOW", statementLineCode: null, isActive: true }],
     });
-    expect(r3.source === "ACCOUNT_OVERRIDE" && r3.classification === "REVENUE", `التجاوز يفوز على كل البادئات (ناتج ${r3.source}/${r3.classification})`);
+    expect(r3.source === "ACCOUNT_OVERRIDE" && r3.classification === "ASSET" && r3.aggregationBehavior === "FLOW", `التجاوز المتوافق مع الجذر يفوز على كل البادئات (ناتج ${r3.source}/${r3.classification}/${r3.aggregationBehavior})`);
   });
 
   await check("T7 CUMULATIVE_YTD بلا جمع مزدوج", () => {

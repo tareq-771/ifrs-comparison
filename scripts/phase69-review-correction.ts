@@ -309,7 +309,7 @@ async function main() {
     const res = await getStatements(admin, { companyId: c2.id, fiscalYearId: fy2c.id, ordinal: 3, basis: "YTD" });
     const f = res.financialPosition;
     expect(f.equation.balanced === false, "غير متوازن معلن");
-    expect(f.equation.differenceMinor === "15000000", `الفرق معروض بحسابه الصريح (أصول 70M − L+E 55M بالحل الجذري): ${f.equation.differenceMinor}`);
+    expect(f.equation.differenceMinor === "50000000", `الفرق معروض بحسابه الصريح (أصول 70M − L+E 20M بالحل الجذري): ${f.equation.differenceMinor}`);
     expect(f.equation.liabilitiesPlusEquityMinor !== f.equation.assetsMinor, "لا تطابق مُجبرة");
     // الجذر المركب 2 (الدائنون ورأس المال) معلن كغير مصنف — لا تخمين LIABILITY/EQUITY
     const unclassifiedCodes = f.unclassified.rows.map((r) => r.accountCode);

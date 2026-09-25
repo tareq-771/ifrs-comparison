@@ -116,7 +116,7 @@ async function main() {
       const res = (await resolveCodesForCompany(co, ["3101", "310199"])).results;
       for (const r of res) {
         expect(r.classification === "EXPENSE" && r.aggregationBehavior === "FLOW" && r.source === "SYSTEM_ROOT", `${r.accountCode} ⇒ EXPENSE وجاء ${JSON.stringify(r)}`);
-        expect(r.classification !== "EQUITY", `${r.accountCode}: ليس EQUITY`);
+        expect(String(r.classification) !== "EQUITY", `${r.accountCode}: ليس EQUITY`);
       }
     });
 
@@ -191,19 +191,19 @@ async function main() {
     });
 
     await check("A14 دفاع عميق: قاعدة 31⇒EQUITY فاسدة (SQL مباشر) تُهمل في الحل — 310101 يبقى EXPENSE من الجذر", async () => {
-      await db.$executeRawUnsafe(`INSERT INTO "AccountNatureRule" ("id","companyId","prefix","classification","aggregationBehavior","source","isActive","version") VALUES ('anr-acr-poison', '${co}', '31', 'EQUITY', 'BALANCE', 'MANUAL', 1, 1)`);
+      await db.$executeRawUnsafe(`INSERT INTO "AccountNatureRule" ("id","companyId","prefix","classification","aggregationBehavior","source","isActive","version","createdAt","updatedAt") VALUES ('anr-acr-poison', '${co}', '31', 'EQUITY', 'BALANCE', 'MANUAL', 1, 1, 1767225600000, 1767225600000)`);
       try {
         const { resolveCodesForCompany } = await import("../src/lib/account-nature-server");
         const r = (await resolveCodesForCompany(co, ["310101"])).results[0]!;
         expect(r.classification === "EXPENSE" && r.source === "SYSTEM_ROOT" && r.companyPrefix === null, `القاعدة الفاسدة أُهملت وجاء ${JSON.stringify(r)}`);
-        expect(r.classification !== "EQUITY", "310101 ليس EQUITY حتى مع قاعدة فاسدة");
+        expect(String(r.classification) !== "EQUITY", "310101 ليس EQUITY حتى مع قاعدة فاسدة");
       } finally {
         await db.accountNatureRule.deleteMany({ where: { id: "anr-acr-poison" } });
       }
     });
 
     await check("A15 دفاع عميق: استثناء 230101⇒EXPENSE فاسد (SQL مباشر) يُهمل — البادئة 23 (EQUITY) تقود", async () => {
-      await db.$executeRawUnsafe(`INSERT INTO "AccountMappingOverride" ("id","companyId","accountCode","classification","aggregationBehavior","isActive","version") VALUES ('ov-acr-poison', '${co}', '230101', 'EXPENSE', 'FLOW', 1, 1)`);
+      await db.$executeRawUnsafe(`INSERT INTO "AccountMappingOverride" ("id","companyId","accountCode","classification","aggregationBehavior","isActive","version","createdAt","updatedAt") VALUES ('ov-acr-poison', '${co}', '230101', 'EXPENSE', 'FLOW', 1, 1, 1767225600000, 1767225600000)`);
       try {
         const { resolveCodesForCompany } = await import("../src/lib/account-nature-server");
         const r = (await resolveCodesForCompany(co, ["230101"])).results[0]!;
@@ -236,7 +236,7 @@ async function main() {
       expect(summary.total === 6 && summary.byStatus.ROOT_ONLY === 3 && summary.byStatus.FULLY_MAPPED === 2 && summary.byStatus.NEEDS_CLASSIFICATION === 1, `خلاصة 6/3/2/1 وجاءت ${JSON.stringify(summary)}`);
       expect(summary.fullyMapped === 2 && summary.needsAttention === 3 && summary.unclassified === 1, "خلاصة الاكتمال متسقة");
       // شركة المصدر: قاعدة 31⇒EQUITY فاسدة (SQL مباشر) ⇒ النسخ مرفوض كله أو لا شيء
-      await db.$executeRawUnsafe(`INSERT INTO "AccountNatureRule" ("id","companyId","prefix","classification","aggregationBehavior","source","isActive","version") VALUES ('anr-acr-src-poison', '${coSrc}', '31', 'EQUITY', 'BALANCE', 'MANUAL', 1, 1)`);
+      await db.$executeRawUnsafe(`INSERT INTO "AccountNatureRule" ("id","companyId","prefix","classification","aggregationBehavior","source","isActive","version","createdAt","updatedAt") VALUES ('anr-acr-src-poison', '${coSrc}', '31', 'EQUITY', 'BALANCE', 'MANUAL', 1, 1, 1767225600000, 1767225600000)`);
       try {
         const { copyCompanyMapping } = await import("../src/lib/account-nature-server");
         await expectErrorAsync("PREFIX_ROOT_CONFLICT", () =>

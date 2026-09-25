@@ -624,6 +624,7 @@ export function resolveAccountMapping(input: ResolveAccountMappingInput): Resolv
     isClassificationAllowedForRoot(accountRootDigit(override.accountCode), override.classification);
   const companyOk =
     companyRule !== null &&
+    companyRule.classification != null &&
     isClassificationAllowedForRoot(accountRootDigit(companyRule.prefix), companyRule.classification);
   const effOverride = overrideOk ? override : null;
   const effCompany = companyOk ? companyRule : null;
