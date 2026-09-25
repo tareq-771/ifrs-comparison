@@ -88,16 +88,16 @@ async function main() {
         await db.fiscalPeriod.create({ data: { fiscalYearId: fyBrow.id, ordinal: i + 1, code: `${yy}-${mm}`, startDate: `${yy}-${mm}-01`, endDate: `${yy}-${mm}-${last}`, displayLabel: `فترة ${i + 1}` } });
       }
       fyB = fyBrow.id;
-      for (const [p, cat, beh] of [["1101","ASSET","BALANCE"],["1102","ASSET","BALANCE"],["1201","ASSET","BALANCE"],["1109","ASSET","BALANCE"],["1591","ASSET","BALANCE"],["2101","LIABILITY","BALANCE"],["3101","EQUITY","BALANCE"],["3901","EQUITY","BALANCE"],["3999","EQUITY","BALANCE"],["4101","REVENUE","FLOW"],["5201","EXPENSE","FLOW"]] as const) {
+      for (const [p, cat, beh] of [["1101","ASSET","BALANCE"],["1102","ASSET","BALANCE"],["1201","ASSET","BALANCE"],["1109","ASSET","BALANCE"],["1591","ASSET","BALANCE"],["2101","LIABILITY","BALANCE"],["2301","EQUITY","BALANCE"],["2302","EQUITY","BALANCE"],["2399","EQUITY","BALANCE"],["4101","REVENUE","FLOW"],["5201","EXPENSE","FLOW"]] as const) {
         await db.accountNatureRule.create({ data: { companyId: coA, prefix: p, classification: cat, aggregationBehavior: beh, source: "MANUAL" } });
       }
-      for (const [p, cat, beh] of [["1101","ASSET","BALANCE"],["1102","ASSET","BALANCE"],["3101","EQUITY","BALANCE"],["3999","EQUITY","BALANCE"],["4101","REVENUE","FLOW"],["5201","EXPENSE","FLOW"]] as const) {
+      for (const [p, cat, beh] of [["1101","ASSET","BALANCE"],["1102","ASSET","BALANCE"],["2301","EQUITY","BALANCE"],["2399","EQUITY","BALANCE"],["4101","REVENUE","FLOW"],["5201","EXPENSE","FLOW"]] as const) {
         await db.accountNatureRule.create({ data: { companyId: coB, prefix: p, classification: cat, aggregationBehavior: beh, source: "MANUAL" } });
       }
-      // ربط مفاهيم حقوق الملكية: أ تربط 3101+3901؛ ب تربط 3101 فقط (3999 تبقى غير مربوطة عمدًا — E2)
-      await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "3101", componentCode: "SHARE_CAPITAL" } });
-      await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "3901", componentCode: "OTHER_EQUITY_MOVEMENTS" } });
-      await db.equityComponentMapping.create({ data: { companyId: coB, prefix: "3101", componentCode: "SHARE_CAPITAL" } });
+      // ربط مفاهيم حقوق الملكية: أ تربط 2301+2302؛ ب تربط 2301 فقط (2399 تبقى غير مربوطة عمدًا — E2)
+      await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "2301", componentCode: "SHARE_CAPITAL" } });
+      await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "2302", componentCode: "OTHER_EQUITY_MOVEMENTS" } });
+      await db.equityComponentMapping.create({ data: { companyId: coB, prefix: "2301", componentCode: "SHARE_CAPITAL" } });
       // خريطة التدفقات لشركة أ + تجاوز 1109 فوق بادئة 11
       const cfLine = async (code: string) => (await db.cashFlowStatementLine.findUniqueOrThrow({ where: { code } })).id;
       await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "1101", activity: "CASH_AND_CASH_EQUIVALENTS" } });
@@ -106,13 +106,13 @@ async function main() {
       await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "1591", activity: "NON_CASH" } });
       await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "2101", activity: "OPERATING", lineId: await cfLine("CF-OP-WC-PAYABLES") } });
       await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "5201", activity: "OPERATING", lineId: await cfLine("CF-OP-ADJ-DEPRECIATION") } });
-      await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "3101", activity: "FINANCING", lineId: await cfLine("CF-FIN-EQUITY-ISSUE") } });
+      await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "2301", activity: "FINANCING", lineId: await cfLine("CF-FIN-EQUITY-ISSUE") } });
       await db.cashFlowMapping.create({ data: { companyId: coA, prefix: "11", activity: "OPERATING", lineId: await cfLine("CF-OP-WC-OTHER") } });
       await db.cashFlowAccountOverride.create({ data: { companyId: coA, accountCode: "1109", activity: "INVESTING", lineId: await cfLine("CF-INV-OTHER") } });
       void coB;
-      // خريطة ب: النقد والرأسمال فقط — 1102 و 3999 غير مربوطين عمدًا (C5/E2)
+      // خريطة ب: النقد والرأسمال فقط — 1102 و 2399 غير مربوطين عمدًا (C5/E2)
       await db.cashFlowMapping.create({ data: { companyId: coB, prefix: "1101", activity: "CASH_AND_CASH_EQUIVALENTS" } });
-      await db.cashFlowMapping.create({ data: { companyId: coB, prefix: "3101", activity: "FINANCING", lineId: await cfLine("CF-FIN-EQUITY-ISSUE") } });
+      await db.cashFlowMapping.create({ data: { companyId: coB, prefix: "2301", activity: "FINANCING", lineId: await cfLine("CF-FIN-EQUITY-ISSUE") } });
       expect(!!fyA && !!fyB, "سنتان جاهزتان");
     });
 
@@ -124,9 +124,9 @@ async function main() {
     await check("G1 بذر أ (يناير/فبراير/مارس تراكمي متوازن — لا صفوف صفرية) + اعتماد", async () => {
       const { createTrialBalance, commitTrialBalance } = await import("../src/lib/trial-balance-server");
       const months = [
-        { from: "2026-01-01", to: "2026-01-31", rows: [line("1101", 100, 0), line("1102", 40, 0), line("1201", 20, 0), line("1109", 5, 0), line("1591", 0, 10), line("2101", 0, 30), line("3101", 0, 30), line("3901", 0, 5), line("4101", 0, 100), line("5201", 10, 0)] },
-        { from: "2026-02-01", to: "2026-02-28", rows: [line("1101", 185, 0), line("1102", 50, 0), line("1201", 25, 0), line("1109", 10, 0), line("1591", 0, 30), line("2101", 0, 60), line("3101", 0, 30), line("3901", 0, 5), line("4101", 0, 180), line("5201", 35, 0)] },
-        { from: "2026-03-01", to: "2026-03-31", rows: [line("1101", 330, 0), line("1102", 60, 0), line("1201", 25, 0), line("1109", 15, 0), line("1591", 0, 50), line("2101", 0, 95), line("3101", 0, 30), line("3901", 0, 5), line("4101", 0, 300), line("5201", 50, 0)] },
+        { from: "2026-01-01", to: "2026-01-31", rows: [line("1101", 100, 0), line("1102", 40, 0), line("1201", 20, 0), line("1109", 5, 0), line("1591", 0, 10), line("2101", 0, 30), line("2301", 0, 30), line("2302", 0, 5), line("4101", 0, 100), line("5201", 10, 0)] },
+        { from: "2026-02-01", to: "2026-02-28", rows: [line("1101", 185, 0), line("1102", 50, 0), line("1201", 25, 0), line("1109", 10, 0), line("1591", 0, 30), line("2101", 0, 60), line("2301", 0, 30), line("2302", 0, 5), line("4101", 0, 180), line("5201", 35, 0)] },
+        { from: "2026-03-01", to: "2026-03-31", rows: [line("1101", 330, 0), line("1102", 60, 0), line("1201", 25, 0), line("1109", 15, 0), line("1591", 0, 50), line("2101", 0, 95), line("2301", 0, 30), line("2302", 0, 5), line("4101", 0, 300), line("5201", 50, 0)] },
       ];
       for (const m of months) {
         const debit = m.rows.reduce((s, l) => s + l.debit, 0);
@@ -203,8 +203,8 @@ async function main() {
 
     await check("E2+E3+C5+C7 شركة ب (يوليو): فجوة معلنة + سنة غير تقويمية + عزل", async () => {
       const { createTrialBalance, commitTrialBalance } = await import("../src/lib/trial-balance-server");
-      const jul = [line("1101", 50, 0), line("1102", 5, 0), line("3101", 0, 50), line("3999", 0, 5), line("4101", 0, 60), line("5201", 60, 0)];
-      const aug = [line("1101", 80, 0), line("1102", 20, 0), line("3101", 0, 50), line("3999", 0, 15), line("4101", 0, 115), line("5201", 80, 0)];
+      const jul = [line("1101", 50, 0), line("1102", 5, 0), line("2301", 0, 50), line("2399", 0, 5), line("4101", 0, 60), line("5201", 60, 0)];
+      const aug = [line("1101", 80, 0), line("1102", 20, 0), line("2301", 0, 50), line("2399", 0, 15), line("4101", 0, 115), line("5201", 80, 0)];
       for (const [i, s] of [jul, aug].entries()) {
         const debit = s.reduce((x, l) => x + l.debit, 0);
         const credit = s.reduce((x, l) => x + l.credit, 0);
@@ -217,8 +217,8 @@ async function main() {
       // E3: سنة غير تقويمية تعمل
       const eqB = await getEquityStatement(admin, { companyId: coB, fiscalYearId: fyB, startOrdinal: 2, endOrdinal: 2 });
       expect(eqB.fiscalYear.code === "FY27/28" && eqB.range.startOrdinal === 2 && eqB.range.endOrdinal === 2, "مدى أغسطس في سنة يوليو");
-      // E2: 3999 حقوق ملكية غير مربوطة بحركة 10 ⇒ INCOMPLETE_DATA مع قائمة صريحة (معروضة موجبة — 6.9R)
-      expect(eqB.status === "INCOMPLETE_DATA" && eqB.unmappedAccounts.some((u) => u.accountCode === "3999" && u.movementMinor === "1000"), `3999 فجوة معلنة معروضة موجبة (unmapped: ${JSON.stringify(eqB.unmappedAccounts)})`);
+      // E2: 2399 حقوق ملكية غير مربوطة بحركة 10 ⇒ INCOMPLETE_DATA مع قائمة صريحة (معروضة موجبة — 6.9R)
+      expect(eqB.status === "INCOMPLETE_DATA" && eqB.unmappedAccounts.some((u) => u.accountCode === "2399" && u.movementMinor === "1000"), `3999 فجوة معلنة معروضة موجبة (unmapped: ${JSON.stringify(eqB.unmappedAccounts)})`);
       expect(eqB.rows.find((r) => r.componentCode === "SHARE_CAPITAL")!.movementMinor === "0", "المربوط (رأسمال) بلا حركة");
       // C5: مدينون غير مربوط بحركة 15 ⇒ قائمة صريحة منسّقة بعملة (لا أرقام خام — 6.9R) + الفرق يعرض ولا يُخفى
       const cfB = await getCashFlowStatement(admin, { companyId: coB, fiscalYearId: fyB, startOrdinal: 2, endOrdinal: 2 });
@@ -237,7 +237,7 @@ async function main() {
       const { createTrialBalanceRevision, createTrialBalance, commitTrialBalance } = await import("../src/lib/trial-balance-server");
       const draft = (await createTrialBalanceRevision({ user: admin, ip: null, id: marchImportId, input: { reason: "تصحيح إيراد ونقد مارس (بوابة 6.4)" } })) as { id: string; revisionNumber: number };
       expect(draft.revisionNumber === 2, "مراجعة #2 لمارس");
-      const rev2 = [line("1101", 430, 0), line("1102", 60, 0), line("1201", 25, 0), line("1109", 15, 0), line("1591", 0, 50), line("2101", 0, 95), line("3101", 0, 30), line("3901", 0, 5), line("4101", 0, 400), line("5201", 50, 0)];
+      const rev2 = [line("1101", 430, 0), line("1102", 60, 0), line("1201", 25, 0), line("1109", 15, 0), line("1591", 0, 50), line("2101", 0, 95), line("2301", 0, 30), line("2302", 0, 5), line("4101", 0, 400), line("5201", 50, 0)];
       const debit = rev2.reduce((s, l) => s + l.debit, 0);
       const credit = rev2.reduce((s, l) => s + l.credit, 0);
       expect(debit === credit, `توازن rev2: ${debit}=${credit}`);

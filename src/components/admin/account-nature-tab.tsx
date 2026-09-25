@@ -40,8 +40,10 @@ import {
   MAPPING_SOURCE_LABELS,
   MAPPING_STATUS_LABELS,
   MAIN_CATEGORY_LABELS,
+  ROOT2_CLASSIFICATION_HINT,
   SUGGESTED_BEHAVIOR_BY_CLASSIFICATION,
   STATEMENT_TYPE_LABELS,
+  accountRootDigit,
   isStatementLineConsistent,
   type AccountClassification,
   type AggregationBehavior,
@@ -844,6 +846,11 @@ function PrefixFormFields({
               ))}
             </SelectContent>
           </Select>
+          {accountRootDigit(form.prefix) === "2" ? (
+            <p className="text-xs text-muted-foreground" dir="rtl">
+              {ROOT2_CLASSIFICATION_HINT.ar} — {ROOT2_CLASSIFICATION_HINT.en}
+            </p>
+          ) : null}
         </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">

@@ -17,6 +17,8 @@ import { writeAudit } from "@/lib/audit";
 import { companyVisible } from "@/lib/company-access";
 import {
   AccountNatureError,
+  assertOverrideRootAlignment,
+  assertPrefixRootAlignment,
   isStatementLineConsistent,
   normalizeNaturePrefix,
   resolveAccountMapping,
@@ -758,6 +760,15 @@ export async function copyCompanyMapping(
   });
   if (sourceRules.length === 0 && sourceOverrides.length === 0) {
     throw new AccountNatureError("COPY_NOT_ALLOWED", "شركة المصدر بلا بادئات تفصيلية ولا استثناءات — لا شيء يُنسخ.");
+  }
+
+  // حاجز تناقض الجذر على النسخ — لا تُنسخ قواعد/استثناءات تخالف جذورها النظامية
+  // (31xx⇒EQUITY مرفوض حتى لو وُجدت قديمة في شركة المصدر).
+  for (const r of sourceRules) {
+    assertPrefixRootAlignment(r.prefix, r.classification as AccountClassification);
+  }
+  for (const o of sourceOverrides) {
+    assertOverrideRootAlignment(o.accountCode, o.classification as AccountClassification);
   }
 
   const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 300) : "";

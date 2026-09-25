@@ -194,7 +194,7 @@ async function main() {
     for (const [prefix, classification, behavior, lineCode] of [
       ["1101", "ASSET", "BALANCE", "SFP-CASH"],
       ["2101", "LIABILITY", "BALANCE", "SFP-LIA-CL"],
-      ["3101", "EQUITY", "BALANCE", "SFP-EQUITY"],
+      ["2301", "EQUITY", "BALANCE", "SFP-EQUITY"],
       ["4101", "REVENUE", "FLOW", "PNL-REVENUE"],
       ["5201", "EXPENSE", "FLOW", "PNL-ADMIN-EXPENSES"],
     ] as const) {
@@ -222,7 +222,7 @@ async function main() {
         lines: [
           line("110101", 700000, 0, "نقدية"),
           line("210101", 0, 150000, "دائنون"),
-          line("310101", 0, 350000, "رأس المال"),
+          line("230101", 0, 350000, "رأس المال"),
           line("410101", 0, 300000, "مبيعات"),
           line("520101", 100000, 0, "رواتب"),
         ],
@@ -230,7 +230,7 @@ async function main() {
     });
     const committed = await commitTrialBalance({ user: admin, ip: "gate", id: created.import.id, input: { version: created.import.version, reason: "بوابة" } });
     expect(committed.status === "COMMITTED", "اعتماد الميزان");
-    await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "31", componentCode: "SHARE_CAPITAL" } });
+    await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "23", componentCode: "SHARE_CAPITAL" } });
     await createConsolidationGroup({
       user: admin, ip: "gate",
       input: {

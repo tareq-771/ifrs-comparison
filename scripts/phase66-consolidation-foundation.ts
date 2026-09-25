@@ -76,11 +76,11 @@ async function main() {
       const b = await db.company.create({ data: { code: "GR-B", nameAr: "الفرعية ب" } });
       coA = a.id; coB = b.id;
       // شركة أ: أكواد قصيرة | شركة ب: أكواد طويلة مختلفة كليًا
-      for (const [p, cat, beh, lineCode] of [["4101","REVENUE","FLOW","PNL-REVENUE"],["5201","EXPENSE","FLOW","PNL-ADMIN-EXPENSES"],["1101","ASSET","BALANCE","SFP-CASH"],["1102","ASSET","BALANCE","SFP-RECEIVABLES"],["2101","LIABILITY","BALANCE","SFP-LIA-CL"],["3101","EQUITY","BALANCE","SFP-EQUITY"]] as const) {
+      for (const [p, cat, beh, lineCode] of [["4101","REVENUE","FLOW","PNL-REVENUE"],["5201","EXPENSE","FLOW","PNL-ADMIN-EXPENSES"],["1101","ASSET","BALANCE","SFP-CASH"],["1102","ASSET","BALANCE","SFP-RECEIVABLES"],["2101","LIABILITY","BALANCE","SFP-LIA-CL"],["2301","EQUITY","BALANCE","SFP-EQUITY"]] as const) {
         const rule = await db.accountNatureRule.create({ data: { companyId: coA, prefix: p, classification: cat, aggregationBehavior: beh, source: "MANUAL", statementLineId: (await db.financialStatementLine.findUniqueOrThrow({ where: { code: lineCode } })).id } });
         void rule;
       }
-      for (const [p, cat, beh, lineCode] of [["70101","REVENUE","FLOW","PNL-REVENUE"],["70501","EXPENSE","FLOW","PNL-ADMIN-EXPENSES"],["10101","ASSET","BALANCE","SFP-CASH"],["10501","ASSET","BALANCE","SFP-RECEIVABLES"],["20101","LIABILITY","BALANCE","SFP-LIA-CL"],["30101","EQUITY","BALANCE","SFP-EQUITY"]] as const) {
+      for (const [p, cat, beh, lineCode] of [["70101","REVENUE","FLOW","PNL-REVENUE"],["70501","EXPENSE","FLOW","PNL-ADMIN-EXPENSES"],["10101","ASSET","BALANCE","SFP-CASH"],["10501","ASSET","BALANCE","SFP-RECEIVABLES"],["20101","LIABILITY","BALANCE","SFP-LIA-CL"],["23101","EQUITY","BALANCE","SFP-EQUITY"]] as const) {
         await db.accountNatureRule.create({ data: { companyId: coB, prefix: p, classification: cat, aggregationBehavior: beh, source: "MANUAL", statementLineId: (await db.financialStatementLine.findUniqueOrThrow({ where: { code: lineCode } })).id } });
       }
       // سنوات وفترات (تقويمية للاثنين — المحاذاة بالتواريخ)

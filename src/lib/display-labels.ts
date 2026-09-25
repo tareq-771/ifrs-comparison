@@ -94,6 +94,16 @@ export function classificationLabel(classification: string | null | undefined, l
   return bilingual(l.ar, l.en, lang);
 }
 
+/** العبارة المعتمدة للجذر المركّب 2 — كيف يُحدد LIABILITY/EQUITY (مرآة ROOT2_CLASSIFICATION_HINT). */
+export const ROOT2_PREFIX_HINT: BilingualLabel = {
+  ar: "يُحدد حسب البادئة التفصيلية",
+  en: "Determined by detailed prefix",
+};
+
+export function root2PrefixHint(lang: ReportLanguage): string {
+  return bilingual(ROOT2_PREFIX_HINT.ar, ROOT2_PREFIX_HINT.en, lang);
+}
+
 export const MAPPING_STATUS_LABELS: Record<string, BilingualLabel> = {
   FULLY_MAPPED: { ar: "مصنّف بالكامل", en: "Fully mapped" },
   ROOT_ONLY: { ar: "تصنيف جذري بلا بند قائمة", en: "Root classification without statement line" },

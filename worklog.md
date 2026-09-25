@@ -1029,3 +1029,23 @@ Work Log:
 
 Stage Summary:
 - المرحلة 6.11 مكتملة: بوابة 58/58 + انحدار 175/175 + lint 0/0 + typecheck 92 = الأساس + قبول متصفحي كامل (سطح مكتب/390/768) — المخطط أُحدث (C.13/C.14/C.16/C.17/C.18 = IMPLEMENTED V1 core) وworklog موثق. عناصر مؤجلة صراحة: مركز إشعارات مؤسسي، تكوين قواعد رؤى من الواجهة (configureInsightRules بلا UI في هذه المرحلة)، PDF/Excel للرسوم (6.12)، تخزين تفضيلات على الخادم لكل مستخدم، عمق رسوم تقارير إضافية.
+
+---
+
+Task ID: 6.11R
+Agent: Z.ai Code (emergency recovery pass)
+Task: Re-apply the accounting root correction on top of 08f92f9a after the third environment reset wiped 0267d4a; externalize immediately via incremental bundle + download route.
+
+Work Log:
+- Fetched only refs/heads/recovery/phase-6.11; FETCH_HEAD verified exactly 08f92f9a8ec6150782dc7d0d9cfefd964e34b8bf.
+- Restored baseline via git merge --ff-only 08f92f9a (no reset/clean); db/custom.db(-wal/-shm), .zscripts/dev.pid and inherited debris preserved untouched.
+- Re-applied the correction with root-conflict enforcement in src/lib/account-nature.ts: accountRootDigit, ALLOWED_CLASSIFICATIONS_BY_ROOT (1=ASSET, 2=LIABILITY|EQUITY only, 3=EXPENSE, 4=REVENUE), assertPrefixRootAlignment/assertOverrideRootAlignment (PREFIX_ROOT_CONFLICT / OVERRIDE_ROOT_CONFLICT), ROOT2_CLASSIFICATION_HINT (يُحدد حسب البادئة التفصيلية / Determined by detailed prefix), and resolution-time deep defense: any company prefix / override contradicting its system root is ignored (3101 stays EXPENSE even over a legacy 31→EQUITY rule; conflicting root-2 prefix stays NEEDS_DETAILED_CLASSIFICATION; never silent OTHER).
+- Wired the same guards into validators (create/update rule + override paths) and copyCompanyMapping (poisoned source rejected wholesale).
+- Corrected all invalid 3xxx→EQUITY fixtures without changing monetary test intent by renaming capital accounts to legal root-2 prefixes: 3101→2301, 3901→2302, 3999→2399, 310101→230101, rule prefix 31→23 (phase64, phase66 30101→23101, phase67, phase68, phase69-review-correction, seed-610-ui, seed-611-budget, seed-local-test); phase62a duplicate test now uses legal 21+LIABILITY and a new B7-ROOT check asserts the rejections.
+- Added scripts/phase-account-root-correction.ts (ACR gate, 18 checks, dev-acr-gate.db only, migrations-only workflow; NOT executed in this pass per GO — long verification deferred).
+- Admin UI: root-2 hint shown in prefix form when the typed prefix falls under root 2.
+
+Stage Summary:
+- New correction commit created on top of 08f92f9a (new SHA; 54da58b remains unrecoverable and unclaimed).
+- Bundle phase611-accounting-corrected-RECOVERY.bundle externalized through /api/download/phase611-accounting-corrected with pinned size+SHA256 integrity gates.
+- Long regression sequence (18/18 ACR, 58/58 6.11, 175/175 historical) intentionally deferred until the bundle is externally SHA256-verified on Windows.

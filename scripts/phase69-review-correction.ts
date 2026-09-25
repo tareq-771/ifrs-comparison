@@ -105,7 +105,7 @@ async function seedFixtureRules(db: any, companyId: string) {
     ["1101", "ASSET", "BALANCE", "SFP-CASH"],
     ["1102", "ASSET", "BALANCE", "SFP-RECEIVABLES"],
     ["21", "LIABILITY", "BALANCE", "SFP-LIA-CL"],
-    ["31", "EQUITY", "BALANCE", "SFP-EQUITY"],
+    ["23", "EQUITY", "BALANCE", "SFP-EQUITY"],
     ["33", "EXPENSE", "FLOW", "PNL-ADMIN-EXPENSES"],
     ["41", "REVENUE", "FLOW", "PNL-REVENUE"],
   ] as const) {
@@ -120,7 +120,7 @@ function fixtureLinesThroughMarch() {
     line("110101", 500000, 0, "النقدية"),
     line("110201", 200000, 0, "الذمم المدينة"),
     line("210101", 0, 150000, "الدائنون"),
-    line("310101", 0, 350000, "رأس المال"),
+    line("230101", 0, 350000, "رأس المال"),
     line("410101", 0, 300000, "المبيعات"),
     line("330101", 100000, 0, "الرواتب"),
   ];
@@ -132,7 +132,7 @@ function fixtureLinesThroughJanuary() {
     line("110101", 340000, 0, "النقدية"),
     line("110201", 200000, 0, "الذمم المدينة"),
     line("210101", 0, 150000, "الدائنون"),
-    line("310101", 0, 350000, "رأس المال"),
+    line("230101", 0, 350000, "رأس المال"),
     line("410101", 0, 100000, "المبيعات"),
     line("330101", 60000, 0, "الرواتب"),
   ];
@@ -144,7 +144,7 @@ function fixtureLinesThroughFebruary() {
     line("110101", 440000, 0, "النقدية"),
     line("110201", 200000, 0, "الذمم المدينة"),
     line("210101", 0, 150000, "الدائنون"),
-    line("310101", 0, 350000, "رأس المال"),
+    line("230101", 0, 350000, "رأس المال"),
     line("410101", 0, 220000, "المبيعات"),
     line("330101", 80000, 0, "الرواتب"),
   ];
@@ -283,7 +283,7 @@ async function main() {
     expect(!!group && group.valueMinor === String(350000 * 100), `مجموعة حقوق الملكية 350,000: ${group?.valueMinor}`);
     const direct = f.equity.rows.find((r) => r.key === "SFP-EQUITY::direct");
     expect(!!direct && direct.valueMinor === String(350000 * 100), `صف رأس المال المباشر ظاهر: ${direct?.valueMinor}`);
-    expect((direct?.accounts ?? []).some((a) => a.accountCode === "310101"), "الحساب 310101 متتبع");
+    expect((direct?.accounts ?? []).some((a) => a.accountCode === "230101"), "الحساب 310101 متتبع");
   });
 
   await check("R4 ربح الفترة 200,000 يدخل مرة واحدة فقط (350,000 + 200,000 = 550,000 لا 750,000)", async () => {
@@ -294,7 +294,7 @@ async function main() {
     const netRows = f.equity.rows.filter((r) => r.kind === "NET_RESULT");
     expect(netRows.length === 1 && netRows[0]!.valueMinor === String(200000 * 100), `صف نتيجة الفترة مرة واحدة بقيمة 200,000: ${netRows.length}/${netRows[0]?.valueMinor}`);
     // لو دخل الربح مرتين لصار الإجمالي 750,000 — الرقم المطلوب حرفيًا 550,000 (مُتحقق في R1)
-    const capitalRows = f.equity.rows.filter((r) => (r.accounts ?? []).some((a) => a.accountCode === "310101"));
+    const capitalRows = f.equity.rows.filter((r) => (r.accounts ?? []).some((a) => a.accountCode === "230101"));
     expect(capitalRows.length === 1, `رأس المال في صف تفصيلي واحد فقط: ${capitalRows.length}`);
   });
 
@@ -314,7 +314,7 @@ async function main() {
     // الجذر المركب 2 (الدائنون ورأس المال) معلن كغير مصنف — لا تخمين LIABILITY/EQUITY
     const unclassifiedCodes = f.unclassified.rows.map((r) => r.accountCode);
     expect(unclassifiedCodes.includes("210101"), `الدائنون معلن غير مصنف: ${unclassifiedCodes.join(",")}`);
-    expect(unclassifiedCodes.includes("310101") || unclassifiedCodes.length >= 1, "الفجوات معلنة");
+    expect(unclassifiedCodes.includes("230101") || unclassifiedCodes.length >= 1, "الفجوات معلنة");
     const knownKinds = new Set(["LINE", "ACCOUNT_GROUP", "TOTAL", "NET_RESULT", "GRAND_TOTAL"]);
     for (const section of [f.assets, f.liabilities, f.equity]) {
       for (const r of section.rows) expect(knownKinds.has(r.kind), `لا صف مُختلق لفرض التوازن: ${r.kind}`);
@@ -440,7 +440,7 @@ async function main() {
 
   await check("F-SOCIE: رأس المال دائن موجب 350,000 — الافتتاحي/الحركات فجوة معلنة لا استنتاج", async () => {
     // ربط بادئة حقوق الملكية بمكوّن رأس المال
-    const mapping = await db.equityComponentMapping.create({ data: { companyId: co1, prefix: "31", componentCode: "SHARE_CAPITAL", isActive: true } });
+    const mapping = await db.equityComponentMapping.create({ data: { companyId: co1, prefix: "23", componentCode: "SHARE_CAPITAL", isActive: true } });
     expect(!!mapping, "ربط المكوّن أُنشئ");
     const eq = await getEquityStatement(admin, { companyId: co1, fiscalYearId: fy1, startOrdinal: 1, endOrdinal: 3 });
     expect(eq.status === "INCOMPLETE_DATA", `الافتتاحي غير متاح ⇒ حالة صادقة: ${eq.status}`);

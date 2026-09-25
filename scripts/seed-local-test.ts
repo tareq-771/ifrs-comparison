@@ -49,7 +49,7 @@ async function main() {
     ["1101", "ASSET", "BALANCE", "SFP-CASH"],
     ["1102", "ASSET", "BALANCE", "SFP-RECEIVABLES"],
     ["2101", "LIABILITY", "BALANCE", "SFP-LIA-CL"],
-    ["3101", "EQUITY", "BALANCE", "SFP-EQUITY"],
+    ["2301", "EQUITY", "BALANCE", "SFP-EQUITY"],
     ["3301", "EXPENSE", "FLOW", "PNL-ADMIN-EXPENSES"],
     ["4101", "REVENUE", "FLOW", "PNL-REVENUE"],
   ] as const) {
@@ -57,8 +57,8 @@ async function main() {
     await db.accountNatureRule.create({ data: { companyId: co.id, prefix, classification, aggregationBehavior: behavior, source: "MANUAL", statementLineId: sl.id } });
     await db.accountNatureRule.create({ data: { companyId: co2.id, prefix, classification, aggregationBehavior: behavior, source: "MANUAL", statementLineId: sl.id } });
   }
-  await db.equityComponentMapping.create({ data: { companyId: co.id, prefix: "31", componentCode: "SHARE_CAPITAL" } });
-  await db.equityComponentMapping.create({ data: { companyId: co2.id, prefix: "31", componentCode: "SHARE_CAPITAL" } });
+  await db.equityComponentMapping.create({ data: { companyId: co.id, prefix: "23", componentCode: "SHARE_CAPITAL" } });
+  await db.equityComponentMapping.create({ data: { companyId: co2.id, prefix: "23", componentCode: "SHARE_CAPITAL" } });
 
   // 4) ميزان مراجعة معتمد (سيرفيسات النظام نفسها — لا كتابة مباشرة)
   const { createTrialBalance, commitTrialBalance } = await import("../src/lib/trial-balance-server");
@@ -77,7 +77,7 @@ async function main() {
         line("110101", 500000, 0, "الصندوق"),
         line("110201", 200000, 0, "العملاء"),
         line("210101", 0, 150000, "الموردون"),
-        line("310101", 0, 350000, "رأس المال"),
+        line("230101", 0, 350000, "رأس المال"),
         line("410101", 0, 300000, "المبيعات"),
         line("330101", 100000, 0, "الرواتب"),
       ],

@@ -79,6 +79,65 @@ export const MAIN_CATEGORY_LABELS: Record<MainCategory, string> = {
   REVENUE: "الإيرادات (4)",
 };
 
+/* ──────────────────────────────────────────────────────────────────────
+ * حاجز تناقض الجذر (التصحيح المحاسبي المعتمد):
+ *   1 = ASSET حصرًا | 3 = EXPENSE حصرًا (3101 = EXPENSE ولا يجوز EQUITY أبدًا)
+ *   | 4 = REVENUE حصرًا — والجذر 2 هو الجذر المركّب الوحيد: بادئاته
+ *   التفصيلية هي ما يحدد LIABILITY مقابل EQUITY. أي بادئة/استثناء يخالف
+ *   جذره يُرفض عند الإدخال ويُهمل عند الحل (لا OTHER صامت أبدًا).
+ * ────────────────────────────────────────────────────────────────────── */
+
+/** الجذر الرقمي الحاكم (أول محرف 1/2/3/4) — null لخرائط الأكواد القديمة بلا جذر نظامي (5/6/7). */
+export function accountRootDigit(prefixOrCode: string): "1" | "2" | "3" | "4" | null {
+  const first = typeof prefixOrCode === "string" ? prefixOrCode.trim().charAt(0) : "";
+  return first === "1" || first === "2" || first === "3" || first === "4" ? first : null;
+}
+
+/** التصنيفات المسموحة تحت كل جذر نظامي — الجذر 2 وحده يقبل الاثنين (LIABILITY/EQUITY). */
+export const ALLOWED_CLASSIFICATIONS_BY_ROOT: Record<"1" | "2" | "3" | "4", readonly AccountClassification[]> = {
+  "1": ["ASSET"],
+  "2": ["LIABILITY", "EQUITY"],
+  "3": ["EXPENSE"],
+  "4": ["REVENUE"],
+};
+
+/** هل التصنيف مسموح تحت الجذر؟ (بلا جذر نظامي ⇒ لا تناقض ممكن — خرائط قديمة 5/6/7). */
+export function isClassificationAllowedForRoot(
+  rootDigit: "1" | "2" | "3" | "4" | null,
+  classification: string
+): boolean {
+  if (rootDigit === null) return true;
+  return (ALLOWED_CLASSIFICATIONS_BY_ROOT[rootDigit] as readonly string[]).includes(classification);
+}
+
+/** العبارة المعتمدة للجذر المركّب 2 — كيف يُحدد LIABILITY/EQUITY (واجهة الإدارة والتقارير). */
+export const ROOT2_CLASSIFICATION_HINT = {
+  ar: "يُحدد حسب البادئة التفصيلية",
+  en: "Determined by detailed prefix",
+} as const;
+
+/** حاجز تناقض الجذر لبادئة شركة — يمنع 31xx⇒EQUITY ونحوها قبل الحفظ. */
+export function assertPrefixRootAlignment(prefix: string, classification: AccountClassification): void {
+  if (classification === "OTHER") return; // «أخرى» صريحة غير حاسمة — الحل الجذري يبقى حاكمًا
+  const rootDigit = accountRootDigit(prefix);
+  if (rootDigit === null || isClassificationAllowedForRoot(rootDigit, classification)) return;
+  throw new AccountNatureError(
+    "PREFIX_ROOT_CONFLICT",
+    `تناقض الجذر: البادئة «${prefix}» تحت الجذر ${rootDigit} تقبل ${ALLOWED_CLASSIFICATIONS_BY_ROOT[rootDigit].join(" أو ")} حصرًا — التصنيف ${classification} مرفوض (مثال: 31xx = EXPENSE ولا يجوز EQUITY أبدًا).`
+  );
+}
+
+/** حاجز تناقض الجذر لاستثناء حساب — 3101 = EXPENSE ولا يجوز EQUITY أبدًا. */
+export function assertOverrideRootAlignment(accountCode: string, classification: AccountClassification): void {
+  if (classification === "OTHER") return; // «أخرى» صريحة غير حاسمة — الحل الجذري يبقى حاكمًا
+  const rootDigit = accountRootDigit(accountCode);
+  if (rootDigit === null || isClassificationAllowedForRoot(rootDigit, classification)) return;
+  throw new AccountNatureError(
+    "OVERRIDE_ROOT_CONFLICT",
+    `تناقض الجذر: الحساب «${accountCode}» تحت الجذر ${rootDigit} يقبل ${ALLOWED_CLASSIFICATIONS_BY_ROOT[rootDigit].join(" أو ")} حصرًا — التصنيف ${classification} مرفوض للاستثناء.`
+  );
+}
+
 export const AGGREGATION_BEHAVIORS = {
   FLOW: "FLOW",
   BALANCE: "BALANCE",
@@ -310,7 +369,9 @@ export type AccountNatureErrorCode =
   | "OVERRIDE_NOT_FOUND"
   | "COPY_NOT_ALLOWED"
   | "VERSION_CONFLICT"
-  | "NEEDS_CLASSIFICATION";
+  | "NEEDS_CLASSIFICATION"
+  | "PREFIX_ROOT_CONFLICT"
+  | "OVERRIDE_ROOT_CONFLICT";
 
 export class AccountNatureError extends Error {
   code: AccountNatureErrorCode;
@@ -377,6 +438,8 @@ export function validateCompanyPrefixInput(raw: unknown): CompanyPrefixInput {
   if (!isBehavior(body.aggregationBehavior)) {
     throw new AccountNatureError("INVALID_BEHAVIOR", "سلوك التجميع الزمني غير صالح (FLOW أو BALANCE حصرًا).");
   }
+  // حاجز تناقض الجذر — البادئة التفصيلية لا تناقض جذورها النظامية أبدًا (31xx⇒EQUITY مرفوض).
+  assertPrefixRootAlignment(prefix, body.classification);
   const statementLineCode =
     typeof body.statementLineCode === "string" && body.statementLineCode.trim().length > 0
       ? body.statementLineCode.trim()
@@ -406,6 +469,8 @@ export function validateMappingOverrideInput(raw: unknown): MappingOverrideInput
   if (!isBehavior(body.aggregationBehavior)) {
     throw new AccountNatureError("INVALID_BEHAVIOR", "سلوك التجميع الزمني غير صالح (FLOW أو BALANCE حصرًا).");
   }
+  // حاجز تناقض الجذر — 3101 = EXPENSE ولا يجوز EQUITY أبدًا في الاستثناءات كذلك.
+  assertOverrideRootAlignment(accountCode, body.classification);
   const statementLineCode =
     typeof body.statementLineCode === "string" && body.statementLineCode.trim().length > 0
       ? body.statementLineCode.trim()
@@ -550,22 +615,34 @@ export function resolveAccountMapping(input: ResolveAccountMappingInput): Resolv
       (o) => o.isActive && o.accountCode === code && o.companyId !== null && o.companyId === companyId
     ) ?? null;
 
-  // أولوية الحسم: Override > بادئة الشركة > الجذر النظامي.
-  const classification =
-    (override?.classification ?? companyRule?.classification ?? root?.classification ?? null) as AccountClassification | null;
-  const behavior =
-    (override?.aggregationBehavior ?? companyRule?.aggregationBehavior ?? root?.aggregationBehavior ?? null) as AggregationBehavior | null;
-  // البند المالي لا يصدر من الجذر النظامي أبدًا (قرار fail-closed — لا تخمين).
-  const wantedLineCode = override?.statementLineCode ?? companyRule?.statementLineCode ?? null;
+  // أولوية الحسم: Override > بادئة الشركة > الجذر النظامي — مع حاجز تناقض الجذر
+  // (دفاع عميق ضد قواعد قديمة فاسدة): مصدر يخالف جذره النظامي لا يحسم إطلاقًا،
+  // فبقى 3101 = EXPENSE من الجذر حتى مع قاعدة 31⇒EQUITY قديمة، والجذر 2 ببادئة
+  // فاسدة يبقى NEEDS_DETAILED_CLASSIFICATION — لا OTHER صامت أبدًا.
+  const overrideOk =
+    override !== null &&
+    isClassificationAllowedForRoot(accountRootDigit(override.accountCode), override.classification);
+  const companyOk =
+    companyRule !== null &&
+    isClassificationAllowedForRoot(accountRootDigit(companyRule.prefix), companyRule.classification);
+  const effOverride = overrideOk ? override : null;
+  const effCompany = companyOk ? companyRule : null;
 
-  const source: MappingSource | null = override
+  const classification =
+    (effOverride?.classification ?? effCompany?.classification ?? root?.classification ?? null) as AccountClassification | null;
+  const behavior =
+    (effOverride?.aggregationBehavior ?? effCompany?.aggregationBehavior ?? root?.aggregationBehavior ?? null) as AggregationBehavior | null;
+  // البند المالي لا يصدر من الجذر النظامي أبدًا (قرار fail-closed — لا تخمين).
+  const wantedLineCode = effOverride?.statementLineCode ?? effCompany?.statementLineCode ?? null;
+
+  const source: MappingSource | null = effOverride
     ? "ACCOUNT_OVERRIDE"
-    : companyRule
+    : effCompany
       ? "COMPANY_PREFIX"
       : root
         ? "SYSTEM_ROOT"
         : null;
-  const matchedPrefix = override ? code : (companyRule?.prefix ?? root?.prefix ?? null);
+  const matchedPrefix = effOverride ? code : (effCompany?.prefix ?? root?.prefix ?? null);
 
   // خريطة البنود النشطة — كود غير موجود/غير نشط ⇒ لا بند (لا FULLY_MAPPED بصمت).
   let statementType: string | null = null;
@@ -603,7 +680,7 @@ export function resolveAccountMapping(input: ResolveAccountMappingInput): Resolv
     source,
     matchedPrefix,
     rootPrefix: root?.prefix ?? null,
-    companyPrefix: companyRule?.prefix ?? null,
+    companyPrefix: effCompany?.prefix ?? null,
     mappingStatus,
   };
 }

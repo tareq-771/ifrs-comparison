@@ -51,7 +51,7 @@ async function main() {
     ["1101", "ASSET", "BALANCE", "SFP-CASH"],
     ["1102", "ASSET", "BALANCE", "SFP-RECEIVABLES"],
     ["2101", "LIABILITY", "BALANCE", "SFP-LIA-CL"],
-    ["3101", "EQUITY", "BALANCE", "SFP-EQUITY"],
+    ["2301", "EQUITY", "BALANCE", "SFP-EQUITY"],
     ["3301", "EXPENSE", "FLOW", "PNL-ADMIN-EXPENSES"],
     ["4101", "REVENUE", "FLOW", "PNL-REVENUE"],
   ] as const) {

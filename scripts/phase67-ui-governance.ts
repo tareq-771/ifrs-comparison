@@ -228,7 +228,7 @@ async function main() {
       ["1101", "ASSET", "BALANCE", "SFP-CASH"],
       ["1102", "ASSET", "BALANCE", "SFP-RECEIVABLES"],
       ["2101", "LIABILITY", "BALANCE", "SFP-LIA-CL"],
-      ["3101", "EQUITY", "BALANCE", "SFP-EQUITY"],
+      ["2301", "EQUITY", "BALANCE", "SFP-EQUITY"],
       ["4101", "REVENUE", "FLOW", "PNL-REVENUE"],
       ["5201", "EXPENSE", "FLOW", "PNL-ADMIN-EXPENSES"],
     ] as const) {
@@ -253,7 +253,7 @@ async function main() {
       await db.fiscalPeriod.create({ data: { fiscalYearId: fyB.id, ordinal: i + 1, code: `2026-${mm}`, startDate: `2026-${mm}-01`, endDate: `2026-${mm}-${last}`, displayLabel: `شهر ${i + 1}` } });
     }
     // خريطة مفاهيم حقوق الملكية للشركة أ (أطول بادئة تفوز — عقد 6.4)
-    await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "31", componentCode: "SHARE_CAPITAL" } });
+    await db.equityComponentMapping.create({ data: { companyId: coA, prefix: "23", componentCode: "SHARE_CAPITAL" } });
     const created = await createTrialBalance({
       user: admin, ip: "gate",
       input: {
@@ -263,7 +263,7 @@ async function main() {
           line("110101", 5000, 0, "نقدية"),
           line("110201", 2000, 0, "مدينون"),
           line("210101", 0, 1500, "دائنون"),
-          line("310101", 0, 3500, "رأس المال"),
+          line("230101", 0, 3500, "رأس المال"),
           line("410101", 0, 3000, "مبيعات"),
           line("520101", 1000, 0, "رواتب"),
         ],
@@ -330,7 +330,7 @@ async function main() {
       input: {
         version: rev.version, dataType: "CUMULATIVE_YTD",
         fromDate: "2026-01-01", toDate: "2026-03-31",
-        reason: "رفع ملف مصحح", lines: [line("110101", 5000, 0, "نقدية"), line("410101", 0, 3000, "مبيعات"), line("310101", 0, 2000, "رأس مال")],
+        reason: "رفع ملف مصحح", lines: [line("110101", 5000, 0, "نقدية"), line("410101", 0, 3000, "مبيعات"), line("230101", 0, 2000, "رأس مال")],
       },
     });
     expect(replaced.import.lineCount === 3, `استبدال سطور المسودة من الواجهة (ناتج ${replaced.import.lineCount})`);

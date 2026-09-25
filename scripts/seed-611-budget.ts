@@ -69,7 +69,7 @@ async function main() {
         { accountCode: "3301", accountName: "مصروفات إدارية", debit: 12500000, credit: 0 },
         { accountCode: "2101", accountName: "الدائنون", debit: 0, credit: 1200000 },
         { accountCode: "4101", accountName: "الإيرادات", debit: 0, credit: 30000000 },
-        { accountCode: "3101", accountName: "رأس المال", debit: 0, credit: 2000000 },
+        { accountCode: "2301", accountName: "رأس المال", debit: 0, credit: 2000000 },
       ] as never,
     },
   });

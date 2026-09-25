@@ -427,10 +427,26 @@ async function partB() {
     await check("B7 تكرار بادئة/استثناء مرفوض (409 دلالي)", async () => {
       const { createNatureRule, createMappingOverride } = await import("../src/lib/account-nature-server");
       await expectErrorAsync("RULE_PREFIX_DUPLICATE", () =>
-        createNatureRule({ user: admin, ip: null, input: { companyId: companyAId, prefix: "31", classification: "LIABILITY", aggregationBehavior: "BALANCE" } })
+        createNatureRule({ user: admin, ip: null, input: { companyId: companyAId, prefix: "21", classification: "LIABILITY", aggregationBehavior: "BALANCE" } })
       );
       await expectErrorAsync("OVERRIDE_DUPLICATE", () =>
         createMappingOverride({ user: admin, ip: null, input: { companyId: companyAId, accountCode: "310199", classification: "EXPENSE", aggregationBehavior: "FLOW" } })
+      );
+    });
+
+    await check("B7-ROOT حاجز تناقض الجذر: 31⇒EQUITY و41⇒LIABILITY و11⇒LIABILITY واستثناء 3101⇒EQUITY كلها مرفوضة", async () => {
+      const { createNatureRule, createMappingOverride } = await import("../src/lib/account-nature-server");
+      await expectErrorAsync("PREFIX_ROOT_CONFLICT", () =>
+        createNatureRule({ user: admin, ip: null, input: { companyId: companyAId, prefix: "31", classification: "EQUITY", aggregationBehavior: "BALANCE" } })
+      );
+      await expectErrorAsync("PREFIX_ROOT_CONFLICT", () =>
+        createNatureRule({ user: admin, ip: null, input: { companyId: companyAId, prefix: "41", classification: "LIABILITY", aggregationBehavior: "BALANCE" } })
+      );
+      await expectErrorAsync("PREFIX_ROOT_CONFLICT", () =>
+        createNatureRule({ user: admin, ip: null, input: { companyId: companyAId, prefix: "11", classification: "LIABILITY", aggregationBehavior: "BALANCE" } })
+      );
+      await expectErrorAsync("OVERRIDE_ROOT_CONFLICT", () =>
+        createMappingOverride({ user: admin, ip: null, input: { companyId: companyAId, accountCode: "310199", classification: "EQUITY", aggregationBehavior: "BALANCE" } })
       );
     });
 
