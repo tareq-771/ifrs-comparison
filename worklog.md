@@ -1189,3 +1189,39 @@ Work Log:
 Stage Summary:
 - Step 3 delivered: server trust boundary + controlled DRAFT persistence on existing schema + bounded AuditLog provenance + preview/save-draft contracts; UI and final-commit integration explicitly deferred; no schema/migration/db-push; legacy lifecycle untouched (verified by legacy createTrialBalance test on gate DB).
 - Awaiting review; NO commit performed; Step 4 (UI) NOT started.
+
+---
+Task ID: STEP-3-COMMIT (Commit + External Preservation)
+Agent: Z.ai Code (main)
+Task: AUTHORIZED — COMMIT AND EXTERNALLY PRESERVE TB IMPORTER STEP 3 ONLY (no Step 4)
+
+Work Log:
+- Pre-commit: HEAD=b81eb497d835e4fe9c58a141dea710f8fb27e3f7 exact, HEAD^=2016b0a4a79d00547aca2f5a9522523585056be5 exact; staged six approved paths explicitly (no git add . / -A / commit -a); git diff --cached --name-status = exactly the six.
+- Commit c0ca8851915eefbf32689be82fb56f8cb5e0a9bb "Add trial balance server validation and draft persistence", parent b81eb49 exact; show --name-status = 4 A + 2 M (the six paths); debris untouched.
+- Fast verification: Step-3 gate 63/0 (fresh migrate-deploy rebuild of dev-612-step3-gate.db), Step-2 70/0, Step-1 30/0; ESLint 0/0 on all 11 Step-1/2/3 files; tsc exactly 92 diagnostics, 0 attributable; prod custom.db/WAL/SHM hashes byte-identical before and after all runs.
+- Push: single attempt `git push origin HEAD:refs/heads/recovery/tb-import-step3` FAILED (credentials unavailable — could not read Username for 'https://github.com'); NOT retried per protocol; no existing branch modified.
+- Bundle fallback: tb-import-step3-c0ca885.bundle (incremental, HEAD tip --not b81eb49); copied to public/; 8/8 checks passed: size 32,029 bytes; SHA256 7003f468b4812a7d35064d3b79decd618cfe60d1966195207cc40178249cb00b; git bundle verify OK; tip c0ca885; prerequisite b81eb49; isolated apply test (bare clone → baseline-only ref → repack+prune physically removed tip object → cat-file exit 1 → bundle fetch restored); applied parent = b81eb49 with exact six-path name-status and lineage c0ca885→b81eb49→2016b0a→d2db5a6→5e599f3→08f92f9; HTTP GET 200 from public/, cmp byte-identical. Bundle NOT committed.
+
+Stage Summary:
+- Step 3 committed and externally preserved via incremental bundle; master lineage advanced b81eb49→c0ca885; no push succeeded; Step 4 NOT started; awaiting explicit authorization.
+
+---
+Task ID: V1-CLOSURE (TB Importer — UI + Preview + Draft + Commit Revalidation + Revision + Template + E2E)
+Agent: Z.ai Code (main)
+Task: AUTHORIZED — FINAL V1 CLOSURE BATCH (no commit, no push, no Phase 6.12)
+
+Work Log:
+- Preflight: HEAD=c0ca8851915eefbf32689be82fb56f8cb5e0a9bb exact (parent b81eb49 exact); debris preserved; prod fingerprints captured before any work.
+- Read all existing implementation first (Step-1/2/3 libs, legacy TB lifecycle, admin UI, schema, guards) — no APIs invented against existing code.
+- Server: extended src/lib/tb-import-server.ts with commit revalidation (parseTbImportCommitInput, parseProvenanceMetadata, commitTbImportDraft): commit request carries RAW SOURCE only (importId+version+reason+grid); mapping/shape/declarations/resolutions reconstructed tier-faithfully from persisted TRIAL_BALANCE_PROVENANCE; failure order: structural ⇒ PROVENANCE_MISSING ⇒ flags/kept-count guard ⇒ SOURCE_PAYLOAD_HASH_MISMATCH (hash compared BEFORE accounting-error conversion for precise drift codes) ⇒ INVALID_LINE ⇒ CANONICAL_LINE_HASH_MISMATCH (+dataType drift) ⇒ DRAFT_LINES_MISMATCH (15-field exact comparison) ⇒ existing commitTrialBalance (6.1 guards, version lock, atomic tx, snapshot freeze) ⇒ bounded COMMIT_REVALIDATION provenance event (writeAuditSafe).
+- trial-balance.ts: +5 additive error codes (SOURCE_REVALIDATION_REQUIRED, SOURCE_PAYLOAD_HASH_MISMATCH, CANONICAL_LINE_HASH_MISMATCH, DRAFT_LINES_MISMATCH, PROVENANCE_MISSING) — no legacy codes touched.
+- New routes: POST /api/tb-import-v2/commit (revalidation-commit), GET /api/tb-import-v2/template?format=xlsx|csv (bounded provenance-safe template download).
+- New libs: src/lib/tb-import-template.ts (deterministic xlsx 2-sheet + csv generators, EXACT-tier canonical headers, generic labeled examples only), src/lib/tb-import-ui.ts (client-safe pure UI contract: bilingual error map with machine codes retained, canSaveDraft/canCommitDraft/requiresSourceReselection, distinct معاينة/مسودة/معتمد statuses).
+- UI: new src/components/admin/tb-importer-v1.tsx — 5-step wizard (الملف/الأعمدة-الإسناد/المراجعة/المسودة/الاعتماد) inside the existing TB tab; client parses via excel-grid (xlsx/csv, .xls rejected, formulas never executed, text codes preserved); mapping UI with tiers/duplicate-target prevention/shape explicit confirmation/CLOSING_ONLY FLOW declaration/SUBSET acknowledgement; server preview authoritative (blocking vs warnings separated, control totals, duplicates, prior-as-of disclosure, hashes); subtotal KEEP/EXCLUDE per flagged row with context; save draft disabled while preview BLOCKED/stale; commit requires draft + raw source + explicit confirmation dialog, re-selects file after refresh (SOURCE_REVALIDATION_REQUIRED surface).
+- trial-balance-tab.tsx narrow edit: legacy section renamed LegacyTrialBalanceSection (logic unchanged) + exported TrialBalanceTab wrapper switching between المستورد الموجّه V1 (default) and الرفع المباشر (الإرث).
+- Final gate scripts/phase70-tb-import-final-v1.ts: 92 checks (FILE 1-9, MAPPING 10-16, FULL 17-22, CLOSING 23-25, MOVEMENT 26-27, SUBTOTALS 28-32, DUPLICATES 33-35, CURRENCY 36-40, PRECISION 41-43, CLASSIFICATION 44-50, PREVIEW 51-55, DRAFT 56-62, COMMIT 63-76, REVISION 77-80, UI CONTRACT 81-86, TEMPLATE 87-90, DB SAFETY 91-92) on isolated dev-612-final-gate.db (migrations-only, fail-closed guard, leaf-order seed cleanup for revision chains); gate fixes: subtotal flagged row = 6 (header row 1), classification grid without unknown-root row, hash-before-errors ordering in commit path, idempotent seed.
+- Verification: final gate 92/0 (three runs incl. idempotent rerun); Step-3 63/0; Step-2 70/0; Step-1 30/0; fresh-DB historical suite all green: 62A=31/0, 62B=16/0, 62C=9/0, 62D=6/0, 63=13/0, 64=9/0, 65=8/0, 66=8/0, 67=19/0, 68=14/0, 69=23/0, 69R=20/0, 6.10=38/0, ACR=19/0(+18/18), 6.11=58/0; ESLint 0/0 on all 9 batch files; tsc exactly 92 with 0 attributable; prod custom.db/WAL/SHM byte-identical before/after; template route 401 unauthenticated (guard verified live).
+- NO schema change, NO migration, NO db push, NO commit, NO push, NO Phase 6.12.
+
+Stage Summary:
+- TB Importer V1 closed end-to-end: untrusted-client server authority endures through commit via raw-source revalidation bound to persisted provenance; existing lifecycle/governance/revision reused unchanged; template download delivered; UI integrated into existing TB area. Awaiting review and explicit commit/preservation authorization.

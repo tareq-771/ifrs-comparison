@@ -93,6 +93,12 @@ export type TrialBalanceErrorCode =
   | "REVISION_SOURCE_NOT_LATEST"
   | "REVISION_DRAFT_EXISTS"
   | "REVISION_STALE"
+  // Phase 7.0 (V1 closure) — إعادة تحقق الاعتماد للمستورد الجديد (إضافية بلا مساس بالأكواد القائمة)
+  | "SOURCE_REVALIDATION_REQUIRED"
+  | "SOURCE_PAYLOAD_HASH_MISMATCH"
+  | "CANONICAL_LINE_HASH_MISMATCH"
+  | "DRAFT_LINES_MISMATCH"
+  | "PROVENANCE_MISSING"
   // Phase 6.5 — الموازنات
   | "INCOMPLETE_DATA"
   | "INVALID_BUDGET_TYPE"

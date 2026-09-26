@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 
 import { Prisma, PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
-import { writeAudit } from "@/lib/audit";
+import { writeAudit, writeAuditSafe } from "@/lib/audit";
 import { AUDIT_ACTIONS } from "@/lib/audit-actions";
 import { companyVisible } from "@/lib/company-access";
 import { CURRENCIES, isSupportedCurrency } from "@/lib/currencies";
@@ -32,6 +32,7 @@ import {
   type FiscalYearLike,
   type TrialBalanceDataType,
 } from "@/lib/trial-balance";
+import { commitTrialBalance } from "@/lib/trial-balance-server";
 import {
   detectRepeatedHeaderRows,
   extractTbSourceRows,
@@ -229,6 +230,25 @@ function parseCell(raw: TbImportRawCellInput | undefined): TbGridCell {
   };
 }
 
+/** تحقق بنيوي صارم للشبكة الخام (مشترك بين حفظ المسودة وإعادة تحقق الاعتماد). */
+function parseRawGrid(raw: unknown): TbGrid {
+  if (!Array.isArray(raw)) {
+    throw new TrialBalanceError("EMPTY_FILE", "شبكة المصدر الخام مطلوبة.");
+  }
+  const gridRows = raw as unknown[];
+  if (gridRows.length === 0) throw new TrialBalanceError("EMPTY_FILE", "شبكة المصدر فارغة.");
+  if (gridRows.length > TB_IMPORT_SERVER_LIMITS.MAX_ROWS) {
+    throw new TrialBalanceError("INVALID_LINE", `عدد الصفوف يتجاوز الحد (${TB_IMPORT_SERVER_LIMITS.MAX_ROWS}).`);
+  }
+  return gridRows.map((row) => {
+    if (!Array.isArray(row)) throw new TrialBalanceError("INVALID_LINE", "كل صف في الشبكة يجب أن يكون مصفوفة خلايا.");
+    if (row.length > TB_IMPORT_SERVER_LIMITS.MAX_COLS) {
+      throw new TrialBalanceError("INVALID_LINE", `عدد الأعمدة يتجاوز الحد (${TB_IMPORT_SERVER_LIMITS.MAX_COLS}).`);
+    }
+    return (row as TbImportRawCellInput[]).map((c) => parseCell(c));
+  });
+}
+
 export function parseTbImportServerInput(raw: TbImportServerInput): ParsedTbImportInput {
   const companyId = asTrimmedString(raw.companyId, 64);
   if (!companyId) throw new TrialBalanceError("COMPANY_REQUIRED", "الشركة إلزامية للاستيراد.");
@@ -251,20 +271,7 @@ export function parseTbImportServerInput(raw: TbImportServerInput): ParsedTbImpo
   if (!Array.isArray(raw.grid)) {
     throw new TrialBalanceError("EMPTY_FILE", "شبكة المصدر الخام مطلوبة.");
   }
-  const gridRows = raw.grid as unknown[];
-  if (gridRows.length === 0) throw new TrialBalanceError("EMPTY_FILE", "شبكة المصدر فارغة.");
-  if (gridRows.length > TB_IMPORT_SERVER_LIMITS.MAX_ROWS) {
-    throw new TrialBalanceError("INVALID_LINE", `عدد الصفوف يتجاوز الحد (${TB_IMPORT_SERVER_LIMITS.MAX_ROWS}).`);
-  }
-  let colCount = -1;
-  const grid: TbGrid = gridRows.map((row) => {
-    if (!Array.isArray(row)) throw new TrialBalanceError("INVALID_LINE", "كل صف في الشبكة يجب أن يكون مصفوفة خلايا.");
-    if (row.length > TB_IMPORT_SERVER_LIMITS.MAX_COLS) {
-      throw new TrialBalanceError("INVALID_LINE", `عدد الأعمدة يتجاوز الحد (${TB_IMPORT_SERVER_LIMITS.MAX_COLS}).`);
-    }
-    if (colCount === -1) colCount = row.length;
-    return (row as TbImportRawCellInput[]).map((c) => parseCell(c));
-  });
+  const grid = parseRawGrid(raw.grid);
 
   // الإسناد الصريح: مفاتيح فهارس أعمدة صحيحة داخل النطاق، وقيم حقول قيانية معروفة.
   const mapping: Record<number, TbCanonicalField> = {};
@@ -1243,4 +1250,449 @@ export function normalizeClientFileHash(raw: unknown): string {
 /** مرآة داخلية للاستخدام الحتمي — تمنع استيراد createHash من أماكن متفرقة. */
 export function tbServerSha256(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Phase 7.0 (V1 closure) — اعتماد مسودة المستورد مع إعادة تحقق المصدر الخام
+   العقد المقفل:
+   • طلب الاعتماد يحمل المصدر الخام حصرًا (+ معرف المسودة ونسختها وسببًا اختياريًا)
+     — أي إسناد/شكل/دلالات من العميل مرفوض بنيويًا (ليست ضمن نوع الإدخال إطلاقًا).
+   • الإسناد/الشكل/الاكتمال/العملة/حسم المجاميع يُعاد بناؤها من الإثبات المحفوظ
+     (TRIAL_BALANCE_PROVENANCE) حصرًا — لا ثقة بحالة المتصفح بين الحفظ والاعتماد.
+   • غياب المصدر ⇒ SOURCE_REVALIDATION_REQUIRED (إعادة اختيار الملف لا "تذكر" وهمية).
+   • إعادة التحقق عبر نفس المسار الحتمي الموحد (orchestrateTbImport) ثم مطابقة
+     الهاشتين والسطور المخزنة حرفيًا، وعندها فقط دورة الاعتماد القائمة (6.1/6.3).
+   • لا إعتماد جزئي: أي فشل قبل commitTrialBalance لا يغيّر شيئًا؛ دورة الاعتماد
+     نفسها ذرية بمعاملتها القائمة.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+export interface TbImportCommitInput {
+  importId?: unknown;
+  version?: unknown;
+  reason?: unknown;
+  /** المصدر الخام إلزامي لإعادة التحقق — الشبكة نفسها المرسلة للمعاينة/الحفظ. */
+  grid?: unknown;
+  /* أي حقول أخرى (mapping/shape/completeness/declarations/hashes…) ليست ضمن هذا
+     النوع ولا يُقرأ أي منها إطلاقًا — مصدر الحقيقة إثبات المسودة المحفوظ حصرًا. */
+}
+
+export interface TbImportCommitRevalidation {
+  sourcePayloadHashMatch: boolean;
+  canonicalLineHashMatch: boolean;
+  draftLinesMatch: boolean;
+  revalidatedAt: string;
+}
+
+export interface TbImportCommitResult {
+  import: {
+    id: string;
+    companyId: string;
+    status: string;
+    dataType: string;
+    revisionNumber: number;
+    lineCount: number;
+    totalDebitMinor: string;
+    totalCreditMinor: string;
+    committedAt: string;
+  };
+  revalidation: TbImportCommitRevalidation;
+  provenanceCommitEventWritten: boolean;
+}
+
+/** تحقق بنيوي من مدخل الاعتماد — المصدر الخام إلزامي صراحةً. */
+export function parseTbImportCommitInput(raw: TbImportCommitInput): {
+  importId: string;
+  version: number;
+  reason: string;
+  grid: TbGrid;
+} {
+  const importId = asTrimmedString(raw.importId, 64);
+  if (!importId) {
+    throw new TrialBalanceError("INVALID_STATE", "معرف مسودة المستورد إلزامي للاعتماد.");
+  }
+  const version = typeof raw.version === "number" ? raw.version : Number(raw.version);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new TrialBalanceError("VERSION_CONFLICT", "نسخة الميزان (version) إلزامية للاعتماد.");
+  }
+  const reason = typeof raw.reason === "string" ? raw.reason.trim().slice(0, 300) : "";
+  if (raw.grid === undefined || raw.grid === null) {
+    throw new TrialBalanceError(
+      "SOURCE_REVALIDATION_REQUIRED",
+      "يلزم إعادة اختيار ملف المصدر وإرساله خامًا لإعادة التحقق قبل الاعتماد — المصدر لا يُفترض محفوظًا.",
+    );
+  }
+  const grid = parseRawGrid(raw.grid);
+  return { importId, version, reason, grid };
+}
+
+/** الإثبات المحفوظ بعد تحقق بنيوي صارم — أي كسر ⇒ PROVENANCE_MISSING (فشل مغلق). */
+interface TbImportProvenanceData {
+  sourcePayloadHash: string;
+  canonicalLineHash: string;
+  shape: TbImportShape;
+  completeness: TbCompleteness;
+  subsetAcknowledged: boolean;
+  flowClosingSemantics: TbFlowClosingSemantics | null;
+  sourceCurrency: string;
+  mappingByField: Record<string, { index: number; tier: string; rawHeader: string }>;
+  excludedSubtotalRows: number[];
+  keptSubtotalCount: number;
+  unresolvedSubtotalCount: number;
+}
+
+function provenanceMissing(why: string): TrialBalanceError {
+  return new TrialBalanceError("PROVENANCE_MISSING", `إثبات المسودة المحفوظ غير صالح — لا اعتماد بلا إثبات قابل لإعادة البناء (${why}).`);
+}
+
+function parseProvenanceMetadata(
+  raw: unknown,
+  importId: string,
+  revisionNumber: number,
+): TbImportProvenanceData {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw provenanceMissing("بيانات غير مهيكلة");
+  }
+  const meta = raw as Record<string, unknown>;
+  if (meta.schemaVersion !== TB_IMPORT_PROVENANCE_SCHEMA_VERSION) {
+    throw provenanceMissing(`schemaVersion غير متوقع (${String(meta.schemaVersion)})`);
+  }
+  if (meta.importId !== importId) throw provenanceMissing("importId لا يطابق المسودة");
+  if (meta.revisionNumber !== revisionNumber) {
+    throw provenanceMissing("رقم المراجعة في الإثبات لا يطابق المسودة");
+  }
+  const hash64 = (v: unknown, what: string): string => {
+    if (typeof v !== "string" || !/^[0-9a-f]{64}$/.test(v)) throw provenanceMissing(what);
+    return v;
+  };
+  const shapeRaw = typeof meta.shape === "string" ? meta.shape : "";
+  if (shapeRaw !== "FULL_MOVEMENT" && shapeRaw !== "CLOSING_ONLY" && shapeRaw !== "MOVEMENT_ONLY") {
+    throw provenanceMissing("شكل غير صالح في الإثبات");
+  }
+  const completenessRaw = meta.completeness === "COMPLETE" || meta.completeness === "SUBSET" ? meta.completeness : null;
+  if (completenessRaw === null) throw provenanceMissing("اكتمال غير صالح في الإثبات");
+  const mappingSummary = meta.mappingSummary;
+  if (mappingSummary === null || typeof mappingSummary !== "object" || Array.isArray(mappingSummary)) {
+    throw provenanceMissing("موجز الإسناد مفقود (إثبات مُسقط التفاصيل لا يُعاد بناؤه)");
+  }
+  const byFieldRaw = (mappingSummary as Record<string, unknown>).byField;
+  if (byFieldRaw === null || typeof byFieldRaw !== "object" || Array.isArray(byFieldRaw)) {
+    throw provenanceMissing("تفاصيل الإسناد مفقودة من الإثبات");
+  }
+  const mappingByField: Record<string, { index: number; tier: string; rawHeader: string }> = {};
+  for (const [field, info] of Object.entries(byFieldRaw as Record<string, unknown>)) {
+    if (
+      info === null || typeof info !== "object" ||
+      typeof (info as Record<string, unknown>).index !== "number" ||
+      typeof (info as Record<string, unknown>).tier !== "string"
+    ) {
+      throw provenanceMissing(`تفاصيل إسناد غير صالحة للحقل ${field}`);
+    }
+    const rec = info as { index: number; tier: string; rawHeader?: unknown };
+    mappingByField[field] = {
+      index: rec.index,
+      tier: rec.tier,
+      rawHeader: typeof rec.rawHeader === "string" ? rec.rawHeader : "",
+    };
+  }
+  if (Object.keys(mappingByField).length === 0) {
+    throw provenanceMissing("الإثبات بلا أي إسناد");
+  }
+  const subtotalSummary = meta.subtotalResolutionSummary;
+  if (subtotalSummary === null || typeof subtotalSummary !== "object" || Array.isArray(subtotalSummary)) {
+    throw provenanceMissing("موجز حسم المجاميع مفقود");
+  }
+  const sSummary = subtotalSummary as Record<string, unknown>;
+  const excludedRows = Array.isArray(sSummary.excludedRows)
+    ? (sSummary.excludedRows as unknown[]).filter((n): n is number => typeof n === "number" && Number.isInteger(n))
+    : [];
+  const keptCount = typeof sSummary.keptCount === "number" ? sSummary.keptCount : -1;
+  const unresolvedCount = typeof sSummary.unresolvedCount === "number" ? sSummary.unresolvedCount : -1;
+  if (keptCount < 0 || unresolvedCount < 0) throw provenanceMissing("عدادات المجاميع غير صالحة");
+  return {
+    sourcePayloadHash: hash64(meta.sourcePayloadHash, "هاش المصدر مفقود"),
+    canonicalLineHash: hash64(meta.canonicalLineHash, "هاش السطور مفقود"),
+    shape: shapeRaw,
+    completeness: completenessRaw,
+    subsetAcknowledged: meta.subsetAcknowledged === true,
+    flowClosingSemantics: meta.flowClosingSemantics === "CUMULATIVE_YTD" ? "CUMULATIVE_YTD" : null,
+    sourceCurrency: typeof meta.sourceCurrency === "string" ? meta.sourceCurrency : "",
+    mappingByField,
+    excludedSubtotalRows: excludedRows,
+    keptSubtotalCount: keptCount,
+    unresolvedSubtotalCount: unresolvedCount,
+  };
+}
+
+/**
+ * اعتماد مسودة المستورد — إعادة تحقق كاملة من المصدر الخام ثم دورة الاعتماد القائمة.
+ * ترتيب الفشل المقفل: بنيوي ⇒ مصدر ⇒ إثبات ⇒ إسناد/مجاميع ⇒ تحقق محاسبي ⇒
+ * هاش المصدر ⇒ هاش السطور/الدلالة ⇒ السطور المخزنة ⇒ دورة الاعتماد (ذرية).
+ */
+export async function commitTbImportDraft(
+  user: SessionUser,
+  ip: string | null,
+  rawInput: TbImportCommitInput,
+): Promise<TbImportCommitResult> {
+  const { importId, version, reason, grid } = parseTbImportCommitInput(rawInput);
+
+  // 1) تحميل المسودة + نطاق الشركة (فشل مغلق)
+  const row = await db.trialBalanceImport.findUnique({
+    where: { id: importId },
+    select: {
+      id: true, companyId: true, fiscalYearId: true, fromDate: true, toDate: true,
+      dataType: true, status: true, revisionNumber: true, originalFileName: true,
+      fileHash: true, payloadHash: true, note: true,
+      company: { select: { code: true } },
+    },
+  });
+  if (!row || !companyVisible(user, row.companyId)) {
+    throw new TrialBalanceError("NOT_FOUND", "مسودة المستورد غير موجودة أو لا تملك الوصول لها.");
+  }
+  if (row.status === TB_STATUSES.COMMITTED) {
+    throw new TrialBalanceError("INVALID_STATE", "المسودة معتمدة بالفعل — المعتمد مجمّد لا يُعتمد ثانيةً.");
+  }
+  if (row.status !== TB_STATUSES.DRAFT) {
+    throw new TrialBalanceError("INVALID_STATE", `حالة المسودة (${row.status}) لا تسمح بالاعتماد — DRAFT حصرًا.`);
+  }
+
+  // 2) الإثبات المحفوظ (آخر حدث TRIAL_BALANCE_PROVENANCE للمسودة)
+  const provAudit = await db.auditLog.findFirst({
+    where: { action: AUDIT_ACTIONS.TRIAL_BALANCE_PROVENANCE, entityId: importId },
+    orderBy: { createdAt: "desc" },
+    select: { metadata: true },
+  });
+  if (!provAudit) {
+    throw new TrialBalanceError(
+      "PROVENANCE_MISSING",
+      "لا يوجد إثبات مستورد محفوظ لهذه المسودة — مسودات خارج المستورد V1 تُعتمد بمسارها القائم حصرًا.",
+    );
+  }
+  let provRaw: unknown = null;
+  try {
+    provRaw = JSON.parse(provAudit.metadata);
+  } catch {
+    throw provenanceMissing("بيانات غير قابلة للتحليل");
+  }
+  const prov = parseProvenanceMetadata(provRaw, importId, row.revisionNumber);
+
+  // 3) إعادة بناء الطلب من الإثبات حصرًا:
+  //    إسناد المستخدم (tier=USER) يُعاد صراحةً؛ الطبقات التلقائية (EXACT/CONTAINS)
+  //    تُعاد اشتقاقها حتميًا من نفس المحرك المجمد — نسخ أمين للطلب الأصلي.
+  const userMappings: Record<number, TbCanonicalField> = {};
+  for (const [field, info] of Object.entries(prov.mappingByField)) {
+    if (!(TB_CANONICAL_FIELDS as readonly string[]).includes(field)) {
+      throw provenanceMissing(`حقل قياني غير معروف في الإثبات (${field})`);
+    }
+    if (info.tier === "USER") {
+      if (!Number.isInteger(info.index) || info.index < 0) {
+        throw provenanceMissing(`فهرس إسناد غير صالح للحقل ${field}`);
+      }
+      userMappings[info.index] = field as TbCanonicalField;
+    }
+  }
+
+  const parsedBase: ParsedTbImportInput = {
+    companyId: row.companyId,
+    fiscalYearId: row.fiscalYearId,
+    fromDate: row.fromDate,
+    toDate: row.toDate,
+    shape: prov.shape,
+    grid,
+    mapping: userMappings,
+    sourceCurrency: prov.sourceCurrency,
+    completeness: prov.completeness,
+    subsetAcknowledged: prov.subsetAcknowledged,
+    flowClosingSemantics: prov.flowClosingSemantics,
+    subtotalResolutions: {},
+    originalFileName: row.originalFileName,
+    fileHash: row.fileHash,
+    note: row.note,
+    replaceExisting: false,
+  };
+
+  // إعادة اشتقاق الإسناد + الصفوف + الأعلام — أي كسر ⇒ المصدر لا يطابق الإثبات
+  let mapping: TbHeaderMappingResult;
+  try {
+    mapping = buildServerMapping(grid, parsedBase);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new TrialBalanceError(
+      "SOURCE_PAYLOAD_HASH_MISMATCH",
+      `المصدر المُرسل لا يطابق إثبات المسودة المحفوظ (فشل إعادة بناء الإسناد): ${msg}`,
+    );
+  }
+  const rows = extractTbSourceRows(grid, { mapping, headerRowIndex: 0, headerRowCount: 1 });
+  const flags = flagSuspectedSubtotalRows(rows);
+  const flagRowNumbers = flags.map((f) => f.sourceRowNumber);
+  const excludedSet = new Set(prov.excludedSubtotalRows);
+  for (const ex of prov.excludedSubtotalRows) {
+    if (!flagRowNumbers.includes(ex)) {
+      throw new TrialBalanceError(
+        "SOURCE_PAYLOAD_HASH_MISMATCH",
+        `صف المجاميع المستبعد محفوظيًا (${ex}) لم يعد مرصودًا في المصدر المُرسل — المصدر تغيّر منذ الحفظ.`,
+      );
+    }
+  }
+  if (flags.length !== prov.excludedSubtotalRows.length + prov.keptSubtotalCount) {
+    throw new TrialBalanceError(
+      "SOURCE_PAYLOAD_HASH_MISMATCH",
+      "عدد صفوف المجاميع المرصودة في المصدر المُرسل لا يطابق إثبات المسودة — المصدر/الحسم تغيّر منذ الحفظ.",
+    );
+  }
+  if (prov.unresolvedSubtotalCount !== 0) {
+    throw new TrialBalanceError("INVALID_STATE", "إثبات المسودة يشير إلى مجاميع غير محسومة — لا اعتماد من إثبات غير مكتمل.");
+  }
+  const subtotalResolutions: Record<number, TbSubtotalResolution> = {};
+  for (const rowNo of flagRowNumbers) {
+    subtotalResolutions[rowNo] = excludedSet.has(rowNo) ? "EXCLUDED" : "KEPT";
+  }
+  const parsed: ParsedTbImportInput = { ...parsedBase, subtotalResolutions };
+
+  // 4) إعادة التحقق المحاسبي الكامل — نفس المسار الحتمي الموحد حصرًا
+  const orchestrated = await orchestrateTbImport(user, parsed);
+
+  // 5) مطابقة هاش حمولة المصدر مع المحفوظ أولًا — أي تغيير في المصدر/الإسناد/
+  //    القرارات/الدلالات يُكشف بهاش حاسم قبل أي ضوضاء محاسبية لاحقة.
+  if (orchestrated.sourcePayloadHash !== prov.sourcePayloadHash) {
+    throw new TrialBalanceError(
+      "SOURCE_PAYLOAD_HASH_MISMATCH",
+      "المصدر/الإسناد/القرارات المُرسلة لا تطابق إثبات المسودة المحفوظ — أعد حفظ مسودة جديدة من الملف الصحيح أولًا.",
+    );
+  }
+
+  // 6) ثم فحص الأخطاء المانعة (هاش المصدر مطابق ⇒ الأخطاء إن وُجدت ناتجة عن
+  //    تغيّر قواعد/بيئات لا عن تغيّر المصدر)
+  const blockingErrors = [...orchestrated.serverIssues, ...issuesOf(orchestrated.normalization)];
+  if (blockingErrors.length > 0 || orchestrated.normalization.status !== "VALID" || orchestrated.derivedDataType === null) {
+    throw new TrialBalanceError(
+      "INVALID_LINE",
+      `فشل إعادة التحقق قبل الاعتماد (${blockingErrors.length} خطأً مانعًا) — لا اعتماد جزئي.`,
+      { errors: capIssues(blockingErrors) },
+    );
+  }
+
+  // 6) مطابقة هاش السطور القياني + ثبات الدلالة المشتقة
+  if (
+    orchestrated.canonicalLineHash !== prov.canonicalLineHash ||
+    orchestrated.canonicalLineHash !== row.payloadHash ||
+    orchestrated.derivedDataType !== row.dataType
+  ) {
+    throw new TrialBalanceError(
+      "CANONICAL_LINE_HASH_MISMATCH",
+      "السطور القيانية المعاد اشتقاقها لا تطابق المسودة المحفوظة (هاش/دلالة/تصنيف/دقة) — أعد حفظ المسودة قبل الاعتماد.",
+    );
+  }
+
+  // 7) مطابقة السطور المخزنة حرفيًا مع المعاد اشتقاقها (نفس بنية الحفظ)
+  const stored = await db.trialBalanceLine.findMany({
+    where: { importId },
+    orderBy: { rowIndex: "asc" },
+  });
+  const snapByRow = new Map(orchestrated.consumedSnapshots.map((s) => [s.candidateRowNumber, s]));
+  const expected = orchestrated.normalization.draftLineCandidates
+    .map((l) => {
+      const snap = snapByRow.get(l.sourceRowNumber);
+      return {
+        rowIndex: l.sourceRowNumber,
+        accountCode: l.accountCode,
+        accountName: l.accountName,
+        debitMinor: l.debitMinor,
+        creditMinor: l.creditMinor,
+        netMinor: l.netMinor,
+        mappedPrefix: snap?.matchedPrefix ?? l.matchedPrefix,
+        mappingSource: snap?.source ?? l.classificationSource,
+        mappingStatus: snap?.mappingStatus ?? l.mappingStatus,
+        mainCategory: snap?.mainCategory ?? null,
+        classification: l.classification,
+        aggregationBehavior: l.aggregationBehavior,
+        statementLineCode: snap?.statementLineCode ?? null,
+      };
+    })
+    .sort((a, b) => a.rowIndex - b.rowIndex);
+  if (stored.length !== expected.length) {
+    throw new TrialBalanceError(
+      "DRAFT_LINES_MISMATCH",
+      `عدد السطور المخزنة (${stored.length}) لا يطابق المعاد اشتقاقه (${expected.length}) — أعد حفظ المسودة.`,
+    );
+  }
+  for (let i = 0; i < expected.length; i++) {
+    const s = stored[i];
+    const e = expected[i];
+    if (
+      s === undefined || e === undefined ||
+      s.rowIndex !== e.rowIndex ||
+      s.accountCode !== e.accountCode ||
+      s.accountName !== e.accountName ||
+      s.debitMinor !== e.debitMinor ||
+      s.creditMinor !== e.creditMinor ||
+      s.netMinor !== e.netMinor ||
+      s.mappedPrefix !== e.mappedPrefix ||
+      s.mappingSource !== e.mappingSource ||
+      s.mappingStatus !== e.mappingStatus ||
+      s.mainCategory !== e.mainCategory ||
+      s.classification !== e.classification ||
+      s.aggregationBehavior !== e.aggregationBehavior ||
+      s.statementLineCode !== e.statementLineCode
+    ) {
+      throw new TrialBalanceError(
+        "DRAFT_LINES_MISMATCH",
+        `السطر المخزن رقم ${s?.rowIndex ?? i} لا يطابق السطر المعاد اشتقاقه من المصدر — أعد حفظ المسودة.`,
+      );
+    }
+  }
+
+  // 8) دورة الاعتماد القائمة حصرًا — حراس 6.1 + قفل النسخ + تجميد اللقطة + تدقيق (ذرية)
+  const committed = await commitTrialBalance({ user, ip, id: importId, input: { version, reason } });
+
+  // 9) إثبات إعادة تحقق الاعتماد (موجز محدود الحدود — بعد النجاح، إخفاقه لا يفسد الاعتماد)
+  let provenanceCommitEventWritten = false;
+  try {
+    await writeAuditSafe({
+      user,
+      action: AUDIT_ACTIONS.TRIAL_BALANCE_PROVENANCE,
+      entityType: "TrialBalanceImport",
+      entityId: importId,
+      description: `إعادة تحقق اعتماد مستورد ميزان المراجعة V1 (${row.company.code}) — تطابق هاش المصدر وهاش السطور والسطور المخزنة`,
+      metadata: enforceProvenanceBound({
+        schemaVersion: TB_IMPORT_PROVENANCE_SCHEMA_VERSION,
+        importId,
+        phase: "COMMIT_REVALIDATION",
+        commitRevalidated: true,
+        sourcePayloadHashMatch: true,
+        canonicalLineHashMatch: true,
+        draftLinesMatch: true,
+        sourcePayloadHash: orchestrated.sourcePayloadHash,
+        canonicalLineHash: orchestrated.canonicalLineHash,
+        derivedDataType: orchestrated.derivedDataType,
+        status: TB_STATUSES.COMMITTED,
+        revisionNumber: row.revisionNumber,
+        lineCount: expected.length,
+      }),
+      ip,
+    });
+    provenanceCommitEventWritten = true;
+  } catch {
+    provenanceCommitEventWritten = false;
+  }
+
+  return {
+    import: {
+      id: committed.id,
+      companyId: committed.companyId,
+      status: committed.status,
+      dataType: committed.dataType,
+      revisionNumber: committed.revisionNumber,
+      lineCount: committed.lineCount,
+      totalDebitMinor: committed.totalDebitMinor,
+      totalCreditMinor: committed.totalCreditMinor,
+      committedAt: committed.committedAt,
+    },
+    revalidation: {
+      sourcePayloadHashMatch: true,
+      canonicalLineHashMatch: true,
+      draftLinesMatch: true,
+      revalidatedAt: new Date().toISOString(),
+    },
+    provenanceCommitEventWritten,
+  };
 }

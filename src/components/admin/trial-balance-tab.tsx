@@ -31,6 +31,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { readExcelFile } from "@/lib/accounts";
+import { TbImporterV1 } from "@/components/admin/tb-importer-v1";
 import {
   TB_DATA_TYPES,
   TB_DATA_TYPE_DESCRIPTIONS,
@@ -98,7 +99,11 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function TrialBalanceTab() {
+// Phase 7.0 (V1 closure) — التبويب يستضيف المستورد الموجّه V1 والمسار الإرثي معًا:
+// TrialBalanceTab (الغلاف المُصدَّر) يبدّل بين TbImporterV1 (الافتراضي) والمسار
+// الإرثي LegacyTrialBalanceSection (المنطق التاريخي كما هو بلا أي تغيير سلوكي).
+
+function LegacyTrialBalanceSection() {
   const { data: session } = useSession();
   const { toast } = useToast();
 
@@ -879,6 +884,37 @@ export function TrialBalanceTab() {
         tabIndex={-1}
         onChange={(e) => handleRevisionCorrectedFile(e.target.files?.[0] ?? null)}
       />
+    </div>
+  );
+}
+
+/* ═══ Phase 7.0 (V1 closure) — غلاف التبويب: مستورد موجّه V1 / مسار إرثي ═══ */
+
+export function TrialBalanceTab() {
+  const [mode, setMode] = React.useState<"v1" | "legacy">("v1");
+  return (
+    <div className="space-y-4" dir="rtl">
+      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="وضع إدارة ميزان المراجعة">
+        <Button
+          variant={mode === "v1" ? "default" : "outline"}
+          size="sm"
+          role="tab"
+          aria-selected={mode === "v1"}
+          onClick={() => setMode("v1")}
+        >
+          المستورد الموجّه V1
+        </Button>
+        <Button
+          variant={mode === "legacy" ? "default" : "outline"}
+          size="sm"
+          role="tab"
+          aria-selected={mode === "legacy"}
+          onClick={() => setMode("legacy")}
+        >
+          الرفع المباشر (الإرث)
+        </Button>
+      </div>
+      {mode === "v1" ? <TbImporterV1 /> : <LegacyTrialBalanceSection />}
     </div>
   );
 }
