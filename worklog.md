@@ -1049,3 +1049,87 @@ Stage Summary:
 - New correction commit created on top of 08f92f9a (new SHA; 54da58b remains unrecoverable and unclaimed).
 - Bundle phase611-accounting-corrected-RECOVERY.bundle externalized through /api/download/phase611-accounting-corrected with pinned size+SHA256 integrity gates.
 - Long regression sequence (18/18 ACR, 58/58 6.11, 175/175 historical) intentionally deferred until the bundle is externally SHA256-verified on Windows.
+
+---
+Task ID: S2-PREFLIGHT-STOP
+Agent: main (Z.ai Code)
+Task: TB IMPORTER IMPLEMENTATION STEP 2 — preflight baseline verification (authorized as Step 2 on top of uncommitted Step 1 anchored at HEAD d2db5a6). Result: **STOP — mandatory preconditions unsatisfiable in this environment. No Step-2 (and no re-created Step-1) code was written. Nothing committed.**
+
+Work Log:
+- PRE-FLIGHT HEAD check: git rev-parse HEAD = 22e0fe1 (Phase 6.8C) — NOT d2db5a67730efa9f3adcb909b7acaba0d645dbb1. `git cat-file -t d2db5a6…` ⇒ object absent; same for parent 5e599f33… and 54da58b. `git merge-base --is-ancestor d2db5a6 HEAD` ⇒ "Not a valid commit name".
+- Object-DB exhaustive sweep: `git cat-file --batch-all-objects` ⇒ 90 commit objects total (35 reachable on master + 55 dangling/stash-related, all dated ≤ 2026-09-23 15:48, all Phase ≤ 6.8-era snapshots/"auto-checkout-recovery"/WIP/tool-results). Zero commits mention Phase 6.9/6.10/6.11 or TB importer. The entire authorized baseline chain is absent from the object database.
+- Recovery bundle absent: public/phase611-accounting-corrected-FINAL.bundle does not exist anywhere on the filesystem (public/ contains only robots.txt and قائمة-الربح-IFRS.html).
+- Step-1 artifacts absent: src/lib/tb-import.ts, src/lib/excel-grid.ts, scripts/phase70-tb-import-step1-foundations.ts — none exist. The Step-2 authorization premise "STEP 1 currently exists as uncommitted work" is not true in this sandbox.
+- Salvage sweep: working tree + stash tool-results grepped for "tb-import|excel-grid|phase70|FOREIGN_CURRENCY_TB_REQUIRES_FX_PROCESS|FLOW_CLOSING_SEMANTICS_UNDECLARED" ⇒ zero hits. Worklog tail = Phase 6.8 only; no TB-importer entries.
+- Environment snapshot analysis: the sandbox was restored to a state at/just after Phase 6.8C (2026-09-23 ~15:20–16:00). Everything after it — Phase 6.9→6.11 history (incl. d2db5a6), the recovery bundle, and the uncommitted Step-1 work — was lost with the environment reset. This is the second loss event (54da58b was lost previously; now the whole 6.9–6.11 chain).
+- Production DB integrity CONFIRMED EXACT MATCH to documented fingerprints: db/custom.db=59df0916…, db/custom.db-wal=e3b0c442… (empty), db/custom.db-shm=fd4c9fda…. Inherited debris present and untouched (.zscripts/dev.pid modified-by-runtime, db/custom.db* runtime-modified, api/backups/upload/route.ts deleted).
+- Verification state of this environment (22e0fe1, read-only checks only): tsc `--noEmit` ⇒ 92 errors total (NOTE: this is the Phase 6.8C-era diagnostic set — different files than the d2db5a6-era 92; the d2db5a6 account-nature.ts TS2345 guard does not apply here because this snapshot predates it. Equal totals ≠ same baseline). ESLint ⇒ zero errors.
+- Decision per locked baseline discipline: mandatory preconditions (HEAD = d2db5a6; Step-1 uncommitted work preserved; recovery bundle available) are objectively unsatisfiable and unrecoverable from this environment. Redefining the baseline (starting from 22e0fe1) or reconstructing lost commits is forbidden by the established contract. Therefore: STOP before any implementation. No source files created, no DB/Prisma/API/UI/audit/commit-revision behavior touched, no git index/commit operations performed.
+
+Stage Summary:
+- STEP 2 NOT IMPLEMENTED — blocked at preflight with precise attribution; zero code delta; production DB verified byte-identical to documented fingerprints; nothing committed or pushed.
+- Awaiting user decision: (a) re-provide/restore an environment that truly contains d2db5a6 + bundle + Step-1 uncommitted work, or (b) issue a fresh written authorization re-anchoring Step 1+2 to the current verifiable baseline 22e0fe1 (Phase 6.8C), acknowledging the absent 6.9–6.11 history and the different 92-diagnostic tsc set. Reconstruction of lost commits remains forbidden.
+
+---
+Task ID: S2-RECOVERY-FETCH
+Agent: main (Z.ai Code)
+Task: RECOVERY ONLY — restore Git history from GitHub recovery branch (no new work, no HEAD change, no debris touch, no commit/push)
+
+Work Log:
+- PRE: remote origin already = https://github.com/tareq-771/ifrs-comparison.git; HEAD=22e0fe1; status = inherited debris + S2-PREFLIGHT-STOP worklog entry only.
+- `git fetch origin recovery/phase-6.11-accounting-final` ⇒ FETCH_HEAD + new remote-tracking ref only.
+- VERIFY (all EXACT matches): FETCH_HEAD=d2db5a67730efa9f3adcb909b7acaba0d645dbb1; `cat-file -t d2db5a6` ⇒ commit; chain d2db5a6→5e599f3→08f92f9→8e2084a with parent links verified; recovered history = 40 commits, root 821156e1 (same root as current repo — matches documented bundle facts 40/821156e1).
+- TOPOLOGY: HEAD 22e0fe1 IS an ancestor of d2db5a6 ⇒ future HEAD restoration can be a pure fast-forward, no force, no rewrite.
+- Step-1 files (tb-import.ts/excel-grid.ts/phase70 script) NOT present in d2db5a6 tree — consistent with "Step 1 = uncommitted work"; will need Step-1 re-execution after restoration.
+- POST: `git status --short` identical to pre-fetch (debris + worklog only); db/custom.db=59df0916…, -wal=e3b0c442…, -shm=fd4c9fda… all byte-identical; dev.pid=1079 unchanged. No checkout/reset/clean/stash; master untouched; nothing pushed.
+
+Stage Summary:
+- Authoritative baseline d2db5a6 recovered into object DB via origin fetch; all documented expectations verified exactly; zero working-tree/runtime mutation. Awaiting explicit authorization for the safe HEAD restoration procedure (fast-forward).
+
+---
+Task ID: S2-FF-STOP-BEFORE-MERGE
+Agent: main (Z.ai Code)
+Task: SAFE FAST-FORWARD RESTORATION 22e0fe1 → d2db5a6 — STEP 1 safety check executed; merge NOT executed (STOP per instruction "STOP BEFORE MERGING / do not solve conflicts automatically")
+
+Work Log:
+- Ancestry PASS: HEAD 22e0fe1 is ancestor of d2db5a6 (ff topology confirmed).
+- Target diff = 57 paths (source/scripts/docs/migrations incl. prisma/schema.prisma + 20260924120000_phase610_receivables_aging/migration.sql + worklog.md).
+- Overlap analysis vs local status: dev.pid / db/custom.db / db/custom.db-shm / deleted api/backups/upload/route.ts ⇒ all SAFE (absent from target diff). **worklog.md ⇒ OVERLAP**: locally +36/-0 (S2-PREFLIGHT-STOP + S2-RECOVERY-FETCH), target +240/-0 (original 12 entries: 6.9, 6.9R, recovery-6.9×4, phase-6.10-aging, recovery-6.10×2, 6.11, 6.11R) — both purely additive appends at the SAME anchor (line 809), but `merge --ff-only` does no content merge and would refuse ("local changes would be overwritten").
+- No data-loss risk in attempting (git aborts cleanly), yet per instruction: STOPPED BEFORE MERGING; no resolution applied automatically.
+- Pre-verified for post-ff tree check: all 4 accounting-correction files ARE in target diff; Step-1 TB files absent from target tree (expected).
+- Nothing changed by this step: HEAD still 22e0fe1; DB hashes 59df0916…/e3b0c442…/fd4c9fda… unchanged; dev.pid=1079 unchanged; no commit/push/checkout/reset/stash; one new untracked session tool-result file tool-results/bash_1790408382128_….txt (this session's own persisted output — reported, not touched).
+
+Stage Summary:
+- FF restoration blocked by exactly one path: worklog.md (additive+additive at same anchor). Proposed authorized resolution for user approval: (1) strip my 36 local worklog lines via Edit tool (NOT git checkout), (2) `git merge --ff-only d2db5a6`, (3) re-append my two entries (with recovery-succeeded note) via Edit tool ⇒ original 6.9–6.11 history + forensic entries both preserved. Awaiting explicit authorization.
+
+---
+Task ID: S2-RECOVERY-SUCCESS
+Agent: main (Z.ai Code)
+Task: Baseline restoration completed under explicit user authorization (resolve worklog overlap + fast-forward only)
+
+Work Log:
+- Recovery source: origin/recovery/phase-6.11-accounting-final (https://github.com/tareq-771/ifrs-comparison.git) — FETCH_HEAD verified d2db5a67730efa9f3adcb909b7acaba0d645dbb1 before any change.
+- Restoration method: fast-forward only (`git merge --ff-only d2db5a6`) after making worklog.md byte-equivalent to the old HEAD 22e0fe1 via plain file copy (no git checkout/restore/reset/stash at any point). FF result: 22e0fe1..d2db5a6, 57 files, +11,908/−100, no merge commit, no force.
+- HEAD restored to d2db5a6; parent 5e599f3; chain d2db5a6→5e599f3→08f92f9→8e2084a verified.
+- Forensic entries S2-PREFLIGHT-STOP / S2-RECOVERY-FETCH / S2-FF-STOP-BEFORE-MERGE preserved verbatim during the operation in /tmp/worklog-forensic-entries.md (+ full backup /tmp/worklog-forensic-full-backup.md) and re-appended after the ff; historical Phase 6.9–6.11 entries untouched.
+- Production DB/runtime preserved: db/custom.db=59df0916…, -wal=e3b0c442…, -shm=fd4c9fda… (byte-identical before/after), dev.pid=1079; inherited debris (incl. deleted api/backups/upload/route.ts) left as-is; no database commands, no schema changes, no migration runs.
+- Step-1 TB importer files (src/lib/tb-import.ts, src/lib/excel-grid.ts, scripts/phase70-tb-import-step1-foundations.ts) remain ABSENT from the restored tree (consistent with uncommitted-work loss) and REQUIRE RE-EXECUTION of Step 1 per its original A–L authorization before any Step 2 work.
+
+Stage Summary:
+- Authoritative baseline d2db5a6 fully restored via ff-only with zero loss: history, forensic log, runtime debris, and production DB all preserved. Awaiting authorization to re-execute TB importer Step 1.
+
+---
+Task ID: S1-REEXEC
+Agent: main (Z.ai Code)
+Task: TB IMPORTER STEP 1 RE-EXECUTION — PURE FOUNDATIONS (authorized; Step 2 NOT started; NOT committed)
+
+Work Log:
+- PRE: HEAD = d2db5a67730efa9f3adcb909b7acaba0d645dbb1 (parent 5e599f3) verified; worklog recovery additions + debris intact.
+- Created src/lib/tb-import.ts (pure): 8 canonical fields + bilingual labels + conservative bilingual aliases; deterministic header normalization (BOM/zero-width/tatweel/diacritics/alef/NFC/space/lowercase — never applied to account codes); tiered mapping EXACT→CONTAINS→USER with explicit AMBIGUOUS, duplicate-target rejection, unmapped retention, no positional guessing; two-level header flattening with detection gate (≥2 sub cells AND a both-non-empty column) and leftward inheritance ONLY inside detected two-level blocks; shapes FULL_MOVEMENT/CLOSING_ONLY/MOVEMENT_ONLY/LEGACY with locked semantic descriptors (CLOSING_ONLY does NOT provide FLOW movement; MOVEMENT_ONLY does NOT provide BALANCE closing; closingIsYtdForFlowRows=false everywhere; LEGACY never auto-suggested), suggestion≠authorization + resolveTbShape preserving user confirmation; TbSourceRow raw-text preservation (code identifiers «00101»/«101»+numeric flag, formula metadata, no Number conversion); pure detectors: repeated headers, subtotal FLAG-only, duplicate codes {code,count,rows} with no aggregation.
+- Created src/lib/excel-grid.ts (client-safe): .xlsx via xlsx-js-style direct cell inspection (display text w first, formula metadata f not executed, numeric-source disclosure t==='n', no float arithmetic) + .csv generalizing aging tokenization semantics (RFC4180 quotes/escaped quotes/comma-in-quotes/BOM/delimiter detect, blank rows PRESERVED, no header assumption); .xls rejected by extension AND OLE2 signature (D0CF11E0A1B11AE1); conservative limits (15 MiB / 20k rows / 128 cols) fail-closed.
+- Created scripts/phase70-tb-import-step1-foundations.ts: 30 independent checks (25 required + 5 extra) — gate FIRST RUN = 30 PASS / 0 FAIL, no production DB.
+- Verification: tsc initial measure 129 — attributed precisely: 3 in gate file (assert narrowing: fixed via `asserts cond` signature + reordered no-overlap comparison in check 29) + 36 stale-Prisma-client model errors (node_modules generated pre-restoration; fixed via `bunx prisma generate` — codegen only, node_modules only, zero source/DB/schema change). FINAL: tsc total = 92 EXACTLY (matches restored d2db5a6-era documented baseline), ZERO diagnostics in the three Step-1 files. ESLint: zero errors/warnings.
+- Safety: production DB byte-identical (59df0916…/e3b0c442…/fd4c9fda…), dev.pid=1079, route.ts inherited deletion preserved, tool-results untouched; no schema/migration/db push/DB writes/API/UI/server-core/reporting/account-nature changes; no git add/commit/push; dev.log ecmascript noise = inherited boot-module node:fs artifact (predates work, nothing imports the new files).
+
+Stage Summary:
+- Step 1 foundations re-executed and verified on the authoritative d2db5a6 baseline: 3 new files, gate 30/30, tsc 92/0-in-new, lint 0, DB/runtime untouched. Awaiting explicit COMMIT authorization; Step 2 NOT started.
