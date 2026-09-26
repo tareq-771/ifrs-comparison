@@ -1153,3 +1153,39 @@ Stage Summary:
 - Result: BLOCKED/VALID/DEFERRED_LEGACY with exact error codes; persistenceReady only on VALID; draftLineCandidates as future persistence-layer input only.
 - Safety honored end-to-end: no commit (HEAD unchanged), no push, no schema/migration changes, no db push, no API/UI/persistence changes, no FX, no production DB writes (gates on dev-* DBs from migrations only), account-nature.ts untouched, inherited debris preserved (upload-route deletion, db/custom.db runtime modifications, tool-results), origin ref untouched.
 - Status: AWAITING explicit review + COMMIT authorization. Step 3 NOT started.
+
+---
+Task ID: STEP-2-COMMIT (Commit + External Preservation)
+Agent: Z.ai Code (main)
+Task: AUTHORIZED — COMMIT STEP 2 ONLY AND PREPARE EXTERNAL PRESERVATION
+
+Work Log:
+- Baseline verified pre-commit: HEAD=2016b0a4a79d00547aca2f5a9522523585056be5, parent=d2db5a67730efa9f3adcb909b7acaba0d645dbb1. Production DB SHA256 captured before: 59df09161f7af76b50eb4f1c5e6132f5fc59a0a124333ffb12a608c8894a22ab.
+- Staged exactly 4 approved paths (git diff --cached --name-status: A scripts/phase70-tb-import-step2-normalization.ts, A src/lib/tb-import-normalization.ts, A src/lib/tb-import-source-hash.ts, M worklog.md) — nothing else staged, none of the forbidden commands used.
+- Commit b81eb497d835e4fe9c58a141dea710f8fb27e3f7 "Add trial balance accounting normalization and validation" — parent verified exactly 2016b0a4a79d00547aca2f5a9522523585056be5; 4 files, +2160.
+- Post-commit re-verification: Step-2 gate 70/0, Step-1 gate 30/0, ESLint 0/0, tsc exactly 92 with 0 attributable, production DB SHA256 identical after.
+- GitHub push to refs/heads/recovery/tb-import-step2 FAILED: no write credentials (could not read Username for 'https://github.com'); no retries per authorization; master / recovery/tb-import-step1 / recovery/phase-6.11-accounting-final untouched.
+- Bundle fallback executed: tb-import-step2-b81eb49.bundle (incremental, tip refs/heads/master=b81eb49..., prerequisite -2016b0a...). 25,752 bytes; SHA256 fb1486943ec009d9da65631bacdc736db26be1c2beab06bfd9e3855f5ab67712; git bundle verify OK in both repos; isolated apply test on physically-pruned bare clone (b81eb49 object removed, baseline ref kept): fetch OK, resulting master^ = 2016b0a... exact; HTTP download via public/ = 200, Content-Length 25752, SHA256 identical, cmp byte-identical. Bundle NOT added to the commit.
+
+Stage Summary:
+- Step 2 preserved: commit b81eb49 on master (local) + byte-identical external bundle at public/tb-import-step2-b81eb49.bundle (8/8 integrity points). Next recovery input chain: Step-1 bundle (→2016b0a) then this bundle (→b81eb49).
+- Awaiting explicit authorization; Step 3 NOT started.
+
+---
+Task ID: STEP-3 (TB Importer — Server Integration + Controlled Draft Persistence + Provenance)
+Agent: Z.ai Code (main)
+Task: AUTHORIZED — TB IMPORTER STEP 3 ONLY — SERVER INTEGRATION + CONTROLLED DRAFT PERSISTENCE + PROVENANCE (no UI, no schema migration, no commit)
+
+Work Log:
+- Preflight: HEAD=b81eb497d835e4fe9c58a141dea710f8fb27e3f7 (exact Step-2 baseline, no recovery needed); prod fingerprints captured (custom.db 59df09...a22ab, WAL empty-hash, SHM fd4c9f...); all Step-1/2 files present; debris preserved.
+- Created src/lib/tb-import-server.ts (~1,090 lines): unified deterministic orchestration (preview+save same path), untrusted-client boundary (input type structurally rejects/ignores client dataType/classifications/totals/hashes), server-side mapping via Step-1 mapTbHeaders USER tier + required-field validation, currency gates against the 6.1 registry (functional must be configured+registry-valid; source≠functional ⇒ FX process block; minorUnits from registry only), Step-2 normalizeTbSource as sole accounting authority, server-derived dataType (FULL/MOVEMENT⇒PERIOD_MOVEMENT; CLOSING_ONLY⇒CUMULATIVE_YTD as-of representation), Step-2-rule hashes (source payload + canonical lines via canonicalJsonStringify with string minors), per-line classification snapshot re-resolution through the same engine with consistency assertion, bounded prior-as-of preview disclosure (FULL MOVEMENT BALANCE rows vs latest COMMITTED CUMULATIVE_YTD endOrdinal-1; no prior data distinguished from difference; non-blocking), draft save under existing 6.3 chain governance (COMMITTED immutable ⇒ DUPLICATE_COMMITTED; revision>1 drafts deferred to legacy revision path ⇒ INVALID_STATE; explicit replaceExisting deletes draft only), provenance via existing AuditLog with new action TRIAL_BALANCE_PROVENANCE and bounded metadata (schemaVersion tb-import-provenance-v1, ≤8000 chars, staged deterministic degradation: optional summaries ⇒ mapping detail+byFieldHash ⇒ explicit rejection; no grid/rows/cells).
+- Created 2 API routes: POST /api/tb-import-v2/preview (read-only) and POST+GET /api/tb-import-v2/draft (save/provenance-read), both behind requireManageTrialBalances + guardWrite/guardRead + company scope inside services.
+- Narrow modification: src/lib/audit-actions.ts (+2 lines: TRIAL_BALANCE_PROVENANCE action + Arabic label).
+- Retention finding: NO audit pruning/retention code exists in the codebase (searched prune/retention/cleanup/purge across src/ + scripts/) — per authorization, reported and no exemption code added.
+- Created scripts/phase70-tb-import-step3-server.ts: 63 independent checks (vs 45 minimum) on isolated dev-612-step3-gate.db (migrations-only, fail-closed DATABASE_URL guard, self-cleaning seed): server trust 1-7, preview 8-18, accounting 19-28, currency/precision 29-34, classification 35-41 (incl. contradictory-prefix engine behavior), persistence 42-50, audit/regression 51-55, extras 56-63 (no preview/save drift, structural exclusions, LEGACY rejection, deterministic hashes, registry registration, multi-period/source-currency rejection, provenance retrieval scope-guard).
+- Gate fixes during development: FiscalPeriod.code required; per-company FY ids (service correctly rejects FY/company mismatch); neutral headers to defeat EXACT-tier auto-mapping in the missing-required-mapping test; BALANCE row consumes closing pair (1000.30→100030) assertion; delta-based counts; staged provenance bound enforcement.
+- Verification: Step-3 gate 63/0 (twice, incl. idempotent re-run); Step-2 gate 70/0; Step-1 gate 30/0; materially-affected gates on fresh isolated DBs: 62A=31/0, 62B=16/0, 63=13/0, 67=19/0, 6.11=58/58; ESLint 0/0 on all Step-3 files; tsc exactly 92 with 0 attributable; prod DB/WAL/SHM byte-identical after.
+
+Stage Summary:
+- Step 3 delivered: server trust boundary + controlled DRAFT persistence on existing schema + bounded AuditLog provenance + preview/save-draft contracts; UI and final-commit integration explicitly deferred; no schema/migration/db-push; legacy lifecycle untouched (verified by legacy createTrialBalance test on gate DB).
+- Awaiting review; NO commit performed; Step 4 (UI) NOT started.

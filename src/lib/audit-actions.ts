@@ -68,6 +68,8 @@ export const AUDIT_ACTIONS = {
   // Phase 6.3 — حوكمة مراجعات ميزان المراجعة
   TRIAL_BALANCE_REVISION_CREATED: "TRIAL_BALANCE_REVISION_CREATED",
   TRIAL_BALANCE_REVISION_COMMITTED: "TRIAL_BALANCE_REVISION_COMMITTED",
+  // Phase 7.0 (Step 3) — إثبات مستورد ميزان المراجعة (موجز محدود الحدود داخل metadata)
+  TRIAL_BALANCE_PROVENANCE: "TRIAL_BALANCE_PROVENANCE",
   // Phase 6.5 — الموازنات
   BUDGET_CREATED: "BUDGET_CREATED",
   BUDGET_UPDATED: "BUDGET_UPDATED",
@@ -131,6 +133,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   TRIAL_BALANCE_DELETED: "حذف مسودة ميزان مراجعة",
   TRIAL_BALANCE_REVISION_CREATED: "إنشاء مسودة مراجعة لميزان مراجعة معتمد",
   TRIAL_BALANCE_REVISION_COMMITTED: "اعتماد مراجعة ميزان مراجعة (نسخة جديدة تصبح المعتمدة)",
+  // Phase 7.0 (Step 3)
+  TRIAL_BALANCE_PROVENANCE: "إثبات استيراد ميزان مراجعة (هاشتات وموجز تحقق محدود الحدود)",
   // Phase 6.5
   BUDGET_CREATED: "إنشاء موازنة (مسودة)",
   BUDGET_UPDATED: "تحديث بنود مسودة موازنة",
