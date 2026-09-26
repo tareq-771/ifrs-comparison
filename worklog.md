@@ -1133,3 +1133,23 @@ Work Log:
 
 Stage Summary:
 - Step 1 foundations re-executed and verified on the authoritative d2db5a6 baseline: 3 new files, gate 30/30, tsc 92/0-in-new, lint 0, DB/runtime untouched. Awaiting explicit COMMIT authorization; Step 2 NOT started.
+
+---
+Task ID: STEP-2 (TB Importer — Core Accounting Normalization + Validation)
+Agent: Z.ai Code (main)
+Task: AUTHORIZED — TB IMPORTER IMPLEMENTATION STEP 2 ONLY — CORE ACCOUNTING NORMALIZATION + VALIDATION (pure/server-core only; no persistence/API/UI/DB writes)
+
+Work Log:
+- Resumed interrupted Step-2 attempt from its existing state (no restart): baseline verified HEAD=2016b0a4a79d00547aca2f5a9522523585056be5, parent=d2db5a67730efa9f3adcb909b7acaba0d645dbb1, origin/recovery/tb-import-step1=2016b0a... (all unchanged through completion).
+- Preserved and completed the interrupted-attempt artifacts: src/lib/tb-import-normalization.ts (1092 lines), scripts/phase70-tb-import-step2-normalization.ts (1014 lines), plus isolated helper src/lib/tb-import-source-hash.ts (36 lines, only module touching node:crypto).
+- Gate-side fixes (core logic untouched by these): duplicate `const M` declaration; eager JSON.stringify over BigInt results in 6 checks; 2 checks missing SUBSET override (36/37); check 62 expectation corrected to exact two-detail-row totals M(900)/M(700); check 69 expectation corrected M(1500); TS2339 string[] narrowing in cloneFixtureWithRowEdit; TS2367 no-overlap in check 19 via String(); TS18048 via explicit non-undefined asserts (44/56-era checks).
+- Core-side compile compliance (ES2017 target): replaced 9 BigInt literals with BigInt(0) constructor calls (matches project-wide convention; no literal tokens), removed dead LEGACY comparison (unreachable after early return).
+- Verification sequence: Step-2 gate 70 PASS / 0 FAIL; Step-1 gate 30 PASS / 0 FAIL; ESLint 0/0 on all 6 Step-1/Step-2 files; tsc total exactly 92 with ZERO diagnostics in Step-1/Step-2 files (baseline match).
+- Historical gates individually/sequentially on fresh isolated DBs (rm → prisma migrate deploy → gate; migrations only): ACR 18/18 (dev-acr-gate.db); 6.11 58/58 (no DB); 62A=31, 62B=16, 62C=9, 62D=6, 63=13, 64=9, 65=8, 66=8, 67=19, 68=14, 69=23, 69R=20 → 176 executed / 0 FAIL; 6.10=38/38.
+- Transparency: 62A committed gate contains 31 unconditional checks (as committed at anchor 5e599f3; no conditionals) — the historical "62A=30 → 175/175" notation therefore maps to 176 executed today; +1 discrepancy pre-exists Step 2 in the committed gate file (git status: zero modifications to any historical gate script). Also confirmed documented 62A/62B re-run-on-same-DB contamination behavior (one clean fresh-DB run is green; re-run on used 62A DB fails by design) — not a Step-2 regression.
+
+Stage Summary:
+- Step 2 core delivered as pure, deterministic, I/O-free normalization+validation: BigInt minor-units parser (fail-closed, over-precision rejected, no Number/float), row equation Opening+Movement=Closing, authoritative account-nature integration (3101=EXPENSE, root-2 NEEDS_DETAILED_CLASSIFICATION, no OTHER), FULL/CLOSING_ONLY/MOVEMENT_ONLY semantics (FLOW closing never YTD unless explicitly declared CUMULATIVE_YTD; zero BALANCE blocked in MOVEMENT_ONLY), duplicates blocked (no aggregation/keep-first/last), subtotal KEPT/EXCLUDED explicit resolution, COMPLETE control-total equations / SUBSET disclosure+acknowledgment, currency gates (FUNCTIONAL_CURRENCY_UNCONFIGURED, FOREIGN_CURRENCY_TB_REQUIRES_FX_PROCESS, INVALID_CURRENCY_PRECISION), deterministic canonical source-facts payload + SHA-256 helper.
+- Result: BLOCKED/VALID/DEFERRED_LEGACY with exact error codes; persistenceReady only on VALID; draftLineCandidates as future persistence-layer input only.
+- Safety honored end-to-end: no commit (HEAD unchanged), no push, no schema/migration changes, no db push, no API/UI/persistence changes, no FX, no production DB writes (gates on dev-* DBs from migrations only), account-nature.ts untouched, inherited debris preserved (upload-route deletion, db/custom.db runtime modifications, tool-results), origin ref untouched.
+- Status: AWAITING explicit review + COMMIT authorization. Step 3 NOT started.
